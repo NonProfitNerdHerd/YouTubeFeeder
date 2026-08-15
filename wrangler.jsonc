@@ -1,0 +1,30 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "youtube-feeder",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-08-15",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"assets": {
+		"not_found_handling": "single-page-application",
+		"binding": "ASSETS",
+		"run_worker_first": ["/api/*"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "youtube-feeder",
+			"database_id": "REPLACE_WITH_D1_DATABASE_ID",
+			"migrations_dir": "migrations"
+		}
+	],
+	"triggers": {
+		"crons": ["*/20 * * * *", "15 6 * * *"]
+	},
+	"vars": {
+		"MOCK_DATA": "true"
+	}
+}

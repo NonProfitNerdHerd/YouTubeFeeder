@@ -1,0 +1,173 @@
+import type { AppSettings, ChannelRecord, InboxItem, QuadSlots } from '../src/types';
+
+export const MOCK_USER_ID = 'user-local';
+
+export const MOCK_SETTINGS: AppSettings = {
+	syncEnabled: true,
+	syncIntervalMinutes: 20,
+	defaultInboxFilter: 'inbox',
+	defaultQuadAudio: 'oneActive',
+	theme: 'dark',
+	liveStatusRefreshSeconds: 60,
+};
+
+export const MOCK_CHANNELS: ChannelRecord[] = [
+	{
+		channelId: 'UC_mock_alpha',
+		title: 'Alpha Lab',
+		description: 'Hardware and live builds',
+		thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg',
+		uploadsPlaylistId: 'UU_mock_alpha',
+		subscribed: true,
+		lastSynchronizedAt: new Date().toISOString(),
+	},
+	{
+		channelId: 'UC_mock_beta',
+		title: 'Beta Newsroom',
+		description: 'Daily briefing',
+		thumbnailUrl: 'https://i.ytimg.com/vi/jNQXAC9IVRw/default.jpg',
+		uploadsPlaylistId: 'UU_mock_beta',
+		subscribed: true,
+		lastSynchronizedAt: new Date().toISOString(),
+	},
+	{
+		channelId: 'UC_mock_gamma',
+		title: 'Gamma Concerts',
+		description: 'Upcoming performances',
+		thumbnailUrl: 'https://i.ytimg.com/vi/9bZkp7q19f0/default.jpg',
+		uploadsPlaylistId: 'UU_mock_gamma',
+		subscribed: true,
+		lastSynchronizedAt: new Date().toISOString(),
+	},
+];
+
+function item(
+	partial: Omit<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt'> &
+		Partial<Pick<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt'>>,
+): InboxItem {
+	return {
+		descriptionExcerpt: 'Mock description excerpt for local development without YouTube credentials.',
+		embeddable: true,
+		hidden: false,
+		firstSeenAt: new Date().toISOString(),
+		...partial,
+	};
+}
+
+export const MOCK_INBOX: InboxItem[] = [
+	item({
+		videoId: 'dQw4w9WgXcQ',
+		channelId: 'UC_mock_alpha',
+		channelTitle: 'Alpha Lab',
+		channelThumbnailUrl: MOCK_CHANNELS[0].thumbnailUrl,
+		title: 'Live: Workshop camera A',
+		thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg',
+		publishedAt: new Date(Date.now() - 3_600_000).toISOString(),
+		scheduledStartAt: new Date(Date.now() - 3_600_000).toISOString(),
+		actualStartAt: new Date(Date.now() - 3_000_000).toISOString(),
+		actualEndAt: null,
+		durationSeconds: null,
+		contentType: 'live',
+		livestreamStatus: 'live',
+		unread: true,
+		starred: false,
+		archived: false,
+	}),
+	item({
+		videoId: 'jNQXAC9IVRw',
+		channelId: 'UC_mock_beta',
+		channelTitle: 'Beta Newsroom',
+		channelThumbnailUrl: MOCK_CHANNELS[1].thumbnailUrl,
+		title: 'Me at the zoo (archive test)',
+		thumbnailUrl: 'https://i.ytimg.com/vi/jNQXAC9IVRw/mqdefault.jpg',
+		publishedAt: new Date(Date.now() - 86_400_000).toISOString(),
+		scheduledStartAt: null,
+		actualStartAt: null,
+		actualEndAt: null,
+		durationSeconds: 19,
+		contentType: 'video',
+		livestreamStatus: 'none',
+		unread: true,
+		starred: true,
+		archived: false,
+	}),
+	item({
+		videoId: '9bZkp7q19f0',
+		channelId: 'UC_mock_gamma',
+		channelTitle: 'Gamma Concerts',
+		channelThumbnailUrl: MOCK_CHANNELS[2].thumbnailUrl,
+		title: 'Upcoming: Evening set',
+		thumbnailUrl: 'https://i.ytimg.com/vi/9bZkp7q19f0/mqdefault.jpg',
+		publishedAt: new Date().toISOString(),
+		scheduledStartAt: new Date(Date.now() + 7_200_000).toISOString(),
+		actualStartAt: null,
+		actualEndAt: null,
+		durationSeconds: null,
+		contentType: 'upcoming',
+		livestreamStatus: 'upcoming',
+		unread: true,
+		starred: false,
+		archived: false,
+	}),
+	item({
+		videoId: 'kJQP7kiw5Fk',
+		channelId: 'UC_mock_gamma',
+		channelTitle: 'Gamma Concerts',
+		channelThumbnailUrl: MOCK_CHANNELS[2].thumbnailUrl,
+		title: 'Despacito — completed stream VOD',
+		thumbnailUrl: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/mqdefault.jpg',
+		publishedAt: new Date(Date.now() - 172_800_000).toISOString(),
+		scheduledStartAt: new Date(Date.now() - 180_000_000).toISOString(),
+		actualStartAt: new Date(Date.now() - 176_000_000).toISOString(),
+		actualEndAt: new Date(Date.now() - 172_800_000).toISOString(),
+		durationSeconds: 282,
+		contentType: 'completed',
+		livestreamStatus: 'completed',
+		unread: false,
+		starred: false,
+		archived: false,
+	}),
+	item({
+		videoId: '3JZ_D3ELwOQ',
+		channelId: 'UC_mock_alpha',
+		channelTitle: 'Alpha Lab',
+		channelThumbnailUrl: MOCK_CHANNELS[0].thumbnailUrl,
+		title: 'Bench test clip (embedding disabled demo)',
+		thumbnailUrl: 'https://i.ytimg.com/vi/3JZ_D3ELwOQ/mqdefault.jpg',
+		publishedAt: new Date(Date.now() - 10_800_000).toISOString(),
+		scheduledStartAt: null,
+		actualStartAt: null,
+		actualEndAt: null,
+		durationSeconds: 210,
+		contentType: 'video',
+		livestreamStatus: 'none',
+		unread: true,
+		starred: false,
+		archived: false,
+		embeddable: false,
+	}),
+	item({
+		videoId: 'L_jWHffIx5E',
+		channelId: 'UC_mock_beta',
+		channelTitle: 'Beta Newsroom',
+		channelThumbnailUrl: MOCK_CHANNELS[1].thumbnailUrl,
+		title: 'All Star — fourth quad slot',
+		thumbnailUrl: 'https://i.ytimg.com/vi/L_jWHffIx5E/mqdefault.jpg',
+		publishedAt: new Date(Date.now() - 5_000_000).toISOString(),
+		scheduledStartAt: null,
+		actualStartAt: null,
+		actualEndAt: null,
+		durationSeconds: 237,
+		contentType: 'video',
+		livestreamStatus: 'none',
+		unread: true,
+		starred: false,
+		archived: false,
+	}),
+];
+
+export const MOCK_QUAD: QuadSlots = { slot1: null, slot2: null, slot3: null, slot4: null };
+
+export function cloneInbox(): InboxItem[] {
+	return MOCK_INBOX.map((row) => ({ ...row }));
+}
