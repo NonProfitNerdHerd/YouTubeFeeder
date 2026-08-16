@@ -1,7 +1,11 @@
 package com.heartlandwiwx.streamfeeder.ui
 
-import android.content.Intent
-import android.net.Uri
+import android.annotation.SuppressLint
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -11,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -34,10 +40,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,11 +65,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import android.net.Uri
 import coil.compose.AsyncImage
 import com.heartlandwiwx.streamfeeder.BuildConfig
 import com.heartlandwiwx.streamfeeder.FeedUiState
 import com.heartlandwiwx.streamfeeder.FeedView
 import com.heartlandwiwx.streamfeeder.data.InboxItem
+import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
 
 @Composable
 fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
@@ -115,6 +127,7 @@ fun FeedScreen(
     onSnooze: (Long) -> Unit,
     onUnsnooze: () -> Unit,
     onAddWatchlist: (String) -> Unit,
+    onSaveNotes: (String) -> Unit,
     onClearMessage: () -> Unit,
 ) {
     val selected = state.selected
@@ -129,11 +142,13 @@ fun FeedScreen(
             onSnooze = onSnooze,
             onUnsnooze = onUnsnooze,
             onAddWatchlist = onAddWatchlist,
+            onSaveNotes = onSaveNotes,
         )
         return
     }
 
     var menuOpen by remember { mutableStateOf(false) }
+    var categoryMenuOpen by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -207,24 +222,45 @@ fun FeedScreen(
                     }
                 }
             } else if (state.categories.isNotEmpty()) {
-                Row(
+                val selectedCategoryName =
+                    state.categories.firstOrNull { it.id == state.categoryId }?.name ?: "All categories"
+                ExposedDropdownMenuBox(
+                    expanded = categoryMenuOpen,
+                    onExpandedChange = { categoryMenuOpen = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FilterChip(
-                        selected = state.categoryId == null,
-                        onClick = { onSelectCategory(null) },
-                        label = { Text("All") },
+                    OutlinedTextField(
+                        value = selectedCategoryName,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                        label = { Text("Category") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryMenuOpen) },
                     )
-                    state.categories.forEach { cat ->
-                        FilterChip(
-                            selected = state.categoryId == cat.id,
-                            onClick = { onSelectCategory(cat.id) },
-                            label = { Text(cat.name) },
+                    ExposedDropdownMenu(
+                        expanded = categoryMenuOpen,
+                        onDismissRequest = { categoryMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("All categories") },
+                            onClick = {
+                                categoryMenuOpen = false
+                                onSelectCategory(null)
+                            },
                         )
+                        state.categories.forEach { cat ->
+                            DropdownMenuItem(
+                                text = { Text(cat.name) },
+                                onClick = {
+                                    categoryMenuOpen = false
+                                    onSelectCategory(cat.id)
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -319,7 +355,7 @@ private fun FeedRow(item: InboxItem, onClick: () -> Unit) {
 @Composable
 private fun DetailScreen(
     item: InboxItem,
-    watchlists: List<com.heartlandwiwx.streamfeeder.data.WatchlistRecord>,
+    watchlists: List<WatchlistRecord>,
     view: FeedView,
     onBack: () -> Unit,
     onDelete: () -> Unit,
@@ -327,15 +363,16 @@ private fun DetailScreen(
     onSnooze: (Long) -> Unit,
     onUnsnooze: () -> Unit,
     onAddWatchlist: (String) -> Unit,
+    onSaveNotes: (String) -> Unit,
 ) {
-    val context = LocalContext.current
     var snoozeOpen by remember { mutableStateOf(false) }
     var watchOpen by remember { mutableStateOf(false) }
+    var notes by remember(item.videoId, item.notes) { mutableStateOf(item.notes) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Video", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -348,29 +385,13 @@ private fun DetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            AsyncImage(
-                model = item.thumbnailUrl,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(200.dp)
-                    .clip(RoundedCornerShape(12.dp)),
-                contentScale = ContentScale.Crop,
-            )
+            YoutubePlayer(videoId = item.videoId, embeddable = item.embeddable, thumbnailUrl = item.thumbnailUrl)
             Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Text(item.channelTitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(
-                onClick = {
-                    val uri = Uri.parse("https://www.youtube.com/watch?v=${item.videoId}")
-                    context.startActivity(Intent(Intent.ACTION_VIEW, uri))
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Watch on YouTube")
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (view == FeedView.Deleted) {
                     Button(onClick = onRestore) { Text("Restore") }
@@ -391,6 +412,21 @@ private fun DetailScreen(
                         Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
                     }
                 }
+            }
+            OutlinedTextField(
+                value = notes,
+                onValueChange = { notes = it.take(4000) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Notes") },
+                minLines = 3,
+                maxLines = 8,
+            )
+            Button(
+                onClick = { onSaveNotes(notes) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = notes != item.notes,
+            ) {
+                Text("Save notes")
             }
         }
     }
@@ -436,4 +472,53 @@ private fun DetailScreen(
             },
         )
     }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: String) {
+    if (!embeddable) {
+        AsyncImage(
+            model = thumbnailUrl,
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(12.dp)),
+            contentScale = ContentScale.Crop,
+        )
+        Text(
+            "This video can’t be embedded. Open it on YouTube from your browser if needed.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    val embedUrl = "https://www.youtube.com/embed/$videoId?playsinline=1&rel=0"
+    AndroidView(
+        factory = { context ->
+            WebView(context).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                webViewClient = WebViewClient()
+                webChromeClient = WebChromeClient()
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.mediaPlaybackRequiresUserGesture = false
+                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                loadUrl(embedUrl)
+            }
+        },
+        update = { webView ->
+            if (webView.url?.contains(videoId) != true) {
+                webView.loadUrl(embedUrl)
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(12.dp)),
+    )
 }

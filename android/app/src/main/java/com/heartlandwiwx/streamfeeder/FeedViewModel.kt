@@ -22,9 +22,9 @@ import java.time.temporal.ChronoUnit
 
 enum class FeedView(val api: String, val label: String) {
     Inbox("inbox", "Inbox"),
+    Watchlist("watchlist", "Watchlist"),
     Snoozed("snoozed", "Snoozed"),
     Deleted("deleted", "Deleted"),
-    Watchlist("watchlist", "Watchlists"),
 }
 
 data class FeedUiState(
@@ -137,6 +137,24 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 refreshAll(showBoot = false)
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Could not add to watchlist") }
+            }
+        }
+    }
+
+    fun saveNotes(notes: String) {
+        val item = _state.value.selected ?: return
+        viewModelScope.launch {
+            try {
+                api.patchInbox(item.videoId, JSONObject().put("action", "notes").put("notes", notes))
+                _state.update { state ->
+                    state.copy(
+                        selected = state.selected?.copy(notes = notes),
+                        items = state.items.map { if (it.videoId == item.videoId) it.copy(notes = notes) else it },
+                        message = "Notes saved",
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not save notes") }
             }
         }
     }

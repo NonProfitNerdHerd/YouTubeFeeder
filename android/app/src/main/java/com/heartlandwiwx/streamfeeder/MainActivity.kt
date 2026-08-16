@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
                             onSnooze = viewModel::snoozeSelected,
                             onUnsnooze = viewModel::unsnoozeSelected,
                             onAddWatchlist = viewModel::addSelectedToWatchlist,
+                            onSaveNotes = viewModel::saveNotes,
                             onClearMessage = viewModel::clearMessage,
                         )
                     }
