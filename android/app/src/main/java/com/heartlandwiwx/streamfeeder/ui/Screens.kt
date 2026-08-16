@@ -377,7 +377,7 @@ fun FeedScreen(
                 ) {
                     Column(
                         modifier = Modifier
-                            .weight(0.2f)
+                            .weight(0.3f)
                             .fillMaxHeight(),
                     ) {
                         Row(
@@ -463,7 +463,7 @@ fun FeedScreen(
                     VerticalDivider()
                     Box(
                         modifier = Modifier
-                            .weight(0.8f)
+                            .weight(0.7f)
                             .fillMaxHeight(),
                     ) {
                         if (selected != null) {
@@ -516,7 +516,7 @@ fun FeedScreen(
                     VerticalDivider()
                     Box(
                         modifier = Modifier
-                            .weight(0.2f)
+                            .weight(0.3f)
                             .fillMaxHeight(),
                     ) {
                         if (browsingChannel != null) {
@@ -541,7 +541,7 @@ fun FeedScreen(
                     VerticalDivider()
                     Box(
                         modifier = Modifier
-                            .weight(0.6f)
+                            .weight(0.5f)
                             .fillMaxHeight(),
                     ) {
                         if (selected != null) {
