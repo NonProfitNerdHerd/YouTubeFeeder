@@ -109,23 +109,40 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteSelected() {
         val item = _state.value.selected ?: return
-        mutate(item.videoId, JSONObject().put("action", "delete"), "Deleted")
+        mutate(item.videoId, JSONObject().put("action", "delete"), "Archived", clearSelected = true)
     }
 
     fun restoreSelected() {
         val item = _state.value.selected ?: return
-        mutate(item.videoId, JSONObject().put("action", "restore"), "Restored")
+        mutate(item.videoId, JSONObject().put("action", "restore"), "Restored", clearSelected = true)
     }
 
     fun unsnoozeSelected() {
         val item = _state.value.selected ?: return
-        mutate(item.videoId, JSONObject().put("action", "unsnooze"), "Unsnoozed")
+        mutate(item.videoId, JSONObject().put("action", "unsnooze"), "Unsnoozed", clearSelected = true)
     }
 
     fun snoozeSelected(hours: Long) {
         val item = _state.value.selected ?: return
         val until = Instant.now().plus(hours, ChronoUnit.HOURS).toString()
-        mutate(item.videoId, JSONObject().put("action", "snooze").put("until", until), "Snoozed")
+        mutate(item.videoId, JSONObject().put("action", "snooze").put("until", until), "Snoozed", clearSelected = true)
+    }
+
+    fun archiveItem(item: InboxItem) {
+        _state.update { it.copy(items = it.items.filterNot { row -> row.videoId == item.videoId }) }
+        mutate(item.videoId, JSONObject().put("action", "delete"), "Archived", clearSelected = false, silent = true)
+    }
+
+    fun snoozeItem(item: InboxItem, hours: Long = 24) {
+        val until = Instant.now().plus(hours, ChronoUnit.HOURS).toString()
+        _state.update { it.copy(items = it.items.filterNot { row -> row.videoId == item.videoId }) }
+        mutate(
+            item.videoId,
+            JSONObject().put("action", "snooze").put("until", until),
+            "Snoozed",
+            clearSelected = false,
+            silent = true,
+        )
     }
 
     fun addSelectedToWatchlist(listId: String) {
@@ -168,17 +185,29 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun mutate(videoId: String, body: JSONObject, okMessage: String) {
+    private fun mutate(
+        videoId: String,
+        body: JSONObject,
+        okMessage: String,
+        clearSelected: Boolean = true,
+        silent: Boolean = false,
+    ) {
         viewModelScope.launch {
             try {
                 api.patchInbox(videoId, body)
-                _state.update { it.copy(message = okMessage, selected = null) }
-                refreshFeed()
+                _state.update {
+                    it.copy(
+                        message = if (silent) null else okMessage,
+                        selected = if (clearSelected) null else it.selected,
+                    )
+                }
+                if (!silent) refreshFeed()
                 if (_state.value.view == FeedView.Watchlist || body.optString("action") == "delete") {
                     refreshMeta()
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Action failed") }
+                refreshFeed()
             }
         }
     }

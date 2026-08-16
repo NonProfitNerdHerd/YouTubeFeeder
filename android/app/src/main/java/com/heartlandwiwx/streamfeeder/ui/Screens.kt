@@ -1,14 +1,15 @@
 package com.heartlandwiwx.streamfeeder.ui
 
 import android.annotation.SuppressLint
+import android.net.Uri
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,13 +29,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -42,16 +44,18 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,19 +64,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import android.net.Uri
 import coil.compose.AsyncImage
 import com.heartlandwiwx.streamfeeder.BuildConfig
 import com.heartlandwiwx.streamfeeder.FeedUiState
 import com.heartlandwiwx.streamfeeder.FeedView
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
+
+private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
 
 @Composable
 fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
@@ -128,6 +135,8 @@ fun FeedScreen(
     onUnsnooze: () -> Unit,
     onAddWatchlist: (String) -> Unit,
     onSaveNotes: (String) -> Unit,
+    onArchiveItem: (InboxItem) -> Unit,
+    onSnoozeItem: (InboxItem) -> Unit,
     onClearMessage: () -> Unit,
 ) {
     val selected = state.selected
@@ -147,8 +156,24 @@ fun FeedScreen(
         return
     }
 
-    var menuOpen by remember { mutableStateOf(false) }
+    var navOpen by remember { mutableStateOf(false) }
+    var overflowOpen by remember { mutableStateOf(false) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
+    var watchlistMenuOpen by remember { mutableStateOf(false) }
+
+    if (navOpen) {
+        FullScreenNav(
+            current = state.view,
+            displayName = state.user?.displayName.orEmpty(),
+            onClose = { navOpen = false },
+            onSelect = { view ->
+                navOpen = false
+                onSelectView(view)
+            },
+        )
+        return
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -162,18 +187,23 @@ fun FeedScreen(
                         )
                     }
                 },
+                navigationIcon = {
+                    IconButton(onClick = { navOpen = true }) {
+                        Icon(Icons.Default.Menu, contentDescription = "Open menu")
+                    }
+                },
                 actions = {
                     IconButton(onClick = onRefresh) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                    IconButton(onClick = { overflowOpen = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
                         DropdownMenuItem(
                             text = { Text("Sign out") },
                             onClick = {
-                                menuOpen = false
+                                overflowOpen = false
                                 onSignOut()
                             },
                         )
@@ -190,35 +220,55 @@ fun FeedScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FeedView.entries.forEach { view ->
-                    FilterChip(
-                        selected = state.view == view,
-                        onClick = { onSelectView(view) },
-                        label = { Text(view.label) },
-                    )
-                }
-            }
+            Text(
+                state.view.label,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
 
             if (state.view == FeedView.Watchlist) {
-                Row(
+                val selectedWatchlistName = state.watchlists
+                    .firstOrNull { it.id == state.watchlistId }
+                    ?.let { "${it.name} (${it.videoCount})" }
+                    ?: "Select watchlist"
+                ExposedDropdownMenuBox(
+                    expanded = watchlistMenuOpen,
+                    onExpandedChange = { watchlistMenuOpen = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    state.watchlists.forEach { list ->
-                        AssistChip(
-                            onClick = { onSelectWatchlist(list.id) },
-                            label = { Text("${list.name} (${list.videoCount})") },
-                        )
+                    OutlinedTextField(
+                        value = selectedWatchlistName,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                        label = { Text("Watchlist") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = watchlistMenuOpen) },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = watchlistMenuOpen,
+                        onDismissRequest = { watchlistMenuOpen = false },
+                    ) {
+                        if (state.watchlists.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("No watchlists yet") },
+                                onClick = { watchlistMenuOpen = false },
+                            )
+                        } else {
+                            state.watchlists.forEach { list ->
+                                DropdownMenuItem(
+                                    text = { Text("${list.name} (${list.videoCount})") },
+                                    onClick = {
+                                        watchlistMenuOpen = false
+                                        onSelectWatchlist(list.id)
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             } else if (state.categories.isNotEmpty()) {
@@ -277,12 +327,22 @@ fun FeedScreen(
                     }
                 }
                 else -> {
+                    val swipeEnabled = state.view == FeedView.Inbox || state.view == FeedView.Watchlist
                     LazyColumn(
-                        contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         items(state.items, key = { it.videoId }) { item ->
-                            FeedRow(item = item, onClick = { onOpen(item) })
+                            if (swipeEnabled) {
+                                SwipeFeedRow(
+                                    item = item,
+                                    onOpen = { onOpen(item) },
+                                    onArchive = { onArchiveItem(item) },
+                                    onSnooze = { onSnoozeItem(item) },
+                                )
+                            } else {
+                                FeedRow(item = item, onClick = { onOpen(item) })
+                            }
                         }
                     }
                 }
@@ -308,45 +368,150 @@ fun FeedScreen(
 }
 
 @Composable
+private fun FullScreenNav(
+    current: FeedView,
+    displayName: String,
+    onClose: () -> Unit,
+    onSelect: (FeedView) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text("StreamFeeder", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(displayName, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, contentDescription = "Close menu")
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+        FeedView.entries.forEach { view ->
+            val selected = view == current
+            Text(
+                text = view.label,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        else Color.Transparent,
+                    )
+                    .clickable { onSelect(view) }
+                    .padding(horizontal = 16.dp, vertical = 18.dp),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeFeedRow(
+    item: InboxItem,
+    onOpen: () -> Unit,
+    onArchive: () -> Unit,
+    onSnooze: () -> Unit,
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    onArchive()
+                    true
+                }
+                SwipeToDismissBoxValue.EndToStart -> {
+                    onSnooze()
+                    true
+                }
+                else -> false
+            }
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            val direction = dismissState.dismissDirection
+            val color = when (direction) {
+                SwipeToDismissBoxValue.StartToEnd -> Color(0xFF2E7D32)
+                SwipeToDismissBoxValue.EndToStart -> Color(0xFFF9A825)
+                else -> Color.Transparent
+            }
+            val label = when (direction) {
+                SwipeToDismissBoxValue.StartToEnd -> "Archive"
+                SwipeToDismissBoxValue.EndToStart -> "Snooze"
+                else -> ""
+            }
+            val alignment = when (direction) {
+                SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
+                SwipeToDismissBoxValue.EndToStart -> Alignment.CenterEnd
+                else -> Alignment.Center
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(color, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp),
+                contentAlignment = alignment,
+            ) {
+                Text(label, color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        },
+    ) {
+        FeedRow(item = item, onClick = onOpen)
+    }
+}
+
+@Composable
 private fun FeedRow(item: InboxItem, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
     ) {
         AsyncImage(
             model = item.thumbnailUrl,
             contentDescription = null,
             modifier = Modifier
-                .width(140.dp)
-                .height(80.dp)
-                .clip(RoundedCornerShape(8.dp)),
+                .width(88.dp)
+                .height(50.dp)
+                .clip(RoundedCornerShape(6.dp)),
             contentScale = ContentScale.Crop,
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 item.title,
-                maxLines = 2,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = if (item.unread) FontWeight.SemiBold else FontWeight.Normal,
+                lineHeight = 16.sp,
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 16.sp),
             )
+            val date = item.publishedAt?.take(10).orEmpty()
+            val meta = listOf(item.channelTitle, date).filter { it.isNotBlank() }.joinToString(" · ")
             Text(
-                item.channelTitle,
+                meta,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                lineHeight = 14.sp,
             )
-            item.publishedAt?.let {
-                Text(
-                    it.take(10),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
     }
 }
@@ -397,7 +562,7 @@ private fun DetailScreen(
                     Button(onClick = onRestore) { Text("Restore") }
                 } else {
                     IconButton(onClick = onDelete) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete")
+                        Icon(Icons.Default.Delete, contentDescription = "Archive")
                     }
                 }
                 if (view == FeedView.Snoozed) {
@@ -494,7 +659,25 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
         )
         return
     }
-    val embedUrl = "https://www.youtube.com/embed/$videoId?playsinline=1&rel=0"
+    val html = remember(videoId) {
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+          <meta name="referrer" content="strict-origin-when-cross-origin"/>
+          <style>html,body{margin:0;padding:0;background:#000;height:100%;}iframe{border:0;width:100%;height:100%;}</style>
+        </head>
+        <body>
+          <iframe
+            src="https://www.youtube.com/embed/$videoId?playsinline=1&rel=0&modestbranding=1"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowfullscreen
+            referrerpolicy="strict-origin-when-cross-origin"></iframe>
+        </body>
+        </html>
+        """.trimIndent()
+    }
     AndroidView(
         factory = { context ->
             WebView(context).apply {
@@ -507,14 +690,23 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
-                loadUrl(embedUrl)
+                loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
             }
         },
         update = { webView ->
-            if (webView.url?.contains(videoId) != true) {
-                webView.loadUrl(embedUrl)
+            val tag = webView.tag as? String
+            if (tag != videoId) {
+                webView.tag = videoId
+                webView.loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
             }
+        },
+        onRelease = { webView ->
+            webView.stopLoading()
+            webView.destroy()
         },
         modifier = Modifier
             .fillMaxWidth()

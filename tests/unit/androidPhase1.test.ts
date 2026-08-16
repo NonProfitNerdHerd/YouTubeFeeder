@@ -30,8 +30,8 @@ describe('StreamFeeder Android phase 1', () => {
 	});
 
 	it('shares one version source', () => {
-		expect(version.versionName).toBe('1.0.3');
-		expect(version.versionCode).toBe(4);
+		expect(version.versionName).toBe('1.0.4');
+		expect(version.versionCode).toBe(5);
 	});
 
 	it('supports native Android OAuth return and Bearer sessions', async () => {
