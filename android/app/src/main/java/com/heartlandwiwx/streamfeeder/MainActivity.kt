@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity() {
                         FeedScreen(
                             state = state,
                             onSelectView = viewModel::selectView,
+                            onSelectCategory = viewModel::selectCategory,
                             onSelectWatchlist = viewModel::selectWatchlist,
                             onOpenStream = viewModel::openStream,
                             onCloseStream = viewModel::closeStream,
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
                             onUndoWatchlist = viewModel::undoWatchlistAdd,
                             onCreateWatchlist = viewModel::createWatchlist,
                             onCreateCategory = viewModel::createCategory,
+                            onRenameCategory = viewModel::renameCategory,
                             onDeleteCategory = viewModel::deleteCategory,
                             onSyncSubscriptions = viewModel::syncSubscriptions,
                             onCatchUp = viewModel::catchUpBrowsingChannel,

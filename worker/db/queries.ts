@@ -225,6 +225,17 @@ export async function createCategory(db: D1Database, userId: string, name: strin
 	return { id, name: trimmed };
 }
 
+export async function renameCategory(db: D1Database, userId: string, id: string, name: string): Promise<CategoryRecord> {
+	const trimmed = name.trim().slice(0, 80);
+	if (!trimmed) throw new Error('invalid_name');
+	const result = await db
+		.prepare(`UPDATE categories SET name = ? WHERE user_id = ? AND id = ?`)
+		.bind(trimmed, userId, id)
+		.run();
+	if (!result.meta.changes) throw new Error('not_found');
+	return { id, name: trimmed };
+}
+
 export async function deleteCategory(db: D1Database, userId: string, id: string): Promise<void> {
 	await db.prepare(`DELETE FROM channel_categories WHERE user_id = ? AND category_id = ?`).bind(userId, id).run();
 	await db.prepare(`DELETE FROM categories WHERE user_id = ? AND id = ?`).bind(userId, id).run();

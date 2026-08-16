@@ -1,12 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <queries>
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>
     </queries>
     <application
+        android:name=".StreamFeederApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -14,8 +18,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.StreamFeeder"
         android:usesCleartextTraffic="false">
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.heartlandwiwx.streamfeeder.CastOptionsProvider" />
         <activity
             android:name=".MainActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/Theme.StreamFeeder"

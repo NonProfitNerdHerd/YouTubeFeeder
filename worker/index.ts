@@ -16,7 +16,7 @@ import {
 	readOauthState,
 	readSessionUserId,
 } from './auth/session';
-import { lastSyncAt, listInbox, listSubscribedChannels, listCategories, createCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
+import { lastSyncAt, listInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
 import {
 	applyLiveLayout,
 	assignLiveSlot,
@@ -236,6 +236,21 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			const category = await createCategory(env.DB, user.id, body?.name ?? '');
 			return json({ category }, { status: 201 });
 		} catch {
+			return apiError(400, 'invalid_name', 'Category name is required.');
+		}
+	}
+
+	if (path.startsWith('/api/categories/') && request.method === 'PATCH') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const id = decodeURIComponent(path.slice('/api/categories/'.length));
+		const body = await readJson<{ name?: string }>(request);
+		try {
+			const category = await renameCategory(env.DB, user.id, id, body?.name ?? '');
+			return json({ category });
+		} catch (err: unknown) {
+			const code = err instanceof Error ? err.message : 'invalid_name';
+			if (code === 'not_found') return apiError(404, 'not_found', 'Category not found.');
 			return apiError(400, 'invalid_name', 'Category name is required.');
 		}
 	}

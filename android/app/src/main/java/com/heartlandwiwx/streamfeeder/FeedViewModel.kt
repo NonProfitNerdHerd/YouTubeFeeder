@@ -111,6 +111,21 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectCategory(id: String?) {
         _state.update { it.copy(categoryId = id, selected = null) }
+        if (_state.value.view == FeedView.Inbox) {
+            refreshFeed()
+        }
+    }
+
+    fun renameCategory(id: String, name: String) {
+        viewModelScope.launch {
+            try {
+                api.renameCategory(id, name.trim())
+                refreshMeta()
+                _state.update { it.copy(message = "Category updated") }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not rename category") }
+            }
+        }
     }
 
     fun selectWatchlist(id: String?) {
@@ -515,6 +530,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 api.inbox(view = "inbox", channelId = channelId)
             }
             FeedView.Categories -> emptyList()
+            FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId)
             else -> api.inbox(view = s.view.api)
         }
     }

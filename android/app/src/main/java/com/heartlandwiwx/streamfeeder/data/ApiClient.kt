@@ -66,6 +66,12 @@ class ApiClient(
         CategoryRecord(cat.getString("id"), cat.getString("name"))
     }
 
+    suspend fun renameCategory(id: String, name: String): CategoryRecord = withContext(Dispatchers.IO) {
+        val obj = requestJson("PATCH", "/api/categories/$id", JSONObject().put("name", name))
+        val cat = obj.getJSONObject("category")
+        CategoryRecord(cat.getString("id"), cat.getString("name"))
+    }
+
     suspend fun deleteCategory(id: String) = withContext(Dispatchers.IO) {
         requestJson("DELETE", "/api/categories/$id", null)
         Unit

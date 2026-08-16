@@ -1,12 +1,16 @@
 package com.heartlandwiwx.streamfeeder.ui
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.net.Uri
+import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
@@ -33,8 +37,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlaylistAdd
@@ -62,6 +66,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,7 +82,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.mediarouter.app.MediaRouteButton
 import coil.compose.AsyncImage
+import com.google.android.gms.cast.framework.CastButtonFactory
+import com.google.android.gms.cast.framework.CastContext
 import com.heartlandwiwx.streamfeeder.BuildConfig
 import com.heartlandwiwx.streamfeeder.FeedUiState
 import com.heartlandwiwx.streamfeeder.FeedView
@@ -85,6 +93,10 @@ import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
+import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.ChromecastYouTubePlayerContext
+import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.io.infrastructure.ChromecastConnectionListener
+import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
+import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
 
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
 
@@ -130,6 +142,7 @@ fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
 fun FeedScreen(
     state: FeedUiState,
     onSelectView: (FeedView) -> Unit,
+    onSelectCategory: (String?) -> Unit,
     onSelectWatchlist: (String?) -> Unit,
     onOpenStream: (String) -> Unit,
     onCloseStream: () -> Unit,
@@ -151,6 +164,7 @@ fun FeedScreen(
     onUndoWatchlist: () -> Unit,
     onCreateWatchlist: (String) -> Unit,
     onCreateCategory: (String) -> Unit,
+    onRenameCategory: (String, String) -> Unit,
     onDeleteCategory: (String) -> Unit,
     onSyncSubscriptions: () -> Unit,
     onCatchUp: () -> Unit,
@@ -222,6 +236,7 @@ fun FeedScreen(
 
     var overflowOpen by remember { mutableStateOf(false) }
     var watchlistMenuOpen by remember { mutableStateOf(false) }
+    var categoryMenuOpen by remember { mutableStateOf(false) }
     var createWatchlistOpen by remember { mutableStateOf(false) }
     var createCategoryOpen by remember { mutableStateOf(false) }
 
@@ -320,6 +335,7 @@ fun FeedScreen(
                 FeedView.Categories -> {
                     CategoriesPanel(
                         categories = state.categories,
+                        onRename = onRenameCategory,
                         onDelete = onDeleteCategory,
                     )
                 }
@@ -333,7 +349,38 @@ fun FeedScreen(
                         onOpen = onOpenStream,
                     )
                 }
-                else -> VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = state.view == FeedView.Inbox)
+                else -> {
+                    if (state.view == FeedView.Inbox) {
+                        val selectedCategoryName = state.categories
+                            .firstOrNull { it.id == state.categoryId }
+                            ?.name
+                            ?: "All categories"
+                        FilterDropdown(
+                            expanded = categoryMenuOpen,
+                            onExpandedChange = { categoryMenuOpen = it },
+                            label = "Category",
+                            value = selectedCategoryName,
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("All categories") },
+                                onClick = {
+                                    categoryMenuOpen = false
+                                    onSelectCategory(null)
+                                },
+                            )
+                            state.categories.forEach { cat ->
+                                DropdownMenuItem(
+                                    text = { Text(cat.name) },
+                                    onClick = {
+                                        categoryMenuOpen = false
+                                        onSelectCategory(cat.id)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = state.view == FeedView.Inbox)
+                }
             }
         }
     }
@@ -410,8 +457,12 @@ private fun VideoList(
 @Composable
 private fun CategoriesPanel(
     categories: List<CategoryRecord>,
+    onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
 ) {
+    var editing by remember { mutableStateOf<CategoryRecord?>(null) }
+    var deleting by remember { mutableStateOf<CategoryRecord?>(null) }
+
     if (categories.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("Add a category, then tag streams under Edit.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -427,11 +478,49 @@ private fun CategoriesPanel(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(cat.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                IconButton(onClick = { onDelete(cat.id) }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete category")
+                IconButton(onClick = { editing = cat }) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit category")
                 }
             }
         }
+    }
+
+    editing?.let { cat ->
+        NamePromptDialog(
+            title = "Edit category",
+            confirmLabel = "Save",
+            initialValue = cat.name,
+            showDelete = true,
+            onDismiss = { editing = null },
+            onConfirm = { name ->
+                editing = null
+                onRename(cat.id, name)
+            },
+            onDelete = {
+                editing = null
+                deleting = cat
+            },
+        )
+    }
+    deleting?.let { cat ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete category") },
+            text = {
+                Text("Are you sure you would like to delete this category, this action cannot be undone")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleting = null
+                        onDelete(cat.id)
+                    },
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleting = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -706,20 +795,30 @@ private fun MessageDialogs(
 private fun NamePromptDialog(
     title: String,
     confirmLabel: String,
+    initialValue: String = "",
+    showDelete: Boolean = false,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
+    onDelete: (() -> Unit)? = null,
 ) {
-    var value by remember { mutableStateOf("") }
+    var value by remember(initialValue) { mutableStateOf(initialValue) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (showDelete && onDelete != null) {
+                    TextButton(onClick = onDelete) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
         },
         confirmButton = {
             TextButton(
@@ -804,7 +903,7 @@ private fun FullScreenNav(
                 Text(displayName, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = onClose) {
-                Icon(Icons.Default.Close, contentDescription = "Close menu")
+                Icon(Icons.Default.Menu, contentDescription = "Close menu")
             }
         }
         Spacer(Modifier.height(28.dp))
@@ -945,6 +1044,33 @@ private fun DetailScreen(
     var snoozeOpen by remember { mutableStateOf(false) }
     var watchOpen by remember { mutableStateOf(false) }
     var notes by remember(item.videoId, item.notes) { mutableStateOf(item.notes) }
+    val context = LocalContext.current
+
+    DisposableEffect(item.videoId) {
+        var castPlayerContext: ChromecastYouTubePlayerContext? = null
+        try {
+            val sessionManager = CastContext.getSharedInstance(context).sessionManager
+            castPlayerContext = ChromecastYouTubePlayerContext(
+                sessionManager,
+                object : ChromecastConnectionListener {
+                    override fun onChromecastConnecting() = Unit
+                    override fun onChromecastConnected(chromecastYouTubePlayerContext: ChromecastYouTubePlayerContext) {
+                        chromecastYouTubePlayerContext.initialize(object : AbstractYouTubePlayerListener() {
+                            override fun onReady(youTubePlayer: YouTubePlayer) {
+                                youTubePlayer.loadVideo(item.videoId, 0f)
+                            }
+                        })
+                    }
+                    override fun onChromecastDisconnected() = Unit
+                },
+            )
+        } catch (_: Exception) {
+            castPlayerContext = null
+        }
+        onDispose {
+            castPlayerContext?.release()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -967,6 +1093,7 @@ private fun DetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             YoutubePlayer(videoId = item.videoId, embeddable = item.embeddable, thumbnailUrl = item.thumbnailUrl)
+            CastRow()
             Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Text(item.channelTitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1048,6 +1175,34 @@ private fun DetailScreen(
     }
 }
 
+@Composable
+private fun CastRow() {
+    var routeButton by remember { mutableStateOf<MediaRouteButton?>(null) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { routeButton?.performClick() }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                MediaRouteButton(ctx).also { button ->
+                    CastButtonFactory.setUpMediaRouteButton(ctx.applicationContext, button)
+                    routeButton = button
+                }
+            },
+            modifier = Modifier.size(40.dp),
+        )
+        Text(
+            "Cast to TV",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: String) {
@@ -1068,6 +1223,7 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
         )
         return
     }
+    val activity = LocalContext.current as? Activity
     val html = remember(videoId) {
         """
         <!DOCTYPE html><html><head>
@@ -1086,7 +1242,62 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
             WebView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 webViewClient = WebViewClient()
-                webChromeClient = WebChromeClient()
+                webChromeClient = object : WebChromeClient() {
+                    private var customView: View? = null
+                    private var customViewCallback: CustomViewCallback? = null
+                    private var originalSystemUiVisibility = 0
+                    private var fullscreenContainer: FrameLayout? = null
+
+                    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                        if (customView != null) {
+                            onHideCustomView()
+                            return
+                        }
+                        val act = activity ?: return
+                        customView = view
+                        customViewCallback = callback
+                        val decor = act.window.decorView as FrameLayout
+                        originalSystemUiVisibility = decor.systemUiVisibility
+                        val container = FrameLayout(act).apply {
+                            setBackgroundColor(android.graphics.Color.BLACK)
+                            addView(
+                                view,
+                                FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                ),
+                            )
+                        }
+                        fullscreenContainer = container
+                        decor.addView(
+                            container,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            ),
+                        )
+                        act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        @Suppress("DEPRECATION")
+                        decor.systemUiVisibility = (
+                            View.SYSTEM_UI_FLAG_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            )
+                    }
+
+                    override fun onHideCustomView() {
+                        val act = activity ?: return
+                        val decor = act.window.decorView as FrameLayout
+                        fullscreenContainer?.let { decor.removeView(it) }
+                        fullscreenContainer = null
+                        customView = null
+                        @Suppress("DEPRECATION")
+                        decor.systemUiVisibility = originalSystemUiVisibility
+                        act.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        customViewCallback?.onCustomViewHidden()
+                        customViewCallback = null
+                    }
+                }
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
