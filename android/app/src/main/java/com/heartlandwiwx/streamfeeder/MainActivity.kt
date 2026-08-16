@@ -60,6 +60,7 @@ class MainActivity : AppCompatActivity() {
                             onSaveNotes = viewModel::saveNotes,
                             onArchiveItem = viewModel::archiveItem,
                             onArchiveVideos = viewModel::archiveVideos,
+                            onSnoozeVideos = viewModel::snoozeVideos,
                             onMoveVideosToWatchlist = viewModel::moveVideosToWatchlist,
                             onRequestSnooze = viewModel::requestSnooze,
                             onConfirmPendingSnooze = viewModel::confirmPendingSnooze,

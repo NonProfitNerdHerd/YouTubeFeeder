@@ -254,6 +254,38 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun snoozeVideos(videoIds: List<String>, untilEpochMillis: Long) {
+        if (videoIds.isEmpty()) return
+        val until = Instant.ofEpochMilli(untilEpochMillis).toString()
+        val idSet = videoIds.toSet()
+        _state.update {
+            it.copy(
+                items = it.items.filterNot { row -> row.videoId in idSet },
+                selected = if (it.selected?.videoId in idSet) null else it.selected,
+                undoArchiveVideoId = null,
+                undoWatchlistVideoId = null,
+                undoWatchlistId = null,
+            )
+        }
+        viewModelScope.launch {
+            var ok = 0
+            for (id in videoIds) {
+                try {
+                    api.patchInbox(id, JSONObject().put("action", "snooze").put("until", until))
+                    ok++
+                } catch (_: Exception) {
+                }
+            }
+            _state.update {
+                it.copy(
+                    message = if (ok == 1) "Snoozed 1 video" else "Snoozed $ok videos",
+                    error = if (ok < videoIds.size) "Some videos could not be snoozed" else null,
+                )
+            }
+            if (ok < videoIds.size) refreshFeed()
+        }
+    }
+
     fun requestSnooze(item: InboxItem) {
         _state.update { it.copy(pendingSnoozeItem = item) }
     }
