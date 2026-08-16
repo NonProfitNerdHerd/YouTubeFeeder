@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -30,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -77,6 +81,8 @@ import coil.compose.AsyncImage
 import com.heartlandwiwx.streamfeeder.BuildConfig
 import com.heartlandwiwx.streamfeeder.FeedUiState
 import com.heartlandwiwx.streamfeeder.FeedView
+import com.heartlandwiwx.streamfeeder.data.CategoryRecord
+import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
 
@@ -124,9 +130,9 @@ fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
 fun FeedScreen(
     state: FeedUiState,
     onSelectView: (FeedView) -> Unit,
-    onSelectCategory: (String?) -> Unit,
-    onSelectChannel: (String?) -> Unit,
     onSelectWatchlist: (String?) -> Unit,
+    onOpenStream: (String) -> Unit,
+    onCloseStream: () -> Unit,
     onOpen: (InboxItem) -> Unit,
     onClose: () -> Unit,
     onRefresh: () -> Unit,
@@ -142,13 +148,25 @@ fun FeedScreen(
     onConfirmPendingSnooze: (Long) -> Unit,
     onCancelPendingSnooze: () -> Unit,
     onUndoArchive: () -> Unit,
+    onUndoWatchlist: () -> Unit,
+    onCreateWatchlist: (String) -> Unit,
+    onCreateCategory: (String) -> Unit,
+    onDeleteCategory: (String) -> Unit,
+    onSyncSubscriptions: () -> Unit,
+    onCatchUp: () -> Unit,
+    onOpenEditChannel: (ChannelRecord) -> Unit,
+    onCloseEditChannel: () -> Unit,
+    onSaveChannelEdit: (Boolean, Int, List<String>) -> Unit,
     onClearMessage: () -> Unit,
 ) {
     var navOpen by remember { mutableStateOf(false) }
+    val browsingChannel = state.channels.firstOrNull { it.channelId == state.browsingChannelId }
 
     BackHandler(enabled = state.selected != null) { onClose() }
-    BackHandler(enabled = navOpen && state.selected == null) { navOpen = false }
+    BackHandler(enabled = browsingChannel != null && state.selected == null) { onCloseStream() }
+    BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) { navOpen = false }
     BackHandler(enabled = state.pendingSnoozeItem != null) { onCancelPendingSnooze() }
+    BackHandler(enabled = state.editingChannel != null) { onCloseEditChannel() }
 
     val selected = state.selected
     if (selected != null) {
@@ -164,11 +182,7 @@ fun FeedScreen(
             onAddWatchlist = onAddWatchlist,
             onSaveNotes = onSaveNotes,
         )
-        MessageDialogs(
-            state = state,
-            onClearMessage = onClearMessage,
-            onUndoArchive = onUndoArchive,
-        )
+        MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
         return
     }
 
@@ -185,10 +199,31 @@ fun FeedScreen(
         return
     }
 
+    if (state.view == FeedView.Streams && browsingChannel != null) {
+        StreamDetailScreen(
+            channel = browsingChannel,
+            categories = state.categories,
+            items = state.items,
+            loading = state.loading,
+            syncing = state.syncing,
+            status = state.status,
+            onBack = onCloseStream,
+            onCatchUp = onCatchUp,
+            onEdit = { onOpenEditChannel(browsingChannel) },
+            onOpen = onOpen,
+            onArchiveItem = onArchiveItem,
+            onRequestSnooze = onRequestSnooze,
+        )
+        EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
+        PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
+        MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
+        return
+    }
+
     var overflowOpen by remember { mutableStateOf(false) }
-    var categoryMenuOpen by remember { mutableStateOf(false) }
-    var channelMenuOpen by remember { mutableStateOf(false) }
     var watchlistMenuOpen by remember { mutableStateOf(false) }
+    var createWatchlistOpen by remember { mutableStateOf(false) }
+    var createCategoryOpen by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -225,9 +260,7 @@ fun FeedScreen(
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
             )
         },
     ) { padding ->
@@ -236,12 +269,29 @@ fun FeedScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            Text(
-                state.view.label,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    state.view.label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (state.view == FeedView.Watchlist) {
+                    IconButton(onClick = { createWatchlistOpen = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "Create watchlist")
+                    }
+                }
+                if (state.view == FeedView.Categories) {
+                    IconButton(onClick = { createCategoryOpen = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "Create category")
+                    }
+                }
+            }
 
             when (state.view) {
                 FeedView.Watchlist -> {
@@ -255,113 +305,197 @@ fun FeedScreen(
                         label = "Watchlist",
                         value = selectedWatchlistName,
                     ) {
-                        if (state.watchlists.isEmpty()) {
+                        state.watchlists.forEach { list ->
                             DropdownMenuItem(
-                                text = { Text("No watchlists yet") },
-                                onClick = { watchlistMenuOpen = false },
+                                text = { Text("${list.name} (${list.videoCount})") },
+                                onClick = {
+                                    watchlistMenuOpen = false
+                                    onSelectWatchlist(list.id)
+                                },
                             )
-                        } else {
-                            state.watchlists.forEach { list ->
-                                DropdownMenuItem(
-                                    text = { Text("${list.name} (${list.videoCount})") },
-                                    onClick = {
-                                        watchlistMenuOpen = false
-                                        onSelectWatchlist(list.id)
-                                    },
-                                )
-                            }
                         }
                     }
-                }
-                FeedView.Streams -> {
-                    val selectedChannelName =
-                        state.channels.firstOrNull { it.channelId == state.channelId }?.title
-                            ?: "Select stream"
-                    FilterDropdown(
-                        expanded = channelMenuOpen,
-                        onExpandedChange = { channelMenuOpen = it },
-                        label = "Stream",
-                        value = selectedChannelName,
-                    ) {
-                        if (state.channels.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("No channels yet") },
-                                onClick = { channelMenuOpen = false },
-                            )
-                        } else {
-                            state.channels.forEach { channel ->
-                                DropdownMenuItem(
-                                    text = { Text(channel.title) },
-                                    onClick = {
-                                        channelMenuOpen = false
-                                        onSelectChannel(channel.channelId)
-                                    },
-                                )
-                            }
-                        }
-                    }
+                    VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = true)
                 }
                 FeedView.Categories -> {
-                    val selectedCategoryName =
-                        state.categories.firstOrNull { it.id == state.categoryId }?.name
-                            ?: "Select category"
-                    FilterDropdown(
-                        expanded = categoryMenuOpen,
-                        onExpandedChange = { categoryMenuOpen = it },
-                        label = "Category",
-                        value = selectedCategoryName,
-                    ) {
-                        if (state.categories.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("No categories yet") },
-                                onClick = { categoryMenuOpen = false },
-                            )
-                        } else {
-                            state.categories.forEach { cat ->
-                                DropdownMenuItem(
-                                    text = { Text(cat.name) },
-                                    onClick = {
-                                        categoryMenuOpen = false
-                                        onSelectCategory(cat.id)
-                                    },
-                                )
-                            }
-                        }
-                    }
+                    CategoriesPanel(
+                        categories = state.categories,
+                        onDelete = onDeleteCategory,
+                    )
                 }
-                else -> Unit
+                FeedView.Streams -> {
+                    StreamsListPanel(
+                        channels = state.channels,
+                        categories = state.categories,
+                        syncing = state.syncing,
+                        status = state.status,
+                        onSync = onSyncSubscriptions,
+                        onOpen = onOpenStream,
+                    )
+                }
+                else -> VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = state.view == FeedView.Inbox)
             }
+        }
+    }
 
-            when {
-                state.loading && state.items.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+    if (createWatchlistOpen) {
+        NamePromptDialog(
+            title = "New watchlist",
+            confirmLabel = "Create",
+            onDismiss = { createWatchlistOpen = false },
+            onConfirm = {
+                createWatchlistOpen = false
+                onCreateWatchlist(it)
+            },
+        )
+    }
+    if (createCategoryOpen) {
+        NamePromptDialog(
+            title = "New category",
+            confirmLabel = "Add",
+            onDismiss = { createCategoryOpen = false },
+            onConfirm = {
+                createCategoryOpen = false
+                onCreateCategory(it)
+            },
+        )
+    }
+
+    EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
+    PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
+    MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
+}
+
+@Composable
+private fun VideoList(
+    state: FeedUiState,
+    onOpen: (InboxItem) -> Unit,
+    onArchiveItem: (InboxItem) -> Unit,
+    onRequestSnooze: (InboxItem) -> Unit,
+    swipe: Boolean,
+) {
+    when {
+        state.loading && state.items.isEmpty() -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        }
+        state.items.isEmpty() -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No videos in this view.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        else -> {
+            LazyColumn(
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(state.items, key = { it.videoId }) { item ->
+                    if (swipe) {
+                        SwipeFeedRow(
+                            item = item,
+                            onOpen = { onOpen(item) },
+                            onArchive = { onArchiveItem(item) },
+                            onSnooze = { onRequestSnooze(item) },
+                        )
+                    } else {
+                        FeedRow(item = item, onClick = { onOpen(item) })
                     }
                 }
-                state.items.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No videos in this view.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoriesPanel(
+    categories: List<CategoryRecord>,
+    onDelete: (String) -> Unit,
+) {
+    if (categories.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Add a category, then tag streams under Edit.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        items(categories, key = { it.id }) { cat ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(cat.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                IconButton(onClick = { onDelete(cat.id) }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete category")
                 }
-                else -> {
-                    val swipeEnabled = state.view == FeedView.Inbox ||
-                        state.view == FeedView.Watchlist ||
-                        state.view == FeedView.Streams ||
-                        state.view == FeedView.Categories
-                    LazyColumn(
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamsListPanel(
+    channels: List<ChannelRecord>,
+    categories: List<CategoryRecord>,
+    syncing: Boolean,
+    status: String?,
+    onSync: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Button(
+            onClick = onSync,
+            enabled = !syncing,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(if (syncing) "Syncing…" else "Sync Subscriptions")
+        }
+        if (!status.isNullOrBlank()) {
+            Text(
+                status,
+                modifier = Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (channels.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No streams yet. Sync subscriptions.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(channels, key = { it.channelId }) { ch ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onOpen(ch.channelId) }
+                            .padding(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        items(state.items, key = { it.videoId }) { item ->
-                            if (swipeEnabled) {
-                                SwipeFeedRow(
-                                    item = item,
-                                    onOpen = { onOpen(item) },
-                                    onArchive = { onArchiveItem(item) },
-                                    onSnooze = { onRequestSnooze(item) },
-                                )
-                            } else {
-                                FeedRow(item = item, onClick = { onOpen(item) })
+                        AsyncImage(
+                            model = ch.thumbnailUrl,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(24.dp)),
+                            contentScale = ContentScale.Crop,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(ch.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "${if (ch.followInInbox) "Following" else "Not following"} · pull ${ch.maxVideosToPull}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            val names = categories.filter { it.id in ch.categoryIds }.joinToString(", ") { it.name }
+                            if (names.isNotBlank()) {
+                                Text(names, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -369,19 +503,172 @@ fun FeedScreen(
             }
         }
     }
+}
 
-    state.pendingSnoozeItem?.let {
-        SnoozeDurationDialog(
-            onPick = onConfirmPendingSnooze,
-            onDismiss = onCancelPendingSnooze,
-        )
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StreamDetailScreen(
+    channel: ChannelRecord,
+    categories: List<CategoryRecord>,
+    items: List<InboxItem>,
+    loading: Boolean,
+    syncing: Boolean,
+    status: String?,
+    onBack: () -> Unit,
+    onCatchUp: () -> Unit,
+    onEdit: () -> Unit,
+    onOpen: (InboxItem) -> Unit,
+    onArchiveItem: (InboxItem) -> Unit,
+    onRequestSnooze: (InboxItem) -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(channel.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsyncImage(
+                    model = channel.thumbnailUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(32.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                Text(channel.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            }
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onCatchUp, enabled = !syncing) {
+                    Text(if (syncing) "Working…" else "Catch up")
+                }
+                Button(onClick = onEdit) { Text("Edit") }
+            }
+            val names = categories.filter { it.id in channel.categoryIds }.joinToString(", ") { it.name }
+            Text(
+                if (names.isBlank()) "No categories" else names,
+                modifier = Modifier.padding(16.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!status.isNullOrBlank()) {
+                Text(
+                    status,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            when {
+                loading && items.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+                items.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No videos for this stream.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(items, key = { it.videoId }) { item ->
+                            SwipeFeedRow(
+                                item = item,
+                                onOpen = { onOpen(item) },
+                                onArchive = { onArchiveItem(item) },
+                                onSnooze = { onRequestSnooze(item) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
+}
 
-    MessageDialogs(
-        state = state,
-        onClearMessage = onClearMessage,
-        onUndoArchive = onUndoArchive,
+@Composable
+private fun EditChannelDialog(
+    state: FeedUiState,
+    onClose: () -> Unit,
+    onSave: (Boolean, Int, List<String>) -> Unit,
+) {
+    val channel = state.editingChannel ?: return
+    var follow by remember(channel.channelId) { mutableStateOf(channel.followInInbox) }
+    var maxPull by remember(channel.channelId) { mutableStateOf(channel.maxVideosToPull.toString()) }
+    var selectedCats by remember(channel.channelId) { mutableStateOf(channel.categoryIds.toSet()) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Edit ${channel.title}") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = follow, onCheckedChange = { follow = it })
+                    Text("Follow in inbox (always pull new videos)")
+                }
+                OutlinedTextField(
+                    value = maxPull,
+                    onValueChange = { maxPull = it.filter { ch -> ch.isDigit() }.take(3) },
+                    label = { Text("Max existing videos to pull") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Categories", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
+                if (state.categories.isEmpty()) {
+                    Text("Add a category in Categories first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                state.categories.forEach { cat ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = cat.id in selectedCats,
+                            onCheckedChange = { checked ->
+                                selectedCats = if (checked) selectedCats + cat.id else selectedCats - cat.id
+                            },
+                        )
+                        Text(cat.name)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(follow, maxPull.toIntOrNull() ?: 0, selectedCats.toList())
+            }) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onClose) { Text("Cancel") }
+        },
     )
+}
+
+@Composable
+private fun PendingSnoozeDialog(
+    state: FeedUiState,
+    onConfirm: (Long) -> Unit,
+    onCancel: () -> Unit,
+) {
+    if (state.pendingSnoozeItem == null) return
+    SnoozeDurationDialog(onPick = onConfirm, onDismiss = onCancel)
 }
 
 @Composable
@@ -389,18 +676,18 @@ private fun MessageDialogs(
     state: FeedUiState,
     onClearMessage: () -> Unit,
     onUndoArchive: () -> Unit,
+    onUndoWatchlist: () -> Unit,
 ) {
     if (!state.message.isNullOrBlank()) {
-        val canUndo = state.message == "Archived" && !state.undoArchiveVideoId.isNullOrBlank()
+        val canUndoArchive = state.message == "Archived" && !state.undoArchiveVideoId.isNullOrBlank()
+        val canUndoWatchlist = !state.undoWatchlistVideoId.isNullOrBlank() && state.message.startsWith("Added to ")
         AlertDialog(
             onDismissRequest = onClearMessage,
             confirmButton = { TextButton(onClick = onClearMessage) { Text("OK") } },
-            dismissButton = if (canUndo) {
-                {
-                    TextButton(onClick = onUndoArchive) { Text("Undo") }
-                }
-            } else {
-                null
+            dismissButton = when {
+                canUndoArchive -> ({ TextButton(onClick = onUndoArchive) { Text("Undo") } })
+                canUndoWatchlist -> ({ TextButton(onClick = onUndoWatchlist) { Text("Undo") } })
+                else -> null
             },
             text = { Text(state.message) },
         )
@@ -416,6 +703,37 @@ private fun MessageDialogs(
 }
 
 @Composable
+private fun NamePromptDialog(
+    title: String,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var value by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                enabled = value.isNotBlank(),
+                onClick = { onConfirm(value.trim()) },
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
 private fun SnoozeDurationDialog(onPick: (Long) -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -427,9 +745,7 @@ private fun SnoozeDurationDialog(onPick: (Long) -> Unit, onDismiss: () -> Unit) 
                 TextButton(onClick = { onPick(168) }) { Text("1 week") }
             }
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -459,10 +775,7 @@ private fun FilterDropdown(
             label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
         )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { onExpandedChange(false) },
-        ) {
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
             content()
         }
     }
@@ -503,8 +816,7 @@ private fun FullScreenNav(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(
-                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        else Color.Transparent,
+                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
                     )
                     .clickable { onSelect(view) }
                     .padding(horizontal = 16.dp, vertical = 18.dp),
@@ -661,10 +973,8 @@ private fun DetailScreen(
                 if (view == FeedView.Deleted) {
                     Button(onClick = onRestore) { Text("Restore") }
                 } else {
-                    if (view != FeedView.Deleted) {
-                        IconButton(onClick = { watchOpen = true }) {
-                            Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
-                        }
+                    IconButton(onClick = { watchOpen = true }) {
+                        Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
                     }
                     if (view == FeedView.Snoozed) {
                         Button(onClick = onUnsnooze) { Text("Unsnooze") }
@@ -679,11 +989,7 @@ private fun DetailScreen(
                 }
             }
             if (item.descriptionExcerpt.isNotBlank()) {
-                Text(
-                    item.descriptionExcerpt,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(item.descriptionExcerpt, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             OutlinedTextField(
                 value = notes,
@@ -705,9 +1011,9 @@ private fun DetailScreen(
 
     if (snoozeOpen) {
         SnoozeDurationDialog(
-            onPick = { hours ->
+            onPick = {
                 snoozeOpen = false
-                onSnooze(hours)
+                onSnooze(it)
             },
             onDismiss = { snoozeOpen = false },
         )
@@ -718,15 +1024,18 @@ private fun DetailScreen(
             title = { Text("Add to watchlist") },
             text = {
                 if (watchlists.isEmpty()) {
-                    Text("Create a watchlist on the website first.")
+                    Text("Create a watchlist first.")
                 } else {
-                    Column {
-                        watchlists.forEach { list ->
-                            TextButton(onClick = {
-                                watchOpen = false
-                                onAddWatchlist(list.id)
-                            }) {
-                                Text(list.name)
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(watchlists, key = { it.id }) { list ->
+                            TextButton(
+                                onClick = {
+                                    watchOpen = false
+                                    onAddWatchlist(list.id)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(list.name, modifier = Modifier.fillMaxWidth())
                             }
                         }
                     }
@@ -753,7 +1062,7 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
             contentScale = ContentScale.Crop,
         )
         Text(
-            "This video can’t be embedded. Open it on YouTube from your browser if needed.",
+            "This video can’t be embedded.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -761,30 +1070,21 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
     }
     val html = remember(videoId) {
         """
-        <!DOCTYPE html>
-        <html>
-        <head>
+        <!DOCTYPE html><html><head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
           <meta name="referrer" content="strict-origin-when-cross-origin"/>
           <style>html,body{margin:0;padding:0;background:#000;height:100%;}iframe{border:0;width:100%;height:100%;}</style>
-        </head>
-        <body>
-          <iframe
-            src="https://www.youtube.com/embed/$videoId?playsinline=1&rel=0&modestbranding=1"
+        </head><body>
+          <iframe src="https://www.youtube.com/embed/$videoId?playsinline=1&rel=0&modestbranding=1"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowfullscreen
-            referrerpolicy="strict-origin-when-cross-origin"></iframe>
-        </body>
-        </html>
+            allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+        </body></html>
         """.trimIndent()
     }
     AndroidView(
         factory = { context ->
             WebView(context).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
+                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 webViewClient = WebViewClient()
                 webChromeClient = WebChromeClient()
                 settings.javaScriptEnabled = true
@@ -793,21 +1093,19 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
-                settings.cacheMode = WebSettings.LOAD_DEFAULT
                 tag = videoId
                 loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
             }
         },
         update = { webView ->
-            val tag = webView.tag as? String
-            if (tag != videoId) {
+            if (webView.tag as? String != videoId) {
                 webView.tag = videoId
                 webView.loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
             }
         },
-        onRelease = { webView ->
-            webView.stopLoading()
-            webView.destroy()
+        onRelease = {
+            it.stopLoading()
+            it.destroy()
         },
         modifier = Modifier
             .fillMaxWidth()

@@ -30,6 +30,9 @@ data class ChannelRecord(
     val channelId: String,
     val title: String,
     val thumbnailUrl: String,
+    val followInInbox: Boolean,
+    val maxVideosToPull: Int,
+    val categoryIds: List<String>,
 )
 
 data class WatchlistRecord(

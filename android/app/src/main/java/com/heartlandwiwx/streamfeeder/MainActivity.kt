@@ -44,9 +44,9 @@ class MainActivity : ComponentActivity() {
                         FeedScreen(
                             state = state,
                             onSelectView = viewModel::selectView,
-                            onSelectCategory = viewModel::selectCategory,
-                            onSelectChannel = viewModel::selectChannel,
                             onSelectWatchlist = viewModel::selectWatchlist,
+                            onOpenStream = viewModel::openStream,
+                            onCloseStream = viewModel::closeStream,
                             onOpen = viewModel::openItem,
                             onClose = viewModel::closeItem,
                             onRefresh = viewModel::refresh,
@@ -62,6 +62,15 @@ class MainActivity : ComponentActivity() {
                             onConfirmPendingSnooze = viewModel::confirmPendingSnooze,
                             onCancelPendingSnooze = viewModel::cancelPendingSnooze,
                             onUndoArchive = viewModel::undoArchive,
+                            onUndoWatchlist = viewModel::undoWatchlistAdd,
+                            onCreateWatchlist = viewModel::createWatchlist,
+                            onCreateCategory = viewModel::createCategory,
+                            onDeleteCategory = viewModel::deleteCategory,
+                            onSyncSubscriptions = viewModel::syncSubscriptions,
+                            onCatchUp = viewModel::catchUpBrowsingChannel,
+                            onOpenEditChannel = viewModel::openEditChannel,
+                            onCloseEditChannel = viewModel::closeEditChannel,
+                            onSaveChannelEdit = viewModel::saveChannelEdit,
                             onClearMessage = viewModel::clearMessage,
                         )
                     }

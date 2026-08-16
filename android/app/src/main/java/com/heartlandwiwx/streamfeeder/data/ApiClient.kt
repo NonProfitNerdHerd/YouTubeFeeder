@@ -15,8 +15,8 @@ class ApiClient(
     private val tokenProvider: () -> String?,
 ) {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -49,14 +49,7 @@ class ApiClient(
 
     suspend fun channels(): List<ChannelRecord> = withContext(Dispatchers.IO) {
         val arr = getJson("/api/channels").optJSONArray("channels") ?: JSONArray()
-        (0 until arr.length()).map {
-            val o = arr.getJSONObject(it)
-            ChannelRecord(
-                channelId = o.getString("channelId"),
-                title = o.optString("title", "Channel"),
-                thumbnailUrl = o.optString("thumbnailUrl", ""),
-            )
-        }
+        (0 until arr.length()).map { parseChannel(arr.getJSONObject(it)) }
     }
 
     suspend fun categories(): List<CategoryRecord> = withContext(Dispatchers.IO) {
@@ -67,12 +60,46 @@ class ApiClient(
         }
     }
 
+    suspend fun createCategory(name: String): CategoryRecord = withContext(Dispatchers.IO) {
+        val obj = requestJson("POST", "/api/categories", JSONObject().put("name", name))
+        val cat = obj.getJSONObject("category")
+        CategoryRecord(cat.getString("id"), cat.getString("name"))
+    }
+
+    suspend fun deleteCategory(id: String) = withContext(Dispatchers.IO) {
+        requestJson("DELETE", "/api/categories/$id", null)
+        Unit
+    }
+
     suspend fun watchlists(): List<WatchlistRecord> = withContext(Dispatchers.IO) {
         val arr = getJson("/api/watchlists").optJSONArray("watchlists") ?: JSONArray()
         (0 until arr.length()).map {
             val o = arr.getJSONObject(it)
             WatchlistRecord(o.getString("id"), o.getString("name"), o.optInt("videoCount", 0))
         }
+    }
+
+    suspend fun createWatchlist(name: String): WatchlistRecord = withContext(Dispatchers.IO) {
+        val obj = requestJson("POST", "/api/watchlists", JSONObject().put("name", name))
+        val wl = obj.getJSONObject("watchlist")
+        WatchlistRecord(wl.getString("id"), wl.getString("name"), wl.optInt("videoCount", 0))
+    }
+
+    suspend fun updateChannel(
+        channelId: String,
+        followInInbox: Boolean,
+        maxVideosToPull: Int,
+        categoryIds: List<String>,
+    ) = withContext(Dispatchers.IO) {
+        requestJson(
+            "PATCH",
+            "/api/channels/$channelId",
+            JSONObject()
+                .put("followInInbox", followInInbox)
+                .put("maxVideosToPull", maxVideosToPull)
+                .put("categoryIds", JSONArray(categoryIds)),
+        )
+        Unit
     }
 
     suspend fun patchInbox(videoId: String, body: JSONObject) = withContext(Dispatchers.IO) {
@@ -85,15 +112,61 @@ class ApiClient(
         Unit
     }
 
+    suspend fun removeFromWatchlist(listId: String, videoId: String) = withContext(Dispatchers.IO) {
+        requestJson("DELETE", "/api/watchlists/$listId/items/$videoId", null)
+        Unit
+    }
+
+    suspend fun syncSubscriptions(): Int = withContext(Dispatchers.IO) {
+        val obj = requestJson("POST", "/api/sync/subscriptions?force=1", JSONObject())
+        obj.optInt("channelsChecked", 0)
+    }
+
+    suspend fun catchUpChannel(channelId: String, maxPull: Int, onProgress: (pulled: Int, want: Int) -> Unit): Int =
+        withContext(Dispatchers.IO) {
+            var pageToken = ""
+            var pulled = 0
+            var added = 0
+            val want = maxPull.coerceIn(1, 500)
+            while (true) {
+                onProgress(pulled, want)
+                val body = JSONObject()
+                    .put("channelId", channelId)
+                    .put("pageToken", pageToken)
+                    .put("pulled", pulled)
+                val obj = requestJson("POST", "/api/sync/catchup", body)
+                added += obj.optInt("videosAdded", 0)
+                pulled = obj.optInt("pulled", pulled)
+                val nextWant = obj.optInt("want", want)
+                onProgress(pulled, nextWant)
+                if (obj.optBoolean("done", true)) break
+                pageToken = obj.optString("nextPageToken", "")
+                if (pageToken.isBlank()) break
+            }
+            added
+        }
+
     suspend fun logout() = withContext(Dispatchers.IO) {
         try {
             requestJson("POST", "/api/auth/logout", JSONObject())
         } catch (_: Exception) {
-            // Local clear still happens in the ViewModel.
         }
     }
 
     fun loginUrl(): String = "$base/api/auth/google?intent=login&client=android"
+
+    private fun parseChannel(o: JSONObject): ChannelRecord {
+        val ids = o.optJSONArray("categoryIds") ?: JSONArray()
+        val categoryIds = (0 until ids.length()).map { ids.getString(it) }
+        return ChannelRecord(
+            channelId = o.getString("channelId"),
+            title = o.optString("title", "Channel"),
+            thumbnailUrl = o.optString("thumbnailUrl", ""),
+            followInInbox = o.optBoolean("followInInbox", true),
+            maxVideosToPull = o.optInt("maxVideosToPull", 0),
+            categoryIds = categoryIds,
+        )
+    }
 
     private fun parseInboxItem(o: JSONObject) = InboxItem(
         videoId = o.getString("videoId"),

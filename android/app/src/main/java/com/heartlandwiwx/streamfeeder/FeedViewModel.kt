@@ -24,9 +24,9 @@ import java.time.temporal.ChronoUnit
 enum class FeedView(val api: String, val label: String) {
     Inbox("inbox", "Inbox"),
     Watchlist("watchlist", "Watchlist"),
-    Streams("inbox", "Streams"),
-    Categories("inbox", "Categories"),
     Snoozed("snoozed", "Snoozed"),
+    Categories("inbox", "Categories"),
+    Streams("inbox", "Streams"),
     Deleted("deleted", "Deleted"),
 }
 
@@ -42,9 +42,15 @@ data class FeedUiState(
     val categoryId: String? = null,
     val channelId: String? = null,
     val watchlistId: String? = null,
+    val browsingChannelId: String? = null,
     val selected: InboxItem? = null,
     val pendingSnoozeItem: InboxItem? = null,
+    val editingChannel: ChannelRecord? = null,
     val undoArchiveVideoId: String? = null,
+    val undoWatchlistVideoId: String? = null,
+    val undoWatchlistId: String? = null,
+    val syncing: Boolean = false,
+    val status: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
     val message: String? = null,
@@ -84,23 +90,41 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectView(view: FeedView) {
-        _state.update { it.copy(view = view, selected = null, pendingSnoozeItem = null) }
-        refreshFeed()
+        _state.update {
+            it.copy(
+                view = view,
+                selected = null,
+                browsingChannelId = null,
+                pendingSnoozeItem = null,
+                editingChannel = null,
+                items = if (view == FeedView.Categories || view == FeedView.Streams) emptyList() else it.items,
+            )
+        }
+        if (view != FeedView.Categories && view != FeedView.Streams) {
+            refreshFeed()
+        } else if (view == FeedView.Streams) {
+            refreshMeta()
+        } else {
+            refreshMeta()
+        }
     }
 
     fun selectCategory(id: String?) {
         _state.update { it.copy(categoryId = id, selected = null) }
-        refreshFeed()
-    }
-
-    fun selectChannel(id: String?) {
-        _state.update { it.copy(channelId = id, selected = null) }
-        refreshFeed()
     }
 
     fun selectWatchlist(id: String?) {
         _state.update { it.copy(watchlistId = id, selected = null) }
         refreshFeed()
+    }
+
+    fun openStream(channelId: String) {
+        _state.update { it.copy(browsingChannelId = channelId, selected = null) }
+        refreshFeed()
+    }
+
+    fun closeStream() {
+        _state.update { it.copy(browsingChannelId = null, items = emptyList(), editingChannel = null) }
     }
 
     fun openItem(item: InboxItem) {
@@ -112,7 +136,15 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearMessage() {
-        _state.update { it.copy(message = null, error = null, undoArchiveVideoId = null) }
+        _state.update {
+            it.copy(
+                message = null,
+                error = null,
+                undoArchiveVideoId = null,
+                undoWatchlistVideoId = null,
+                undoWatchlistId = null,
+            )
+        }
     }
 
     fun refresh() {
@@ -185,13 +217,42 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addSelectedToWatchlist(listId: String) {
         val item = _state.value.selected ?: return
+        val listName = _state.value.watchlists.firstOrNull { it.id == listId }?.name ?: "watchlist"
         viewModelScope.launch {
             try {
                 api.addToWatchlist(listId, item.videoId)
-                _state.update { it.copy(message = "Added to watchlist", selected = null) }
-                refreshAll(showBoot = false)
+                _state.update {
+                    it.copy(
+                        message = "Added to $listName",
+                        undoWatchlistVideoId = item.videoId,
+                        undoWatchlistId = listId,
+                        undoArchiveVideoId = null,
+                    )
+                }
+                refreshMeta()
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Could not add to watchlist") }
+            }
+        }
+    }
+
+    fun undoWatchlistAdd() {
+        val videoId = _state.value.undoWatchlistVideoId ?: return
+        val listId = _state.value.undoWatchlistId ?: return
+        viewModelScope.launch {
+            try {
+                api.removeFromWatchlist(listId, videoId)
+                _state.update {
+                    it.copy(
+                        message = "Removed from watchlist",
+                        undoWatchlistVideoId = null,
+                        undoWatchlistId = null,
+                    )
+                }
+                refreshMeta()
+                refreshFeed()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not undo", undoWatchlistVideoId = null, undoWatchlistId = null) }
             }
         }
     }
@@ -214,6 +275,105 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun createWatchlist(name: String) {
+        viewModelScope.launch {
+            try {
+                val created = api.createWatchlist(name.trim())
+                refreshMeta()
+                _state.update { it.copy(watchlistId = created.id, message = "Watchlist created") }
+                refreshFeed()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not create watchlist") }
+            }
+        }
+    }
+
+    fun createCategory(name: String) {
+        viewModelScope.launch {
+            try {
+                api.createCategory(name.trim())
+                refreshMeta()
+                _state.update { it.copy(message = "Category created") }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not create category") }
+            }
+        }
+    }
+
+    fun deleteCategory(id: String) {
+        viewModelScope.launch {
+            try {
+                api.deleteCategory(id)
+                _state.update {
+                    it.copy(
+                        categoryId = if (it.categoryId == id) null else it.categoryId,
+                        message = "Category deleted",
+                    )
+                }
+                refreshMeta()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not delete category") }
+            }
+        }
+    }
+
+    fun openEditChannel(channel: ChannelRecord) {
+        _state.update { it.copy(editingChannel = channel) }
+    }
+
+    fun closeEditChannel() {
+        _state.update { it.copy(editingChannel = null) }
+    }
+
+    fun saveChannelEdit(followInInbox: Boolean, maxVideosToPull: Int, categoryIds: List<String>) {
+        val channel = _state.value.editingChannel ?: return
+        viewModelScope.launch {
+            try {
+                api.updateChannel(channel.channelId, followInInbox, maxVideosToPull.coerceIn(0, 500), categoryIds)
+                _state.update { it.copy(editingChannel = null, message = "Stream saved") }
+                refreshMeta()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not save stream") }
+            }
+        }
+    }
+
+    fun syncSubscriptions() {
+        viewModelScope.launch {
+            _state.update { it.copy(syncing = true, error = null, status = "Syncing subscriptions…") }
+            try {
+                val count = api.syncSubscriptions()
+                refreshMeta()
+                _state.update { it.copy(syncing = false, status = null, message = "Updated $count subscriptions") }
+            } catch (e: Exception) {
+                _state.update { it.copy(syncing = false, status = null, error = e.message ?: "Subscription sync failed") }
+            }
+        }
+    }
+
+    fun catchUpBrowsingChannel() {
+        val channelId = _state.value.browsingChannelId ?: return
+        val channel = _state.value.channels.firstOrNull { it.channelId == channelId } ?: return
+        if (channel.maxVideosToPull < 1) {
+            _state.update { it.copy(error = "Set max videos to pull above 0 on Edit, then catch up.") }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(syncing = true, error = null, status = "Catching up ${channel.title}…") }
+            try {
+                val added = api.catchUpChannel(channel.channelId, channel.maxVideosToPull) { pulled, want ->
+                    _state.update { it.copy(status = "Catching up ${channel.title}… $pulled / $want") }
+                }
+                refreshFeed()
+                _state.update {
+                    it.copy(syncing = false, status = null, message = "Added $added videos from ${channel.title}")
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(syncing = false, status = null, error = e.message ?: "Catch up failed") }
+            }
+        }
+    }
+
     fun signOut() {
         viewModelScope.launch {
             api.logout()
@@ -230,6 +390,8 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 selected = if (leaveDetail) null else it.selected,
                 message = "Archived",
                 undoArchiveVideoId = item.videoId,
+                undoWatchlistVideoId = null,
+                undoWatchlistId = null,
             )
         }
         viewModelScope.launch {
@@ -278,21 +440,25 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 val categories = api.categories()
                 val channels = api.channels()
                 val watchlists = api.watchlists()
-                val items = loadInbox()
                 _state.update {
                     it.copy(
-                        booting = false,
-                        loading = false,
-                        signedIn = true,
                         user = user,
                         categories = categories,
                         channels = channels,
                         watchlists = watchlists,
-                        items = items,
                         watchlistId = it.watchlistId ?: watchlists.firstOrNull()?.id,
-                        channelId = it.channelId ?: channels.firstOrNull()?.channelId,
-                        categoryId = it.categoryId ?: categories.firstOrNull()?.id,
+                        signedIn = true,
                     )
+                }
+                val items = if (_state.value.view == FeedView.Categories ||
+                    (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null)
+                ) {
+                    emptyList()
+                } else {
+                    loadInbox()
+                }
+                _state.update {
+                    it.copy(booting = false, loading = false, items = items)
                 }
             } catch (e: ApiException) {
                 if (e.code == 401) {
@@ -310,6 +476,12 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun refreshFeed() {
         viewModelScope.launch {
+            if (_state.value.view == FeedView.Categories ||
+                (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null)
+            ) {
+                _state.update { it.copy(loading = false, items = emptyList()) }
+                return@launch
+            }
             _state.update { it.copy(loading = true, error = null) }
             try {
                 val items = loadInbox()
@@ -323,8 +495,12 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     private fun refreshMeta() {
         viewModelScope.launch {
             try {
+                val categories = api.categories()
+                val channels = api.channels()
                 val watchlists = api.watchlists()
-                _state.update { it.copy(watchlists = watchlists) }
+                _state.update {
+                    it.copy(categories = categories, channels = channels, watchlists = watchlists)
+                }
             } catch (_: Exception) {
             }
         }
@@ -335,13 +511,10 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         return when (s.view) {
             FeedView.Watchlist -> api.inbox(view = "watchlist", watchlistId = s.watchlistId)
             FeedView.Streams -> {
-                if (s.channelId.isNullOrBlank()) emptyList()
-                else api.inbox(view = "inbox", channelId = s.channelId)
+                val channelId = s.browsingChannelId ?: return emptyList()
+                api.inbox(view = "inbox", channelId = channelId)
             }
-            FeedView.Categories -> {
-                if (s.categoryId.isNullOrBlank()) emptyList()
-                else api.inbox(view = "inbox", categoryId = s.categoryId)
-            }
+            FeedView.Categories -> emptyList()
             else -> api.inbox(view = s.view.api)
         }
     }
