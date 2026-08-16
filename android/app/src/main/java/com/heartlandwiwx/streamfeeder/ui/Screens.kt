@@ -533,6 +533,14 @@ private fun StreamsListPanel(
     onSync: () -> Unit,
     onOpen: (String) -> Unit,
 ) {
+    var categoryMenuOpen by remember { mutableStateOf(false) }
+    var filterCategoryId by remember { mutableStateOf<String?>(null) }
+    val filteredChannels = remember(channels, filterCategoryId) {
+        if (filterCategoryId == null) channels
+        else channels.filter { filterCategoryId in it.categoryIds }
+    }
+    val filterLabel = categories.firstOrNull { it.id == filterCategoryId }?.name ?: "All categories"
+
     Column(Modifier.fillMaxSize()) {
         Button(
             onClick = onSync,
@@ -543,6 +551,29 @@ private fun StreamsListPanel(
         ) {
             Text(if (syncing) "Syncing…" else "Sync Subscriptions")
         }
+        FilterDropdown(
+            expanded = categoryMenuOpen,
+            onExpandedChange = { categoryMenuOpen = it },
+            label = "Category",
+            value = filterLabel,
+        ) {
+            DropdownMenuItem(
+                text = { Text("All categories") },
+                onClick = {
+                    categoryMenuOpen = false
+                    filterCategoryId = null
+                },
+            )
+            categories.forEach { cat ->
+                DropdownMenuItem(
+                    text = { Text(cat.name) },
+                    onClick = {
+                        categoryMenuOpen = false
+                        filterCategoryId = cat.id
+                    },
+                )
+            }
+        }
         if (!status.isNullOrBlank()) {
             Text(
                 status,
@@ -551,13 +582,17 @@ private fun StreamsListPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (channels.isEmpty()) {
+        if (filteredChannels.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No streams yet. Sync subscriptions.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (channels.isEmpty()) "No streams yet. Sync subscriptions."
+                    else "No streams in this category.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         } else {
             LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(channels, key = { it.channelId }) { ch ->
+                items(filteredChannels, key = { it.channelId }) { ch ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -688,6 +723,7 @@ private fun StreamDetailScreen(
                                 onOpen = { onOpen(item) },
                                 onArchive = { onArchiveItem(item) },
                                 onSnooze = { onRequestSnooze(item) },
+                                showChannelInMeta = false,
                             )
                         }
                     }
@@ -934,6 +970,7 @@ private fun SwipeFeedRow(
     onOpen: () -> Unit,
     onArchive: () -> Unit,
     onSnooze: () -> Unit,
+    showChannelInMeta: Boolean = true,
 ) {
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
@@ -980,12 +1017,16 @@ private fun SwipeFeedRow(
             }
         },
     ) {
-        FeedRow(item = item, onClick = onOpen)
+        FeedRow(item = item, onClick = onOpen, showChannelInMeta = showChannelInMeta)
     }
 }
 
 @Composable
-private fun FeedRow(item: InboxItem, onClick: () -> Unit) {
+private fun FeedRow(
+    item: InboxItem,
+    onClick: () -> Unit,
+    showChannelInMeta: Boolean = true,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1001,7 +1042,7 @@ private fun FeedRow(item: InboxItem, onClick: () -> Unit) {
             contentDescription = null,
             modifier = Modifier
                 .width(88.dp)
-                .height(50.dp)
+                .height(66.dp)
                 .clip(RoundedCornerShape(6.dp)),
             contentScale = ContentScale.Crop,
         )
@@ -1009,20 +1050,27 @@ private fun FeedRow(item: InboxItem, onClick: () -> Unit) {
             Text(
                 item.title,
                 maxLines = 3,
+                minLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = if (item.unread) FontWeight.SemiBold else FontWeight.Normal,
-                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 16.sp),
+                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 18.sp),
             )
             val date = item.publishedAt?.take(10).orEmpty()
-            val meta = listOf(item.channelTitle, date).filter { it.isNotBlank() }.joinToString(" · ")
-            Text(
-                meta,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                lineHeight = 14.sp,
-            )
+            val meta = if (showChannelInMeta) {
+                listOf(item.channelTitle, date).filter { it.isNotBlank() }.joinToString(" · ")
+            } else {
+                date
+            }
+            if (meta.isNotBlank()) {
+                Text(
+                    meta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 14.sp,
+                )
+            }
         }
     }
 }
