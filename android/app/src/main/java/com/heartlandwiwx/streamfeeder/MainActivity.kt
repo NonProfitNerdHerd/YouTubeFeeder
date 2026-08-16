@@ -59,6 +59,8 @@ class MainActivity : AppCompatActivity() {
                             onAddWatchlist = viewModel::addSelectedToWatchlist,
                             onSaveNotes = viewModel::saveNotes,
                             onArchiveItem = viewModel::archiveItem,
+                            onArchiveVideos = viewModel::archiveVideos,
+                            onMoveVideosToWatchlist = viewModel::moveVideosToWatchlist,
                             onRequestSnooze = viewModel::requestSnooze,
                             onConfirmPendingSnooze = viewModel::confirmPendingSnooze,
                             onCancelPendingSnooze = viewModel::cancelPendingSnooze,

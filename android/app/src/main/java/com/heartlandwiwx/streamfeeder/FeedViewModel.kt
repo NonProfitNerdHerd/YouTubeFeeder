@@ -191,6 +191,70 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         archiveVideo(item, leaveDetail = false)
     }
 
+    fun archiveVideos(videoIds: List<String>) {
+        if (videoIds.isEmpty()) return
+        val idSet = videoIds.toSet()
+        _state.update {
+            it.copy(
+                items = it.items.filterNot { row -> row.videoId in idSet },
+                undoArchiveVideoId = null,
+                undoWatchlistVideoId = null,
+                undoWatchlistId = null,
+            )
+        }
+        viewModelScope.launch {
+            var ok = 0
+            for (id in videoIds) {
+                try {
+                    api.patchInbox(id, JSONObject().put("action", "delete"))
+                    ok++
+                } catch (_: Exception) {
+                }
+            }
+            _state.update {
+                it.copy(
+                    message = if (ok == 1) "Archived 1 video" else "Archived $ok videos",
+                    error = if (ok < videoIds.size) "Some videos could not be archived" else null,
+                )
+            }
+            if (ok < videoIds.size) refreshFeed()
+            if (_state.value.view == FeedView.Watchlist) refreshMeta()
+        }
+    }
+
+    fun moveVideosToWatchlist(listId: String, videoIds: List<String>) {
+        if (videoIds.isEmpty()) return
+        val listName = _state.value.watchlists.firstOrNull { it.id == listId }?.name ?: "watchlist"
+        val idSet = videoIds.toSet()
+        _state.update {
+            it.copy(
+                items = it.items.filterNot { row -> row.videoId in idSet },
+                undoArchiveVideoId = null,
+                undoWatchlistVideoId = null,
+                undoWatchlistId = null,
+            )
+        }
+        viewModelScope.launch {
+            var ok = 0
+            for (id in videoIds) {
+                try {
+                    api.addToWatchlist(listId, id)
+                    api.patchInbox(id, JSONObject().put("action", "delete"))
+                    ok++
+                } catch (_: Exception) {
+                }
+            }
+            _state.update {
+                it.copy(
+                    message = if (ok == 1) "Moved 1 video to $listName" else "Moved $ok videos to $listName",
+                    error = if (ok < videoIds.size) "Some videos could not be moved" else null,
+                )
+            }
+            refreshMeta()
+            if (ok < videoIds.size) refreshFeed()
+        }
+    }
+
     fun requestSnooze(item: InboxItem) {
         _state.update { it.copy(pendingSnoozeItem = item) }
     }

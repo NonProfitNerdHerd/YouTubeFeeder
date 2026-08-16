@@ -15,6 +15,8 @@ import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,15 +34,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Snooze
@@ -57,6 +60,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -67,6 +71,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +82,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -97,7 +103,6 @@ import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsend
 import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.io.infrastructure.ChromecastConnectionListener
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
-
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
 
 @Composable
@@ -157,6 +162,8 @@ fun FeedScreen(
     onAddWatchlist: (String) -> Unit,
     onSaveNotes: (String) -> Unit,
     onArchiveItem: (InboxItem) -> Unit,
+    onArchiveVideos: (List<String>) -> Unit,
+    onMoveVideosToWatchlist: (String, List<String>) -> Unit,
     onRequestSnooze: (InboxItem) -> Unit,
     onConfirmPendingSnooze: (Long) -> Unit,
     onCancelPendingSnooze: () -> Unit,
@@ -181,6 +188,20 @@ fun FeedScreen(
     BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) { navOpen = false }
     BackHandler(enabled = state.pendingSnoozeItem != null) { onCancelPendingSnooze() }
     BackHandler(enabled = state.editingChannel != null) { onCloseEditChannel() }
+
+    var selectedVideoIds by remember { mutableStateOf(setOf<String>()) }
+    var confirmArchiveOpen by remember { mutableStateOf(false) }
+    var watchlistBulkOpen by remember { mutableStateOf(false) }
+    val selectionMode = selectedVideoIds.isNotEmpty()
+
+    LaunchedEffect(state.view) {
+        selectedVideoIds = emptySet()
+        confirmArchiveOpen = false
+        watchlistBulkOpen = false
+    }
+    BackHandler(enabled = selectionMode && state.selected == null && !navOpen) {
+        selectedVideoIds = emptySet()
+    }
 
     val selected = state.selected
     if (selected != null) {
@@ -244,7 +265,6 @@ fun FeedScreen(
         return
     }
 
-    var overflowOpen by remember { mutableStateOf(false) }
     var watchlistMenuOpen by remember { mutableStateOf(false) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
     var createWatchlistOpen by remember { mutableStateOf(false) }
@@ -254,29 +274,42 @@ fun FeedScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("StreamFeeder")
-                        Text(
-                            state.user?.displayName ?: "",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    if (selectionMode && state.view == FeedView.Inbox) {
+                        Text("${selectedVideoIds.size} selected")
+                    } else {
+                        Column {
+                            Text("StreamFeeder")
+                            Text(
+                                state.user?.displayName ?: "",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = { navOpen = true }) {
-                        Icon(Icons.Default.Menu, contentDescription = "Open menu")
+                    if (selectionMode && state.view == FeedView.Inbox) {
+                        IconButton(onClick = { selectedVideoIds = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel selection")
+                        }
+                    } else {
+                        IconButton(onClick = { navOpen = true }) {
+                            Icon(Icons.Default.Menu, contentDescription = "Open menu")
+                        }
                     }
                 },
                 actions = {
-                    IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                    IconButton(onClick = { overflowOpen = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More")
-                    }
-                    DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                        // Reserved for future overflow actions
+                    if (selectionMode && state.view == FeedView.Inbox) {
+                        IconButton(onClick = { confirmArchiveOpen = true }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Archive selected")
+                        }
+                        IconButton(onClick = { watchlistBulkOpen = true }) {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
+                        }
+                    } else {
+                        IconButton(onClick = onRefresh) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -380,8 +413,28 @@ fun FeedScreen(
                                 )
                             }
                         }
+                        VideoList(
+                            state = state,
+                            onOpen = onOpen,
+                            onArchiveItem = onArchiveItem,
+                            onRequestSnooze = onRequestSnooze,
+                            swipe = !selectionMode,
+                            selectionMode = selectionMode,
+                            selectedIds = selectedVideoIds,
+                            onToggleSelect = { id ->
+                                selectedVideoIds = if (id in selectedVideoIds) {
+                                    selectedVideoIds - id
+                                } else {
+                                    selectedVideoIds + id
+                                }
+                            },
+                            onEnterSelection = { id ->
+                                selectedVideoIds = selectedVideoIds + id
+                            },
+                        )
+                    } else {
+                        VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = false)
                     }
-                    VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = state.view == FeedView.Inbox)
                 }
             }
         }
@@ -409,6 +462,38 @@ fun FeedScreen(
             },
         )
     }
+    if (confirmArchiveOpen) {
+        AlertDialog(
+            onDismissRequest = { confirmArchiveOpen = false },
+            title = { Text("Archive videos") },
+            text = { Text("Are you sure you want to archive these") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val ids = selectedVideoIds.toList()
+                        confirmArchiveOpen = false
+                        selectedVideoIds = emptySet()
+                        onArchiveVideos(ids)
+                    },
+                ) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmArchiveOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
+    if (watchlistBulkOpen) {
+        BulkWatchlistDialog(
+            watchlists = state.watchlists,
+            onDismiss = { watchlistBulkOpen = false },
+            onConfirm = { listId ->
+                val ids = selectedVideoIds.toList()
+                watchlistBulkOpen = false
+                selectedVideoIds = emptySet()
+                onMoveVideosToWatchlist(listId, ids)
+            },
+        )
+    }
 
     EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
     PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
@@ -422,6 +507,10 @@ private fun VideoList(
     onArchiveItem: (InboxItem) -> Unit,
     onRequestSnooze: (InboxItem) -> Unit,
     swipe: Boolean,
+    selectionMode: Boolean = false,
+    selectedIds: Set<String> = emptySet(),
+    onToggleSelect: (String) -> Unit = {},
+    onEnterSelection: (String) -> Unit = {},
 ) {
     when {
         state.loading && state.items.isEmpty() -> {
@@ -440,20 +529,78 @@ private fun VideoList(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(state.items, key = { it.videoId }) { item ->
-                    if (swipe) {
+                    if (swipe && !selectionMode) {
                         SwipeFeedRow(
                             item = item,
                             onOpen = { onOpen(item) },
                             onArchive = { onArchiveItem(item) },
                             onSnooze = { onRequestSnooze(item) },
+                            onLongPress = { onEnterSelection(item.videoId) },
                         )
                     } else {
-                        FeedRow(item = item, onClick = { onOpen(item) })
+                        FeedRow(
+                            item = item,
+                            selected = item.videoId in selectedIds,
+                            selectionMode = selectionMode,
+                            onClick = {
+                                if (selectionMode) onToggleSelect(item.videoId) else onOpen(item)
+                            },
+                            onLongPress = { onEnterSelection(item.videoId) },
+                        )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun BulkWatchlistDialog(
+    watchlists: List<WatchlistRecord>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var pickedId by remember { mutableStateOf(watchlists.firstOrNull()?.id) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add to watchlist") },
+        text = {
+            if (watchlists.isEmpty()) {
+                Text("Create a watchlist first.")
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                    items(watchlists, key = { it.id }) { list ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .toggleable(
+                                    value = pickedId == list.id,
+                                    role = Role.RadioButton,
+                                    onValueChange = { pickedId = list.id },
+                                )
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = pickedId == list.id,
+                                onClick = { pickedId = list.id },
+                            )
+                            Text(list.name, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !pickedId.isNullOrBlank(),
+                onClick = { pickedId?.let(onConfirm) },
+            ) { Text("Confirm") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -1037,7 +1184,7 @@ private fun NavSubItem(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun SwipeFeedRow(
     item: InboxItem,
@@ -1045,6 +1192,7 @@ private fun SwipeFeedRow(
     onArchive: () -> Unit,
     onSnooze: () -> Unit,
     showChannelInMeta: Boolean = true,
+    onLongPress: (() -> Unit)? = null,
 ) {
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
@@ -1091,35 +1239,64 @@ private fun SwipeFeedRow(
             }
         },
     ) {
-        FeedRow(item = item, onClick = onOpen, showChannelInMeta = showChannelInMeta)
+        FeedRow(
+            item = item,
+            onClick = onOpen,
+            onLongPress = onLongPress,
+            showChannelInMeta = showChannelInMeta,
+        )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FeedRow(
     item: InboxItem,
     onClick: () -> Unit,
     showChannelInMeta: Boolean = true,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else MaterialTheme.colorScheme.surface,
+            )
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongPress,
+            )
             .padding(vertical = 4.dp, horizontal = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        AsyncImage(
-            model = item.thumbnailUrl,
-            contentDescription = null,
-            modifier = Modifier
-                .width(88.dp)
-                .height(66.dp)
-                .clip(RoundedCornerShape(6.dp)),
-            contentScale = ContentScale.Crop,
-        )
+        if (selectionMode) {
+            Box(
+                modifier = Modifier
+                    .width(88.dp)
+                    .height(66.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onClick() },
+                )
+            }
+        } else {
+            AsyncImage(
+                model = item.thumbnailUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .width(88.dp)
+                    .height(66.dp)
+                    .clip(RoundedCornerShape(6.dp)),
+                contentScale = ContentScale.Crop,
+            )
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 item.title,
