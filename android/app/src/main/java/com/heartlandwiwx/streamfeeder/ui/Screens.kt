@@ -204,10 +204,20 @@ fun FeedScreen(
         FullScreenNav(
             current = state.view,
             displayName = state.user?.displayName.orEmpty(),
+            syncing = state.syncing,
             onClose = { navOpen = false },
             onSelect = { view ->
                 navOpen = false
                 onSelectView(view)
+            },
+            onSyncSubscriptions = {
+                navOpen = false
+                onSelectView(FeedView.Streams)
+                onSyncSubscriptions()
+            },
+            onSignOut = {
+                navOpen = false
+                onSignOut()
             },
         )
         return
@@ -266,13 +276,7 @@ fun FeedScreen(
                         Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Sign out") },
-                            onClick = {
-                                overflowOpen = false
-                                onSignOut()
-                            },
-                        )
+                        // Reserved for future overflow actions
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -343,9 +347,7 @@ fun FeedScreen(
                     StreamsListPanel(
                         channels = state.channels,
                         categories = state.categories,
-                        syncing = state.syncing,
                         status = state.status,
-                        onSync = onSyncSubscriptions,
                         onOpen = onOpenStream,
                     )
                 }
@@ -528,9 +530,7 @@ private fun CategoriesPanel(
 private fun StreamsListPanel(
     channels: List<ChannelRecord>,
     categories: List<CategoryRecord>,
-    syncing: Boolean,
     status: String?,
-    onSync: () -> Unit,
     onOpen: (String) -> Unit,
 ) {
     var categoryMenuOpen by remember { mutableStateOf(false) }
@@ -542,15 +542,6 @@ private fun StreamsListPanel(
     val filterLabel = categories.firstOrNull { it.id == filterCategoryId }?.name ?: "All categories"
 
     Column(Modifier.fillMaxSize()) {
-        Button(
-            onClick = onSync,
-            enabled = !syncing,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            Text(if (syncing) "Syncing…" else "Sync Subscriptions")
-        }
         FilterDropdown(
             expanded = categoryMenuOpen,
             onExpandedChange = { categoryMenuOpen = it },
@@ -585,7 +576,7 @@ private fun StreamsListPanel(
         if (filteredChannels.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    if (channels.isEmpty()) "No streams yet. Sync subscriptions."
+                    if (channels.isEmpty()) "No streams yet. Sync from the menu under Streams."
                     else "No streams in this category.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -920,14 +911,18 @@ private fun FilterDropdown(
 private fun FullScreenNav(
     current: FeedView,
     displayName: String,
+    syncing: Boolean,
     onClose: () -> Unit,
     onSelect: (FeedView) -> Unit,
+    onSyncSubscriptions: () -> Unit,
+    onSignOut: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp)
+            .verticalScroll(rememberScrollState()),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -943,24 +938,103 @@ private fun FullScreenNav(
             }
         }
         Spacer(Modifier.height(28.dp))
-        FeedView.entries.forEach { view ->
-            val selected = view == current
-            Text(
-                text = view.label,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
-                    )
-                    .clickable { onSelect(view) }
-                    .padding(horizontal = 16.dp, vertical = 18.dp),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
-        }
+
+        NavTopItem(
+            label = FeedView.Inbox.label,
+            selected = current == FeedView.Inbox,
+            onClick = { onSelect(FeedView.Inbox) },
+        )
+        NavTopItem(
+            label = FeedView.Watchlist.label,
+            selected = current == FeedView.Watchlist,
+            onClick = { onSelect(FeedView.Watchlist) },
+        )
+        NavTopItem(
+            label = FeedView.Snoozed.label,
+            selected = current == FeedView.Snoozed,
+            onClick = { onSelect(FeedView.Snoozed) },
+        )
+        NavTopItem(
+            label = FeedView.Streams.label,
+            selected = current == FeedView.Streams,
+            onClick = { onSelect(FeedView.Streams) },
+        )
+        NavSubItem(
+            label = FeedView.Categories.label,
+            selected = current == FeedView.Categories,
+            onClick = { onSelect(FeedView.Categories) },
+        )
+        NavSubItem(
+            label = if (syncing) "Syncing…" else "Sync Subscriptions",
+            selected = false,
+            enabled = !syncing,
+            onClick = onSyncSubscriptions,
+        )
+        NavTopItem(
+            label = FeedView.Deleted.label,
+            selected = current == FeedView.Deleted,
+            onClick = { onSelect(FeedView.Deleted) },
+        )
+        NavTopItem(
+            label = "Settings",
+            selected = false,
+            onClick = null,
+        )
+        NavSubItem(
+            label = "Sign Out",
+            selected = false,
+            onClick = onSignOut,
+        )
     }
+}
+
+@Composable
+private fun NavTopItem(
+    label: String,
+    selected: Boolean,
+    onClick: (() -> Unit)?,
+) {
+    Text(
+        text = label,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+            )
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 16.dp, vertical = 18.dp),
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+    )
+}
+
+@Composable
+private fun NavSubItem(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Text(
+        text = label,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(start = 36.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = when {
+            !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+            selected -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
