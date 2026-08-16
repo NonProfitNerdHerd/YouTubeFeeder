@@ -224,17 +224,27 @@ fun FeedScreen(
     if (navOpen) {
         FullScreenNav(
             current = state.view,
-            displayName = state.user?.displayName.orEmpty(),
+            currentWatchlistId = state.watchlistId,
+            watchlists = state.watchlists,
             syncing = state.syncing,
             onClose = { navOpen = false },
             onSelect = { view ->
                 navOpen = false
                 onSelectView(view)
             },
+            onSelectWatchlist = { id ->
+                navOpen = false
+                onSelectView(FeedView.Watchlist)
+                onSelectWatchlist(id)
+            },
             onSyncSubscriptions = {
                 navOpen = false
                 onSelectView(FeedView.Streams)
                 onSyncSubscriptions()
+            },
+            onRefresh = {
+                navOpen = false
+                onRefresh()
             },
             onSignOut = {
                 navOpen = false
@@ -305,10 +315,6 @@ fun FeedScreen(
                         }
                         IconButton(onClick = { watchlistBulkOpen = true }) {
                             Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
-                        }
-                    } else {
-                        IconButton(onClick = onRefresh) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                         }
                     }
                 },
@@ -1057,11 +1063,14 @@ private fun FilterDropdown(
 @Composable
 private fun FullScreenNav(
     current: FeedView,
-    displayName: String,
+    currentWatchlistId: String?,
+    watchlists: List<WatchlistRecord>,
     syncing: Boolean,
     onClose: () -> Unit,
     onSelect: (FeedView) -> Unit,
+    onSelectWatchlist: (String) -> Unit,
     onSyncSubscriptions: () -> Unit,
+    onRefresh: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     Column(
@@ -1076,10 +1085,7 @@ private fun FullScreenNav(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
-                Text("StreamFeeder", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(displayName, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            Text("StreamFeeder", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             IconButton(onClick = onClose) {
                 Icon(Icons.Default.Menu, contentDescription = "Close menu")
             }
@@ -1091,16 +1097,28 @@ private fun FullScreenNav(
             selected = current == FeedView.Inbox,
             onClick = { onSelect(FeedView.Inbox) },
         )
+        NavSubItem(
+            label = FeedView.Snoozed.label,
+            selected = current == FeedView.Snoozed,
+            onClick = { onSelect(FeedView.Snoozed) },
+        )
+        NavSubItem(
+            label = FeedView.Deleted.label,
+            selected = current == FeedView.Deleted,
+            onClick = { onSelect(FeedView.Deleted) },
+        )
         NavTopItem(
             label = FeedView.Watchlist.label,
             selected = current == FeedView.Watchlist,
             onClick = { onSelect(FeedView.Watchlist) },
         )
-        NavTopItem(
-            label = FeedView.Snoozed.label,
-            selected = current == FeedView.Snoozed,
-            onClick = { onSelect(FeedView.Snoozed) },
-        )
+        watchlists.forEach { list ->
+            NavSubItem(
+                label = "${list.name} (${list.videoCount})",
+                selected = current == FeedView.Watchlist && currentWatchlistId == list.id,
+                onClick = { onSelectWatchlist(list.id) },
+            )
+        }
         NavTopItem(
             label = FeedView.Streams.label,
             selected = current == FeedView.Streams,
@@ -1117,10 +1135,10 @@ private fun FullScreenNav(
             enabled = !syncing,
             onClick = onSyncSubscriptions,
         )
-        NavTopItem(
-            label = FeedView.Deleted.label,
-            selected = current == FeedView.Deleted,
-            onClick = { onSelect(FeedView.Deleted) },
+        NavSubItem(
+            label = "Refresh",
+            selected = false,
+            onClick = onRefresh,
         )
         NavTopItem(
             label = "Settings",
@@ -1274,7 +1292,7 @@ private fun FeedRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        if (selectionMode) {
+        if (selected) {
             Box(
                 modifier = Modifier
                     .width(88.dp)
@@ -1282,7 +1300,7 @@ private fun FeedRow(
                 contentAlignment = Alignment.Center,
             ) {
                 Checkbox(
-                    checked = selected,
+                    checked = true,
                     onCheckedChange = { onClick() },
                 )
             }
@@ -1300,7 +1318,7 @@ private fun FeedRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 item.title,
-                maxLines = 3,
+                maxLines = 4,
                 minLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = if (item.unread) FontWeight.SemiBold else FontWeight.Normal,
