@@ -28,4 +28,4 @@ See `docs/android-signing.md`.
 
 `public/android-version.json` is the single source for `versionName` / `versionCode`. Bump `versionCode` for every Play-or-sideload update.
 
-Until a signed GitHub `StreamFeeder.apk` exists, the download page and header QR serve the debug sideload at `/StreamFeeder-debug.apk` on the Worker. That file is not the stable release name.
+Until a signed GitHub `StreamFeeder.apk` exists, the download page and header QR serve the debug sideload at `/StreamFeeder-debug.apk` on the Worker. That file is the native Feed client (not a TWA).

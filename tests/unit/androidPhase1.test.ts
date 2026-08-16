@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ANDROID_DOWNLOAD_PATH, STABLE_APK_URL, STREAMFEEDER_PACKAGE_ID, TEST_APK_PATH } from '../../src/lib/androidRelease';
 import { digitalAssetLinks, normalizeSha256Fingerprint } from '../../worker/android/assetlinks';
+import { ANDROID_OAUTH_REDIRECT, oauthClientFromState } from '../../worker/auth/session';
+import { signValue, verifySignedValue } from '../../worker/auth/crypto';
 import version from '../../public/android-version.json';
 
 describe('StreamFeeder Android phase 1', () => {
@@ -28,7 +30,22 @@ describe('StreamFeeder Android phase 1', () => {
 	});
 
 	it('shares one version source', () => {
-		expect(version.versionName).toBe('1.0.1');
-		expect(version.versionCode).toBe(2);
+		expect(version.versionName).toBe('1.0.2');
+		expect(version.versionCode).toBe(3);
+	});
+
+	it('supports native Android OAuth return and Bearer sessions', async () => {
+		expect(ANDROID_OAUTH_REDIRECT).toBe('streamfeeder://oauth/callback');
+		expect(oauthClientFromState('login.android.abc')).toBe('android');
+		expect(oauthClientFromState('login.xyz')).toBe('web');
+		const secret = 'unit-test-session-secret-0123456789';
+		const token = await signValue(secret, `user-1.${Date.now()}`);
+		const verified = await verifySignedValue(secret, token);
+		expect(verified?.startsWith('user-1.')).toBe(true);
+		const req = new Request('https://example.test/api/me', {
+			headers: { Authorization: `Bearer ${token}` },
+		});
+		const { readSessionUserId } = await import('../../worker/auth/session');
+		expect(await readSessionUserId(secret, req)).toBe('user-1');
 	});
 });

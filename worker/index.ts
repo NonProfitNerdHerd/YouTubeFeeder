@@ -7,10 +7,12 @@ import {
 	validateOauthState,
 } from './auth/oauth';
 import {
+	ANDROID_OAUTH_REDIRECT,
 	clearSessionCookies,
 	createOauthStateCookie,
-	createSessionCookie,
 	isSecureRequest,
+	mintSession,
+	oauthClientFromState,
 	readOauthState,
 	readSessionUserId,
 } from './auth/session';
@@ -82,9 +84,10 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 	if (path === '/api/auth/google' && request.method === 'GET') {
 		const intent = url.searchParams.get('intent') === 'signup' ? 'signup' : 'login';
+		const client = url.searchParams.get('client') === 'android' ? 'android' : 'web';
 		const secret = requiredEnv(env, 'SESSION_SECRET');
 		const clientId = requiredEnv(env, 'GOOGLE_CLIENT_ID');
-		const { state, header } = await createOauthStateCookie(secret, secure, intent);
+		const { state, header } = await createOauthStateCookie(secret, secure, intent, client);
 		const location = googleAuthUrl({
 			clientId,
 			redirectUri: redirectUri(env, url),
@@ -99,17 +102,30 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 	if (path === '/api/auth/google/callback' && request.method === 'GET') {
 		const err = url.searchParams.get('error');
+		const secretEarly = env.SESSION_SECRET;
+		const expectedEarly = secretEarly ? await readOauthState(secretEarly, request) : null;
+		const androidClient = oauthClientFromState(expectedEarly);
 		if (err) {
+			if (androidClient === 'android') {
+				return Response.redirect(`${ANDROID_OAUTH_REDIRECT}?error=${encodeURIComponent(err)}`, 302);
+			}
 			return Response.redirect(`${url.origin}/login?error=${encodeURIComponent(err)}`, 302);
 		}
 		const secret = requiredEnv(env, 'SESSION_SECRET');
 		const expected = await readOauthState(secret, request);
 		const received = url.searchParams.get('state');
+		const client = oauthClientFromState(expected);
 		if (!validateOauthState(expected, received)) {
+			if (client === 'android') {
+				return Response.redirect(`${ANDROID_OAUTH_REDIRECT}?error=invalid_state`, 302);
+			}
 			return Response.redirect(`${url.origin}/login?error=invalid_state`, 302);
 		}
 		const code = url.searchParams.get('code');
 		if (!code) {
+			if (client === 'android') {
+				return Response.redirect(`${ANDROID_OAUTH_REDIRECT}?error=missing_code`, 302);
+			}
 			return Response.redirect(`${url.origin}/login?error=missing_code`, 302);
 		}
 
@@ -131,9 +147,13 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			displayName: profile.name,
 			encryptedRefreshToken: encrypted,
 		});
-		const session = await createSessionCookie(secret, user.id, secure);
-		const headers = new Headers({ Location: `${url.origin}/` });
-		headers.append('Set-Cookie', session);
+		const { token, cookieHeader } = await mintSession(secret, user.id, secure);
+		const location =
+			client === 'android'
+				? `${ANDROID_OAUTH_REDIRECT}?token=${encodeURIComponent(token)}`
+				: `${url.origin}/`;
+		const headers = new Headers({ Location: location });
+		headers.append('Set-Cookie', cookieHeader);
 		for (const cleared of clearSessionCookies(secure).filter((c) => c.startsWith('yf_oauth_state='))) {
 			headers.append('Set-Cookie', cleared);
 		}

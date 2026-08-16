@@ -45,7 +45,7 @@ export function DownloadAndroidPage() {
 		<main className="download-android">
 			<img className="download-icon" src="/icons/icon-192.png" alt="" width={96} height={96} />
 			<h1>{STREAMFEEDER_DISPLAY_NAME}</h1>
-			<p className="muted">Phase 1 Android app: feeder inbox and watchlists. Same account as the website. Live/Quad is not included yet.</p>
+			<p className="muted">Phase 1 native Android app: feeder inbox and watchlists. Same account and Feed data as the website. Live/Quad is not included.</p>
 			{version ? (
 				<p>
 					App version {version.versionName} (build {version.versionCode})
