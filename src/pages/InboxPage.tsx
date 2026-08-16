@@ -166,6 +166,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [mobilePanel, setMobilePanel] = useState<'inbox' | 'watchlists' | 'filters' | 'account'>('inbox');
 	const [androidQrOpen, setAndroidQrOpen] = useState(false);
 	const [androidQrSvg, setAndroidQrSvg] = useState('');
+	const [androidAppVersion, setAndroidAppVersion] = useState<{ versionName: string; versionCode: number } | null>(null);
 
 	const load = useCallback(
 		async (signal?: AbortSignal) => {
@@ -806,9 +807,17 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							title="Get the Android app"
 							aria-label="Get the Android app"
 							onClick={() => {
-								const url = `${window.location.origin}${TEST_APK_PATH}`;
 								setAndroidQrOpen(true);
-								void qrSvgForUrl(url).then(setAndroidQrSvg);
+								void (async () => {
+									const verRes = await fetch('/android-version.json');
+									const ver = verRes.ok
+										? ((await verRes.json()) as { versionName: string; versionCode: number })
+										: null;
+									if (ver) setAndroidAppVersion(ver);
+									const qs = ver ? `?v=${encodeURIComponent(ver.versionName)}` : '';
+									const url = `${window.location.origin}${TEST_APK_PATH}${qs}`;
+									setAndroidQrSvg(await qrSvgForUrl(url));
+								})();
 							}}
 						>
 							<IconPhone />
@@ -1156,8 +1165,17 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<h2>Get StreamFeeder</h2>
 						<p className="muted">Scan this code on your Android phone to download the StreamFeeder test APK, then allow install from your browser if Android asks.</p>
 						{androidQrSvg ? <div className="download-qr" dangerouslySetInnerHTML={{ __html: androidQrSvg }} /> : <p className="muted">Preparing QR…</p>}
+						{androidAppVersion ? (
+							<p>
+								Version {androidAppVersion.versionName} (build {androidAppVersion.versionCode})
+							</p>
+						) : null}
 						<p>
-							<a href={TEST_APK_PATH}>{typeof window !== 'undefined' ? `${window.location.origin}${TEST_APK_PATH}` : TEST_APK_PATH}</a>
+							<a href={androidAppVersion ? `${TEST_APK_PATH}?v=${encodeURIComponent(androidAppVersion.versionName)}` : TEST_APK_PATH}>
+								{typeof window !== 'undefined'
+									? `${window.location.origin}${TEST_APK_PATH}${androidAppVersion ? `?v=${encodeURIComponent(androidAppVersion.versionName)}` : ''}`
+									: TEST_APK_PATH}
+							</a>
 						</p>
 						<div className="modal-actions">
 							<button className="ghost" type="button" onClick={() => setAndroidQrOpen(false)}>

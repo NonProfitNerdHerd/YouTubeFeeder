@@ -13,17 +13,23 @@ export function DownloadAndroidPage() {
 	const [released, setReleased] = useState<boolean | null>(null);
 	const [qr, setQr] = useState<string>('');
 	const [releaseName, setReleaseName] = useState<string | null>(null);
-	const apkUrl = typeof window !== 'undefined' ? `${window.location.origin}${TEST_APK_PATH}` : TEST_APK_PATH;
+	const [apkHref, setApkHref] = useState(TEST_APK_PATH);
+	const apkUrl = typeof window !== 'undefined' ? `${window.location.origin}${apkHref}` : apkHref;
 
 	useEffect(() => {
 		void (async () => {
-			const [verRes, relRes, svg] = await Promise.all([
+			const [verRes, relRes] = await Promise.all([
 				fetch('/android-version.json'),
 				fetch(GITHUB_LATEST_RELEASE_API, { headers: { Accept: 'application/vnd.github+json' } }),
-				qrSvgForUrl(`${window.location.origin}${TEST_APK_PATH}`),
 			]);
-			if (verRes.ok) setVersion((await verRes.json()) as VersionFile);
-			setQr(svg);
+			let nextHref = TEST_APK_PATH;
+			if (verRes.ok) {
+				const ver = (await verRes.json()) as VersionFile;
+				setVersion(ver);
+				nextHref = `${TEST_APK_PATH}?v=${encodeURIComponent(ver.versionName)}`;
+				setApkHref(nextHref);
+			}
+			setQr(await qrSvgForUrl(`${window.location.origin}${nextHref}`));
 			if (!relRes.ok) {
 				setReleased(false);
 				return;
@@ -47,13 +53,18 @@ export function DownloadAndroidPage() {
 				</p>
 			) : null}
 			<p>
-				<a className="primary" href={TEST_APK_PATH}>
+				<a className="primary" href={apkHref}>
 					Download APK
 				</a>
 			</p>
 			<div className="download-qr" dangerouslySetInnerHTML={{ __html: qr }} />
+			{version ? (
+				<p>
+					QR / download: version {version.versionName} (build {version.versionCode})
+				</p>
+			) : null}
 			<p>
-				Direct link: <a href={TEST_APK_PATH}>{apkUrl}</a>
+				Direct link: <a href={apkHref}>{apkUrl}</a>
 			</p>
 			{released ? (
 				<p className="muted">

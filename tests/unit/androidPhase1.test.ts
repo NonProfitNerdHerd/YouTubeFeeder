@@ -28,7 +28,7 @@ describe('StreamFeeder Android phase 1', () => {
 	});
 
 	it('shares one version source', () => {
-		expect(version.versionName).toBe('1.0.0');
-		expect(version.versionCode).toBe(1);
+		expect(version.versionName).toBe('1.0.1');
+		expect(version.versionCode).toBe(2);
 	});
 });
