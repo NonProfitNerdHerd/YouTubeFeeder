@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.time.Instant
-import java.time.temporal.ChronoUnit
 
 enum class FeedView(val api: String, val label: String) {
     Inbox("inbox", "Inbox"),
@@ -181,9 +180,9 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         mutate(item.videoId, JSONObject().put("action", "unsnooze"), "Unsnoozed", clearSelected = true)
     }
 
-    fun snoozeSelected(hours: Long) {
+    fun snoozeSelected(untilEpochMillis: Long) {
         val item = _state.value.selected ?: return
-        val until = Instant.now().plus(hours, ChronoUnit.HOURS).toString()
+        val until = Instant.ofEpochMilli(untilEpochMillis).toString()
         mutate(item.videoId, JSONObject().put("action", "snooze").put("until", until), "Snoozed", clearSelected = true)
     }
 
@@ -263,14 +262,14 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(pendingSnoozeItem = null) }
     }
 
-    fun confirmPendingSnooze(hours: Long) {
+    fun confirmPendingSnooze(untilEpochMillis: Long) {
         val item = _state.value.pendingSnoozeItem ?: return
         _state.update { it.copy(pendingSnoozeItem = null) }
-        snoozeItem(item, hours)
+        snoozeItem(item, untilEpochMillis)
     }
 
-    fun snoozeItem(item: InboxItem, hours: Long = 24) {
-        val until = Instant.now().plus(hours, ChronoUnit.HOURS).toString()
+    fun snoozeItem(item: InboxItem, untilEpochMillis: Long) {
+        val until = Instant.ofEpochMilli(untilEpochMillis).toString()
         _state.update { it.copy(items = it.items.filterNot { row -> row.videoId == item.videoId }) }
         mutate(
             item.videoId,

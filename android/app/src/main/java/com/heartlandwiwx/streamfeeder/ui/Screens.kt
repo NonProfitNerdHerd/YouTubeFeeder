@@ -52,6 +52,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -63,14 +65,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -1131,21 +1137,105 @@ private fun NamePromptDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SnoozeDurationDialog(onPick: (Long) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Snooze") },
-        text = {
-            Column {
-                TextButton(onClick = { onPick(1) }) { Text("1 hour") }
-                TextButton(onClick = { onPick(24) }) { Text("Tomorrow") }
-                TextButton(onClick = { onPick(168) }) { Text("1 week") }
+    var step by remember { mutableStateOf(SnoozePickerStep.Presets) }
+    val zone = java.time.ZoneId.systemDefault()
+    val now = java.time.ZonedDateTime.now(zone)
+    val initialDateMillis = now.toLocalDate()
+        .atStartOfDay(java.time.ZoneOffset.UTC)
+        .toInstant()
+        .toEpochMilli()
+    val datePickerState = rememberDatePickerState(
+        initialSelectedDateMillis = initialDateMillis,
+        selectableDates = object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                val todayUtc = java.time.LocalDate.now(zone)
+                    .atStartOfDay(java.time.ZoneOffset.UTC)
+                    .toInstant()
+                    .toEpochMilli()
+                return utcTimeMillis >= todayUtc
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+    val timePickerState = rememberTimePickerState(
+        initialHour = (now.hour + 1).coerceAtMost(23),
+        initialMinute = 0,
+        is24Hour = false,
+    )
+
+    when (step) {
+        SnoozePickerStep.Presets -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text("Snooze") },
+                text = {
+                    Column {
+                        TextButton(onClick = { onPick(snoozeHoursFromNow(1)) }) { Text("1 hour") }
+                        TextButton(onClick = { onPick(snoozeHoursFromNow(24)) }) { Text("Tomorrow") }
+                        TextButton(onClick = { onPick(snoozeHoursFromNow(168)) }) { Text("1 week") }
+                        TextButton(onClick = { step = SnoozePickerStep.Date }) { Text("Choose date & time") }
+                    }
+                },
+                confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+            )
+        }
+        SnoozePickerStep.Date -> {
+            DatePickerDialog(
+                onDismissRequest = onDismiss,
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (datePickerState.selectedDateMillis != null) {
+                                step = SnoozePickerStep.Time
+                            }
+                        },
+                    ) { Text("Next") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { step = SnoozePickerStep.Presets }) { Text("Back") }
+                },
+            ) {
+                DatePicker(state = datePickerState)
+            }
+        }
+        SnoozePickerStep.Time -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text("Choose time") },
+                text = {
+                    TimePicker(state = timePickerState)
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val dateMillis = datePickerState.selectedDateMillis ?: return@TextButton
+                            val localDate = java.time.Instant.ofEpochMilli(dateMillis)
+                                .atZone(java.time.ZoneOffset.UTC)
+                                .toLocalDate()
+                            val until = localDate
+                                .atTime(timePickerState.hour, timePickerState.minute)
+                                .atZone(zone)
+                                .toInstant()
+                                .toEpochMilli()
+                            if (until <= System.currentTimeMillis()) return@TextButton
+                            onPick(until)
+                        },
+                    ) { Text("Snooze") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { step = SnoozePickerStep.Date }) { Text("Back") }
+                },
+            )
+        }
+    }
 }
+
+private enum class SnoozePickerStep { Presets, Date, Time }
+
+private fun snoozeHoursFromNow(hours: Long): Long =
+    java.time.Instant.now().plus(hours, java.time.temporal.ChronoUnit.HOURS).toEpochMilli()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
