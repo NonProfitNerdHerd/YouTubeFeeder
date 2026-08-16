@@ -11,6 +11,7 @@ data class InboxItem(
     val channelId: String,
     val channelTitle: String,
     val title: String,
+    val descriptionExcerpt: String,
     val thumbnailUrl: String,
     val publishedAt: String?,
     val embeddable: Boolean,
@@ -23,6 +24,12 @@ data class InboxItem(
 data class CategoryRecord(
     val id: String,
     val name: String,
+)
+
+data class ChannelRecord(
+    val channelId: String,
+    val title: String,
+    val thumbnailUrl: String,
 )
 
 data class WatchlistRecord(

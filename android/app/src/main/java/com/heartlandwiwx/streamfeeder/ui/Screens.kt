@@ -7,6 +7,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -124,6 +125,7 @@ fun FeedScreen(
     state: FeedUiState,
     onSelectView: (FeedView) -> Unit,
     onSelectCategory: (String?) -> Unit,
+    onSelectChannel: (String?) -> Unit,
     onSelectWatchlist: (String?) -> Unit,
     onOpen: (InboxItem) -> Unit,
     onClose: () -> Unit,
@@ -136,9 +138,18 @@ fun FeedScreen(
     onAddWatchlist: (String) -> Unit,
     onSaveNotes: (String) -> Unit,
     onArchiveItem: (InboxItem) -> Unit,
-    onSnoozeItem: (InboxItem) -> Unit,
+    onRequestSnooze: (InboxItem) -> Unit,
+    onConfirmPendingSnooze: (Long) -> Unit,
+    onCancelPendingSnooze: () -> Unit,
+    onUndoArchive: () -> Unit,
     onClearMessage: () -> Unit,
 ) {
+    var navOpen by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = state.selected != null) { onClose() }
+    BackHandler(enabled = navOpen && state.selected == null) { navOpen = false }
+    BackHandler(enabled = state.pendingSnoozeItem != null) { onCancelPendingSnooze() }
+
     val selected = state.selected
     if (selected != null) {
         DetailScreen(
@@ -153,13 +164,13 @@ fun FeedScreen(
             onAddWatchlist = onAddWatchlist,
             onSaveNotes = onSaveNotes,
         )
+        MessageDialogs(
+            state = state,
+            onClearMessage = onClearMessage,
+            onUndoArchive = onUndoArchive,
+        )
         return
     }
-
-    var navOpen by remember { mutableStateOf(false) }
-    var overflowOpen by remember { mutableStateOf(false) }
-    var categoryMenuOpen by remember { mutableStateOf(false) }
-    var watchlistMenuOpen by remember { mutableStateOf(false) }
 
     if (navOpen) {
         FullScreenNav(
@@ -173,6 +184,11 @@ fun FeedScreen(
         )
         return
     }
+
+    var overflowOpen by remember { mutableStateOf(false) }
+    var categoryMenuOpen by remember { mutableStateOf(false) }
+    var channelMenuOpen by remember { mutableStateOf(false) }
+    var watchlistMenuOpen by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -227,31 +243,17 @@ fun FeedScreen(
                 fontWeight = FontWeight.SemiBold,
             )
 
-            if (state.view == FeedView.Watchlist) {
-                val selectedWatchlistName = state.watchlists
-                    .firstOrNull { it.id == state.watchlistId }
-                    ?.let { "${it.name} (${it.videoCount})" }
-                    ?: "Select watchlist"
-                ExposedDropdownMenuBox(
-                    expanded = watchlistMenuOpen,
-                    onExpandedChange = { watchlistMenuOpen = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                ) {
-                    OutlinedTextField(
-                        value = selectedWatchlistName,
-                        onValueChange = {},
-                        readOnly = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(),
-                        label = { Text("Watchlist") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = watchlistMenuOpen) },
-                    )
-                    ExposedDropdownMenu(
+            when (state.view) {
+                FeedView.Watchlist -> {
+                    val selectedWatchlistName = state.watchlists
+                        .firstOrNull { it.id == state.watchlistId }
+                        ?.let { "${it.name} (${it.videoCount})" }
+                        ?: "Select watchlist"
+                    FilterDropdown(
                         expanded = watchlistMenuOpen,
-                        onDismissRequest = { watchlistMenuOpen = false },
+                        onExpandedChange = { watchlistMenuOpen = it },
+                        label = "Watchlist",
+                        value = selectedWatchlistName,
                     ) {
                         if (state.watchlists.isEmpty()) {
                             DropdownMenuItem(
@@ -271,48 +273,63 @@ fun FeedScreen(
                         }
                     }
                 }
-            } else if (state.categories.isNotEmpty()) {
-                val selectedCategoryName =
-                    state.categories.firstOrNull { it.id == state.categoryId }?.name ?: "All categories"
-                ExposedDropdownMenuBox(
-                    expanded = categoryMenuOpen,
-                    onExpandedChange = { categoryMenuOpen = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                ) {
-                    OutlinedTextField(
-                        value = selectedCategoryName,
-                        onValueChange = {},
-                        readOnly = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(),
-                        label = { Text("Category") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryMenuOpen) },
-                    )
-                    ExposedDropdownMenu(
-                        expanded = categoryMenuOpen,
-                        onDismissRequest = { categoryMenuOpen = false },
+                FeedView.Streams -> {
+                    val selectedChannelName =
+                        state.channels.firstOrNull { it.channelId == state.channelId }?.title
+                            ?: "Select stream"
+                    FilterDropdown(
+                        expanded = channelMenuOpen,
+                        onExpandedChange = { channelMenuOpen = it },
+                        label = "Stream",
+                        value = selectedChannelName,
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("All categories") },
-                            onClick = {
-                                categoryMenuOpen = false
-                                onSelectCategory(null)
-                            },
-                        )
-                        state.categories.forEach { cat ->
+                        if (state.channels.isEmpty()) {
                             DropdownMenuItem(
-                                text = { Text(cat.name) },
-                                onClick = {
-                                    categoryMenuOpen = false
-                                    onSelectCategory(cat.id)
-                                },
+                                text = { Text("No channels yet") },
+                                onClick = { channelMenuOpen = false },
                             )
+                        } else {
+                            state.channels.forEach { channel ->
+                                DropdownMenuItem(
+                                    text = { Text(channel.title) },
+                                    onClick = {
+                                        channelMenuOpen = false
+                                        onSelectChannel(channel.channelId)
+                                    },
+                                )
+                            }
                         }
                     }
                 }
+                FeedView.Categories -> {
+                    val selectedCategoryName =
+                        state.categories.firstOrNull { it.id == state.categoryId }?.name
+                            ?: "Select category"
+                    FilterDropdown(
+                        expanded = categoryMenuOpen,
+                        onExpandedChange = { categoryMenuOpen = it },
+                        label = "Category",
+                        value = selectedCategoryName,
+                    ) {
+                        if (state.categories.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("No categories yet") },
+                                onClick = { categoryMenuOpen = false },
+                            )
+                        } else {
+                            state.categories.forEach { cat ->
+                                DropdownMenuItem(
+                                    text = { Text(cat.name) },
+                                    onClick = {
+                                        categoryMenuOpen = false
+                                        onSelectCategory(cat.id)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+                else -> Unit
             }
 
             when {
@@ -327,7 +344,10 @@ fun FeedScreen(
                     }
                 }
                 else -> {
-                    val swipeEnabled = state.view == FeedView.Inbox || state.view == FeedView.Watchlist
+                    val swipeEnabled = state.view == FeedView.Inbox ||
+                        state.view == FeedView.Watchlist ||
+                        state.view == FeedView.Streams ||
+                        state.view == FeedView.Categories
                     LazyColumn(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -338,7 +358,7 @@ fun FeedScreen(
                                     item = item,
                                     onOpen = { onOpen(item) },
                                     onArchive = { onArchiveItem(item) },
-                                    onSnooze = { onSnoozeItem(item) },
+                                    onSnooze = { onRequestSnooze(item) },
                                 )
                             } else {
                                 FeedRow(item = item, onClick = { onOpen(item) })
@@ -350,10 +370,38 @@ fun FeedScreen(
         }
     }
 
+    state.pendingSnoozeItem?.let {
+        SnoozeDurationDialog(
+            onPick = onConfirmPendingSnooze,
+            onDismiss = onCancelPendingSnooze,
+        )
+    }
+
+    MessageDialogs(
+        state = state,
+        onClearMessage = onClearMessage,
+        onUndoArchive = onUndoArchive,
+    )
+}
+
+@Composable
+private fun MessageDialogs(
+    state: FeedUiState,
+    onClearMessage: () -> Unit,
+    onUndoArchive: () -> Unit,
+) {
     if (!state.message.isNullOrBlank()) {
+        val canUndo = state.message == "Archived" && !state.undoArchiveVideoId.isNullOrBlank()
         AlertDialog(
             onDismissRequest = onClearMessage,
             confirmButton = { TextButton(onClick = onClearMessage) { Text("OK") } },
+            dismissButton = if (canUndo) {
+                {
+                    TextButton(onClick = onUndoArchive) { Text("Undo") }
+                }
+            } else {
+                null
+            },
             text = { Text(state.message) },
         )
     }
@@ -364,6 +412,59 @@ fun FeedScreen(
             title = { Text("Something went wrong") },
             text = { Text(state.error) },
         )
+    }
+}
+
+@Composable
+private fun SnoozeDurationDialog(onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Snooze") },
+        text = {
+            Column {
+                TextButton(onClick = { onPick(1) }) { Text("1 hour") }
+                TextButton(onClick = { onPick(24) }) { Text("Tomorrow") }
+                TextButton(onClick = { onPick(168) }) { Text("1 week") }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FilterDropdown(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    label: String,
+    value: String,
+    content: @Composable () -> Unit,
+) {
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = onExpandedChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(),
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+        ) {
+            content()
+        }
     }
 }
 
@@ -432,7 +533,7 @@ private fun SwipeFeedRow(
                 }
                 SwipeToDismissBoxValue.EndToStart -> {
                     onSnooze()
-                    true
+                    false
                 }
                 else -> false
             }
@@ -499,7 +600,6 @@ private fun FeedRow(item: InboxItem, onClick: () -> Unit) {
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = if (item.unread) FontWeight.SemiBold else FontWeight.Normal,
-                lineHeight = 16.sp,
                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 16.sp),
             )
             val date = item.publishedAt?.take(10).orEmpty()
@@ -561,22 +661,29 @@ private fun DetailScreen(
                 if (view == FeedView.Deleted) {
                     Button(onClick = onRestore) { Text("Restore") }
                 } else {
+                    if (view != FeedView.Deleted) {
+                        IconButton(onClick = { watchOpen = true }) {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
+                        }
+                    }
+                    if (view == FeedView.Snoozed) {
+                        Button(onClick = onUnsnooze) { Text("Unsnooze") }
+                    } else {
+                        IconButton(onClick = { snoozeOpen = true }) {
+                            Icon(Icons.Default.Snooze, contentDescription = "Snooze")
+                        }
+                    }
                     IconButton(onClick = onDelete) {
                         Icon(Icons.Default.Delete, contentDescription = "Archive")
                     }
                 }
-                if (view == FeedView.Snoozed) {
-                    Button(onClick = onUnsnooze) { Text("Unsnooze") }
-                } else if (view != FeedView.Deleted) {
-                    IconButton(onClick = { snoozeOpen = true }) {
-                        Icon(Icons.Default.Snooze, contentDescription = "Snooze")
-                    }
-                }
-                if (view != FeedView.Deleted) {
-                    IconButton(onClick = { watchOpen = true }) {
-                        Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
-                    }
-                }
+            }
+            if (item.descriptionExcerpt.isNotBlank()) {
+                Text(
+                    item.descriptionExcerpt,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             OutlinedTextField(
                 value = notes,
@@ -597,19 +704,12 @@ private fun DetailScreen(
     }
 
     if (snoozeOpen) {
-        AlertDialog(
-            onDismissRequest = { snoozeOpen = false },
-            title = { Text("Snooze") },
-            text = {
-                Column {
-                    TextButton(onClick = { snoozeOpen = false; onSnooze(1) }) { Text("1 hour") }
-                    TextButton(onClick = { snoozeOpen = false; onSnooze(24) }) { Text("Tomorrow") }
-                    TextButton(onClick = { snoozeOpen = false; onSnooze(168) }) { Text("1 week") }
-                }
+        SnoozeDurationDialog(
+            onPick = { hours ->
+                snoozeOpen = false
+                onSnooze(hours)
             },
-            confirmButton = {
-                TextButton(onClick = { snoozeOpen = false }) { Text("Cancel") }
-            },
+            onDismiss = { snoozeOpen = false },
         )
     }
     if (watchOpen) {
@@ -694,6 +794,7 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
+                tag = videoId
                 loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
             }
         },

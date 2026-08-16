@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
                             state = state,
                             onSelectView = viewModel::selectView,
                             onSelectCategory = viewModel::selectCategory,
+                            onSelectChannel = viewModel::selectChannel,
                             onSelectWatchlist = viewModel::selectWatchlist,
                             onOpen = viewModel::openItem,
                             onClose = viewModel::closeItem,
@@ -57,7 +58,10 @@ class MainActivity : ComponentActivity() {
                             onAddWatchlist = viewModel::addSelectedToWatchlist,
                             onSaveNotes = viewModel::saveNotes,
                             onArchiveItem = viewModel::archiveItem,
-                            onSnoozeItem = { viewModel.snoozeItem(it) },
+                            onRequestSnooze = viewModel::requestSnooze,
+                            onConfirmPendingSnooze = viewModel::confirmPendingSnooze,
+                            onCancelPendingSnooze = viewModel::cancelPendingSnooze,
+                            onUndoArchive = viewModel::undoArchive,
                             onClearMessage = viewModel::clearMessage,
                         )
                     }

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.heartlandwiwx.streamfeeder.data.ApiClient
 import com.heartlandwiwx.streamfeeder.data.ApiException
 import com.heartlandwiwx.streamfeeder.data.CategoryRecord
+import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.CurrentUser
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.SessionStore
@@ -23,6 +24,8 @@ import java.time.temporal.ChronoUnit
 enum class FeedView(val api: String, val label: String) {
     Inbox("inbox", "Inbox"),
     Watchlist("watchlist", "Watchlist"),
+    Streams("inbox", "Streams"),
+    Categories("inbox", "Categories"),
     Snoozed("snoozed", "Snoozed"),
     Deleted("deleted", "Deleted"),
 }
@@ -33,11 +36,15 @@ data class FeedUiState(
     val user: CurrentUser? = null,
     val items: List<InboxItem> = emptyList(),
     val categories: List<CategoryRecord> = emptyList(),
+    val channels: List<ChannelRecord> = emptyList(),
     val watchlists: List<WatchlistRecord> = emptyList(),
     val view: FeedView = FeedView.Inbox,
     val categoryId: String? = null,
+    val channelId: String? = null,
     val watchlistId: String? = null,
     val selected: InboxItem? = null,
+    val pendingSnoozeItem: InboxItem? = null,
+    val undoArchiveVideoId: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
     val message: String? = null,
@@ -77,12 +84,17 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectView(view: FeedView) {
-        _state.update { it.copy(view = view, selected = null) }
+        _state.update { it.copy(view = view, selected = null, pendingSnoozeItem = null) }
         refreshFeed()
     }
 
     fun selectCategory(id: String?) {
         _state.update { it.copy(categoryId = id, selected = null) }
+        refreshFeed()
+    }
+
+    fun selectChannel(id: String?) {
+        _state.update { it.copy(channelId = id, selected = null) }
         refreshFeed()
     }
 
@@ -100,7 +112,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearMessage() {
-        _state.update { it.copy(message = null, error = null) }
+        _state.update { it.copy(message = null, error = null, undoArchiveVideoId = null) }
     }
 
     fun refresh() {
@@ -109,7 +121,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteSelected() {
         val item = _state.value.selected ?: return
-        mutate(item.videoId, JSONObject().put("action", "delete"), "Archived", clearSelected = true)
+        archiveVideo(item, leaveDetail = true)
     }
 
     fun restoreSelected() {
@@ -129,8 +141,21 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun archiveItem(item: InboxItem) {
-        _state.update { it.copy(items = it.items.filterNot { row -> row.videoId == item.videoId }) }
-        mutate(item.videoId, JSONObject().put("action", "delete"), "Archived", clearSelected = false, silent = true)
+        archiveVideo(item, leaveDetail = false)
+    }
+
+    fun requestSnooze(item: InboxItem) {
+        _state.update { it.copy(pendingSnoozeItem = item) }
+    }
+
+    fun cancelPendingSnooze() {
+        _state.update { it.copy(pendingSnoozeItem = null) }
+    }
+
+    fun confirmPendingSnooze(hours: Long) {
+        val item = _state.value.pendingSnoozeItem ?: return
+        _state.update { it.copy(pendingSnoozeItem = null) }
+        snoozeItem(item, hours)
     }
 
     fun snoozeItem(item: InboxItem, hours: Long = 24) {
@@ -143,6 +168,19 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             clearSelected = false,
             silent = true,
         )
+    }
+
+    fun undoArchive() {
+        val videoId = _state.value.undoArchiveVideoId ?: return
+        viewModelScope.launch {
+            try {
+                api.patchInbox(videoId, JSONObject().put("action", "restore"))
+                _state.update { it.copy(message = "Restored", undoArchiveVideoId = null) }
+                refreshFeed()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not undo", undoArchiveVideoId = null) }
+            }
+        }
     }
 
     fun addSelectedToWatchlist(listId: String) {
@@ -185,6 +223,26 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun archiveVideo(item: InboxItem, leaveDetail: Boolean) {
+        _state.update {
+            it.copy(
+                items = it.items.filterNot { row -> row.videoId == item.videoId },
+                selected = if (leaveDetail) null else it.selected,
+                message = "Archived",
+                undoArchiveVideoId = item.videoId,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                api.patchInbox(item.videoId, JSONObject().put("action", "delete"))
+                if (_state.value.view == FeedView.Watchlist) refreshMeta()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not archive", undoArchiveVideoId = null) }
+                refreshFeed()
+            }
+        }
+    }
+
     private fun mutate(
         videoId: String,
         body: JSONObject,
@@ -218,6 +276,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val user = api.me()
                 val categories = api.categories()
+                val channels = api.channels()
                 val watchlists = api.watchlists()
                 val items = loadInbox()
                 _state.update {
@@ -227,9 +286,12 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                         signedIn = true,
                         user = user,
                         categories = categories,
+                        channels = channels,
                         watchlists = watchlists,
                         items = items,
                         watchlistId = it.watchlistId ?: watchlists.firstOrNull()?.id,
+                        channelId = it.channelId ?: channels.firstOrNull()?.channelId,
+                        categoryId = it.categoryId ?: categories.firstOrNull()?.id,
                     )
                 }
             } catch (e: ApiException) {
@@ -270,10 +332,17 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadInbox(): List<InboxItem> {
         val s = _state.value
-        return api.inbox(
-            view = s.view.api,
-            categoryId = if (s.view == FeedView.Watchlist) null else s.categoryId,
-            watchlistId = if (s.view == FeedView.Watchlist) s.watchlistId else null,
-        )
+        return when (s.view) {
+            FeedView.Watchlist -> api.inbox(view = "watchlist", watchlistId = s.watchlistId)
+            FeedView.Streams -> {
+                if (s.channelId.isNullOrBlank()) emptyList()
+                else api.inbox(view = "inbox", channelId = s.channelId)
+            }
+            FeedView.Categories -> {
+                if (s.categoryId.isNullOrBlank()) emptyList()
+                else api.inbox(view = "inbox", categoryId = s.categoryId)
+            }
+            else -> api.inbox(view = s.view.api)
+        }
     }
 }

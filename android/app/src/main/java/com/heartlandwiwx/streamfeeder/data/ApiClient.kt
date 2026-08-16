@@ -35,14 +35,28 @@ class ApiClient(
         view: String = "inbox",
         categoryId: String? = null,
         watchlistId: String? = null,
+        channelId: String? = null,
     ): List<InboxItem> = withContext(Dispatchers.IO) {
         val q = buildString {
             append("view=").append(view)
             if (!categoryId.isNullOrBlank()) append("&categoryId=").append(categoryId)
             if (!watchlistId.isNullOrBlank()) append("&watchlistId=").append(watchlistId)
+            if (!channelId.isNullOrBlank()) append("&channelId=").append(channelId)
         }
         val arr = getJson("/api/inbox?$q").optJSONArray("items") ?: JSONArray()
         (0 until arr.length()).map { parseInboxItem(arr.getJSONObject(it)) }
+    }
+
+    suspend fun channels(): List<ChannelRecord> = withContext(Dispatchers.IO) {
+        val arr = getJson("/api/channels").optJSONArray("channels") ?: JSONArray()
+        (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            ChannelRecord(
+                channelId = o.getString("channelId"),
+                title = o.optString("title", "Channel"),
+                thumbnailUrl = o.optString("thumbnailUrl", ""),
+            )
+        }
     }
 
     suspend fun categories(): List<CategoryRecord> = withContext(Dispatchers.IO) {
@@ -86,6 +100,7 @@ class ApiClient(
         channelId = o.optString("channelId", ""),
         channelTitle = o.optString("channelTitle", ""),
         title = o.optString("title", "(untitled)"),
+        descriptionExcerpt = o.optString("descriptionExcerpt", ""),
         thumbnailUrl = o.optString("thumbnailUrl", ""),
         publishedAt = optionalString(o, "publishedAt"),
         embeddable = o.optBoolean("embeddable", true),
