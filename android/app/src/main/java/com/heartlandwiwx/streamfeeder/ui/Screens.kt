@@ -1049,26 +1049,32 @@ private fun DetailScreen(
     DisposableEffect(item.videoId) {
         var castPlayerContext: ChromecastYouTubePlayerContext? = null
         try {
-            val sessionManager = CastContext.getSharedInstance(context).sessionManager
+            val castContext = CastContext.getSharedInstance(context.applicationContext)
             castPlayerContext = ChromecastYouTubePlayerContext(
-                sessionManager,
+                castContext.sessionManager,
                 object : ChromecastConnectionListener {
                     override fun onChromecastConnecting() = Unit
                     override fun onChromecastConnected(chromecastYouTubePlayerContext: ChromecastYouTubePlayerContext) {
-                        chromecastYouTubePlayerContext.initialize(object : AbstractYouTubePlayerListener() {
-                            override fun onReady(youTubePlayer: YouTubePlayer) {
-                                youTubePlayer.loadVideo(item.videoId, 0f)
-                            }
-                        })
+                        try {
+                            chromecastYouTubePlayerContext.initialize(object : AbstractYouTubePlayerListener() {
+                                override fun onReady(youTubePlayer: YouTubePlayer) {
+                                    youTubePlayer.loadVideo(item.videoId, 0f)
+                                }
+                            })
+                        } catch (_: Throwable) {
+                        }
                     }
                     override fun onChromecastDisconnected() = Unit
                 },
             )
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             castPlayerContext = null
         }
         onDispose {
-            castPlayerContext?.release()
+            try {
+                castPlayerContext?.release()
+            } catch (_: Throwable) {
+            }
         }
     }
 
@@ -1177,7 +1183,21 @@ private fun DetailScreen(
 
 @Composable
 private fun CastRow() {
+    val context = LocalContext.current
+    var castReady by remember {
+        mutableStateOf(
+            try {
+                CastContext.getSharedInstance(context.applicationContext)
+                true
+            } catch (_: Throwable) {
+                false
+            },
+        )
+    }
     var routeButton by remember { mutableStateOf<MediaRouteButton?>(null) }
+
+    if (!castReady) return
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1188,9 +1208,13 @@ private fun CastRow() {
     ) {
         AndroidView(
             factory = { ctx ->
-                MediaRouteButton(ctx).also { button ->
-                    CastButtonFactory.setUpMediaRouteButton(ctx.applicationContext, button)
-                    routeButton = button
+                try {
+                    MediaRouteButton(ctx).also { button ->
+                        CastButtonFactory.setUpMediaRouteButton(ctx.applicationContext, button)
+                        routeButton = button
+                    }
+                } catch (_: Throwable) {
+                    android.view.View(ctx)
                 }
             },
             modifier = Modifier.size(40.dp),
