@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "youtube-feeder",
+	"name": "youtube-feeder-worker",
 	"main": "worker/index.ts",
 	"compatibility_date": "2026-08-15",
 	"compatibility_flags": ["nodejs_compat"],
@@ -11,20 +11,22 @@
 	"assets": {
 		"not_found_handling": "single-page-application",
 		"binding": "ASSETS",
-		"run_worker_first": ["/api/*"]
+		"run_worker_first": ["/api/*", "/.well-known/*"]
 	},
 	"d1_databases": [
 		{
 			"binding": "DB",
 			"database_name": "youtube-feeder",
-			"database_id": "REPLACE_WITH_D1_DATABASE_ID",
+			"database_id": "670b33d8-43e4-417a-b9c2-c692ed88ca05",
 			"migrations_dir": "migrations"
 		}
 	],
 	"triggers": {
-		"crons": ["*/20 * * * *", "15 6 * * *"]
+		// Central Daylight Time (UTC-5): 05:00, 07:00, 09:00, 11:00, 13:00, 15:00, 18:00, 20:00, 23:00
+		"crons": ["0 1,4,10,12,14,16,18,20,23 * * *"]
 	},
 	"vars": {
-		"MOCK_DATA": "true"
+		"MOCK_DATA": "false",
+		"PUBLIC_ORIGIN": "https://youtube-feeder-worker.ike-j-rebout.workers.dev"
 	}
 }

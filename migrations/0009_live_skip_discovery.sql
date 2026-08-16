@@ -1,0 +1,1 @@
+ALTER TABLE live_sources ADD COLUMN skip_discovery INTEGER NOT NULL DEFAULT 0;

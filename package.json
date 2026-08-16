@@ -14,5 +14,25 @@
 		"test:e2e": "playwright test",
 		"cf-typegen": "wrangler types",
 		"format": "prettier --write ."
+	},
+	"dependencies": {
+		"qrcode": "^1.5.4",
+		"react": "^19.2.8",
+		"react-dom": "^19.2.8",
+		"react-router-dom": "^7.18.2"
+	},
+	"devDependencies": {
+		"@cloudflare/vite-plugin": "^1.52.1",
+		"@cloudflare/workers-types": "^5.20260815.1",
+		"@types/node": "^26.2.0",
+		"@types/qrcode": "^1.5.6",
+		"@types/react": "^19.2.18",
+		"@types/react-dom": "^19.2.4",
+		"@vitejs/plugin-react": "^6.0.5",
+		"prettier": "^3.9.6",
+		"typescript": "^7.0.2",
+		"vite": "^8.2.1",
+		"vitest": "^4.1.10",
+		"wrangler": "^4.123.0"
 	}
 }

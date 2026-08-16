@@ -1,0 +1,8 @@
+{
+	"packageId": "com.heartlandwiwx.streamfeeder",
+	"host": "youtube-feeder-worker.ike-j-rebout.workers.dev",
+	"startUrl": "https://youtube-feeder-worker.ike-j-rebout.workers.dev/?source=android",
+	"name": "StreamFeeder",
+	"display": "standalone",
+	"fallback": "customtabs"
+}

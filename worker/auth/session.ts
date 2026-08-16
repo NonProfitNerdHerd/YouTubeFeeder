@@ -41,8 +41,13 @@ export async function readSessionUserId(secret: string, request: Request): Promi
 	return userId || null;
 }
 
-export async function createOauthStateCookie(secret: string, secure: boolean): Promise<{ state: string; header: string }> {
-	const state = randomToken(24);
+export async function createOauthStateCookie(
+	secret: string,
+	secure: boolean,
+	intent: 'login' | 'signup',
+): Promise<{ state: string; header: string }> {
+	const nonce = randomToken(24);
+	const state = `${intent}.${nonce}`;
 	const signed = await signValue(secret, state);
 	return {
 		state,

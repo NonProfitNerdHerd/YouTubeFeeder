@@ -14,7 +14,7 @@
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,
 		"skipLibCheck": true,
-		"types": ["./worker-configuration.d.ts"]
+		"types": ["./worker-configuration.d.ts", "@cloudflare/workers-types"]
 	},
-	"include": ["worker", "src/lib", "src/types", "worker-configuration.d.ts"]
+		"include": ["worker", "worker-configuration.d.ts", "src/lib/classifyVideo.ts", "src/lib/androidRelease.ts", "src/types/index.ts"]
 }

@@ -1,5 +1,6 @@
 export type ContentType = 'video' | 'live' | 'upcoming' | 'completed';
 export type LivestreamStatus = 'none' | 'upcoming' | 'live' | 'completed';
+export type LiveSourceMode = 'normal' | 'always_on' | 'on_demand' | 'disabled';
 export type InboxView =
 	| 'inbox'
 	| 'unread'
@@ -36,6 +37,8 @@ export interface InboxItem {
 	archived: boolean;
 	hidden: boolean;
 	firstSeenAt: string;
+	snoozedUntil: string | null;
+	notes: string;
 }
 
 export interface InboxCounts {
@@ -53,6 +56,20 @@ export interface ChannelRecord {
 	uploadsPlaylistId: string | null;
 	subscribed: boolean;
 	lastSynchronizedAt: string | null;
+	followInInbox: boolean;
+	maxVideosToPull: number;
+	categoryIds: string[];
+}
+
+export interface CategoryRecord {
+	id: string;
+	name: string;
+}
+
+export interface WatchlistRecord {
+	id: string;
+	name: string;
+	videoCount: number;
 }
 
 export interface QuadSlots {
@@ -125,4 +142,65 @@ export interface VideoClassificationInput {
 export interface VideoClassification {
 	contentType: ContentType;
 	livestreamStatus: LivestreamStatus;
+}
+
+export const LIVE_GRID_SIZES = [1, 4, 6, 8, 12] as const;
+export type LiveGridSize = (typeof LIVE_GRID_SIZES)[number];
+export const MAX_LIVE_SLOTS = 12;
+
+export function isLiveGridSize(value: number): value is LiveGridSize {
+	return (LIVE_GRID_SIZES as readonly number[]).includes(value);
+}
+
+export interface LiveVideoRecord {
+	videoId: string;
+	title: string;
+	status?: string;
+	embeddable?: boolean;
+}
+
+export interface LiveSourceRecord {
+	id: string;
+	displayName: string;
+	channelId: string;
+	youtubeUrl: string;
+	notes: string;
+	enabled: boolean;
+	skipDiscovery: boolean;
+	sourceMode: LiveSourceMode;
+	isLive: boolean;
+	liveVideoId: string | null;
+	liveTitle: string | null;
+	liveCheckedAt: string | null;
+	knownLiveVideoId: string | null;
+	lastStatusCheckAt: string | null;
+	lastDiscoveryAt: string | null;
+	nextStatusCheckAt: string | null;
+	nextDiscoveryAt: string | null;
+	searchCooldownUntil: string | null;
+	lastPlayerErrorAt: string | null;
+	verifyState: 'ok' | 'error';
+	verifyError: string | null;
+	liveVideos: LiveVideoRecord[];
+	categoryIds: string[];
+}
+
+export interface LiveSlotRecord {
+	slotNumber: number;
+	sourceId: string | null;
+	videoId: string | null;
+	source: LiveSourceRecord | null;
+}
+
+export interface LiveSessionRecord {
+	gridSize: LiveGridSize;
+	slots: LiveSlotRecord[];
+}
+
+export interface LiveLayoutRecord {
+	id: string;
+	name: string;
+	description: string;
+	gridSize: LiveGridSize;
+	slotIds: Array<string | null>;
 }

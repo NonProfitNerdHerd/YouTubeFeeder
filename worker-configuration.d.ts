@@ -1,3 +1,5 @@
+/// <reference types="@cloudflare/workers-types" />
+
 interface Env {
 	DB: D1Database;
 	ASSETS: Fetcher;
@@ -7,6 +9,7 @@ interface Env {
 	TOKEN_ENCRYPTION_KEY?: string;
 	SESSION_SECRET?: string;
 	MOCK_DATA?: string;
+	PUBLIC_ORIGIN?: string;
 }
 
 interface ExecutionContext {

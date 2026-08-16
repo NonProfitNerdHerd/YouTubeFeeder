@@ -1,13 +1,24 @@
-const YOUTUBE_READONLY = 'https://www.googleapis.com/auth/youtube.readonly';
+const SCOPES = [
+	'openid',
+	'https://www.googleapis.com/auth/userinfo.email',
+	'https://www.googleapis.com/auth/userinfo.profile',
+	'https://www.googleapis.com/auth/youtube.readonly',
+].join(' ');
 
-export function googleAuthUrl(params: { clientId: string; redirectUri: string; state: string }): string {
+export function googleAuthUrl(params: {
+	clientId: string;
+	redirectUri: string;
+	state: string;
+	prompt: 'consent' | 'select_account';
+}): string {
 	const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
 	url.searchParams.set('client_id', params.clientId);
 	url.searchParams.set('redirect_uri', params.redirectUri);
 	url.searchParams.set('response_type', 'code');
-	url.searchParams.set('scope', YOUTUBE_READONLY);
+	url.searchParams.set('scope', SCOPES);
 	url.searchParams.set('access_type', 'offline');
-	url.searchParams.set('prompt', 'consent');
+	url.searchParams.set('include_granted_scopes', 'true');
+	url.searchParams.set('prompt', params.prompt);
 	url.searchParams.set('state', params.state);
 	return url.toString();
 }

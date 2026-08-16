@@ -1,0 +1,103 @@
+name: android-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/youtube-feeder-foundation
+    tags:
+      - "android-v*"
+  pull_request:
+    branches:
+      - cursor/youtube-feeder-foundation
+
+jobs:
+  debug:
+    if: ${{ github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm run build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Build debug APK
+        working-directory: android
+        run: chmod +x ./gradlew && ./gradlew assembleDebug --no-daemon
+      - name: Verify, rename, and fingerprint debug APK
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT/build-tools/"* | sort -V | tail -n 1)
+          "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
+          mkdir -p dist-apk
+          cp "$APK" dist-apk/StreamFeeder-debug.apk
+          sha256sum dist-apk/StreamFeeder-debug.apk | tee dist-apk/StreamFeeder-debug.sha256
+          "$BUILD_TOOLS/apksigner" verify --print-certs dist-apk/StreamFeeder-debug.apk | tee dist-apk/StreamFeeder-debug.certs.txt
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: StreamFeeder-debug
+          path: dist-apk/*
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm run build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          mkdir -p "$RUNNER_TEMP/android-signing"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/android-signing/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/android-signing/release.jks" >> "$GITHUB_ENV"
+      - name: Build signed release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        working-directory: android
+        run: chmod +x ./gradlew && ./gradlew assembleRelease --no-daemon
+      - name: Verify and attach StreamFeeder.apk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT/build-tools/"* | sort -V | tail -n 1)
+          "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
+          mkdir -p dist-apk
+          cp "$APK" dist-apk/StreamFeeder.apk
+          gh release create "${GITHUB_REF_NAME}" dist-apk/StreamFeeder.apk --title "${GITHUB_REF_NAME}" --notes "StreamFeeder ${GITHUB_REF_NAME} (Feeder + Watchlists)."
+      - name: Remove signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/android-signing"

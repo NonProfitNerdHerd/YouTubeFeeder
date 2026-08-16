@@ -3,6 +3,7 @@ import type { ApiErrorBody } from '../src/types';
 export function json(data: unknown, init: ResponseInit = {}): Response {
 	const headers = new Headers(init.headers);
 	headers.set('content-type', 'application/json; charset=utf-8');
+	if (!headers.has('cache-control')) headers.set('cache-control', 'private, no-store');
 	return new Response(JSON.stringify(data), { ...init, headers });
 }
 

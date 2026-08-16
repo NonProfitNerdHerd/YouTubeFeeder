@@ -1,4 +1,4 @@
-import type { AppSettings, ChannelRecord, InboxItem, QuadSlots } from '../src/types';
+import type { AppSettings, ChannelRecord, InboxItem, QuadSlots } from '../../src/types';
 
 export const MOCK_USER_ID = 'user-local';
 
@@ -20,6 +20,9 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 		uploadsPlaylistId: 'UU_mock_alpha',
 		subscribed: true,
 		lastSynchronizedAt: new Date().toISOString(),
+		followInInbox: true,
+		maxVideosToPull: 5,
+		categoryIds: [],
 	},
 	{
 		channelId: 'UC_mock_beta',
@@ -29,6 +32,9 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 		uploadsPlaylistId: 'UU_mock_beta',
 		subscribed: true,
 		lastSynchronizedAt: new Date().toISOString(),
+		followInInbox: true,
+		maxVideosToPull: 5,
+		categoryIds: [],
 	},
 	{
 		channelId: 'UC_mock_gamma',
@@ -38,18 +44,23 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 		uploadsPlaylistId: 'UU_mock_gamma',
 		subscribed: true,
 		lastSynchronizedAt: new Date().toISOString(),
+		followInInbox: true,
+		maxVideosToPull: 5,
+		categoryIds: [],
 	},
 ];
 
 function item(
-	partial: Omit<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt'> &
-		Partial<Pick<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt'>>,
+	partial: Omit<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt' | 'snoozedUntil' | 'notes'> &
+		Partial<Pick<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt' | 'snoozedUntil' | 'notes'>>,
 ): InboxItem {
 	return {
 		descriptionExcerpt: 'Mock description excerpt for local development without YouTube credentials.',
 		embeddable: true,
 		hidden: false,
 		firstSeenAt: new Date().toISOString(),
+		snoozedUntil: null,
+		notes: '',
 		...partial,
 	};
 }

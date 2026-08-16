@@ -1,0 +1,51 @@
+plugins {
+    id "com.android.application"
+}
+
+def versionFile = new File(rootProject.projectDir, "../public/android-version.json")
+def versionJson = new groovy.json.JsonSlurper().parse(versionFile)
+
+android {
+    namespace "com.heartlandwiwx.streamfeeder"
+    compileSdk 35
+    defaultConfig {
+        applicationId "com.heartlandwiwx.streamfeeder"
+        minSdk 26
+        targetSdk 35
+        versionCode versionJson.versionCode
+        versionName versionJson.versionName
+        manifestPlaceholders = [
+            hostName: "youtube-feeder-worker.ike-j-rebout.workers.dev",
+            defaultUrl: "https://youtube-feeder-worker.ike-j-rebout.workers.dev/?source=android",
+            assetStatements: '[{ "relation": ["delegate_permission/common.handle_all_urls"], "target": { "namespace": "web", "site": "https://youtube-feeder-worker.ike-j-rebout.workers.dev" } }]'
+        ]
+    }
+    signingConfigs {
+        release {
+            def store = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (store) {
+                storeFile file(store)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv("ANDROID_KEYSTORE_PATH")) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "androidx.browser:browser:1.8.0"
+    implementation "com.google.androidbrowserhelper:androidbrowserhelper:2.6.2"
+}

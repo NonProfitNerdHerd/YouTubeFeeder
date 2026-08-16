@@ -16,3 +16,13 @@ logs
 *.log
 .vscode-test
 youtube-feeder-worker/
+*.jks
+*.keystore
+*.apk
+*.aab
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+android/.idea/
+.idea/
