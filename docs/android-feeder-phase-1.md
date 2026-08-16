@@ -24,7 +24,7 @@ Read/unread is stored on inbox rows and shown in the list. There is no existing 
 
 - `/.well-known/assetlinks.json` served by the Worker (`run_worker_first` includes `/.well-known/*`).
 - API JSON `Cache-Control: private, no-store` so authenticated inbox/watchlist payloads are not cached.
-- Public download route `/download/android` and PWA manifest / conservative service worker (static `/assets` and `/icons` only).
+- Public download route `/download/android`, debug sideload `/StreamFeeder-debug.apk`, and PWA manifest / conservative service worker (static `/assets` and `/icons` only).
 - No Feed D1 schema change. No Quad/Live behavior change.
 
 ## Mobile feeder

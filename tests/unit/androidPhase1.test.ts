@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ANDROID_DOWNLOAD_PATH, STABLE_APK_URL, STREAMFEEDER_PACKAGE_ID } from '../../src/lib/androidRelease';
+import { ANDROID_DOWNLOAD_PATH, STABLE_APK_URL, STREAMFEEDER_PACKAGE_ID, TEST_APK_PATH } from '../../src/lib/androidRelease';
 import { digitalAssetLinks, normalizeSha256Fingerprint } from '../../worker/android/assetlinks';
 import version from '../../public/android-version.json';
 
@@ -9,6 +9,7 @@ describe('StreamFeeder Android phase 1', () => {
 			'https://github.com/NonProfitNerdHerd/YouTubeFeeder/releases/latest/download/StreamFeeder.apk',
 		);
 		expect(ANDROID_DOWNLOAD_PATH).toBe('/download/android');
+		expect(TEST_APK_PATH).toBe('/StreamFeeder-debug.apk');
 	});
 
 	it('keeps package id StreamFeeder without YouTube branding', () => {

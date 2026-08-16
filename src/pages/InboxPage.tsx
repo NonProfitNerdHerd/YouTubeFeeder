@@ -3,10 +3,12 @@ import type { CategoryRecord, ChannelRecord, CurrentUser, InboxItem, LiveGridSiz
 import { LIVE_GRID_SIZES } from '../types';
 import { youtubeEmbedUrl, youtubeWatchUrl } from '../lib/youtubeUrl';
 import { isAndroidClient, isNarrowFeeder } from '../lib/androidClient';
-import { STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease';
+import { TEST_APK_PATH, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease';
+import { qrSvgForUrl } from '../lib/qrSvg';
 import { LivePage } from './LivePage';
 import '../styles/app.css';
 import '../styles/live.css';
+import '../styles/download.css';
 
 interface SyncApiBody {
 	error?: { message: string };
@@ -111,6 +113,17 @@ function IconList() {
 	);
 }
 
+function IconPhone() {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<path
+				fill="currentColor"
+				d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 3v12h10V5H7zm5 15.25a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5z"
+			/>
+		</svg>
+	);
+}
+
 function categoryNames(channel: ChannelRecord, all: CategoryRecord[]): string {
 	const names = channel.categoryIds
 		.map((id) => all.find((cat) => cat.id === id)?.name)
@@ -151,6 +164,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [narrow, setNarrow] = useState(isNarrowFeeder());
 	const [offline, setOffline] = useState(typeof navigator !== 'undefined' ? !navigator.onLine : false);
 	const [mobilePanel, setMobilePanel] = useState<'inbox' | 'watchlists' | 'filters' | 'account'>('inbox');
+	const [androidQrOpen, setAndroidQrOpen] = useState(false);
+	const [androidQrSvg, setAndroidQrSvg] = useState('');
 
 	const load = useCallback(
 		async (signal?: AbortSignal) => {
@@ -784,6 +799,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<button className="ghost" type="button" onClick={onLogout}>
 						Sign out
 					</button>
+					{androidClient ? null : (
+						<button
+							className="icon-btn"
+							type="button"
+							title="Get the Android app"
+							aria-label="Get the Android app"
+							onClick={() => {
+								const url = `${window.location.origin}${TEST_APK_PATH}`;
+								setAndroidQrOpen(true);
+								void qrSvgForUrl(url).then(setAndroidQrSvg);
+							}}
+						>
+							<IconPhone />
+						</button>
+					)}
 				</div>
 			</header>
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
@@ -1115,6 +1145,23 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							</button>
 							<button className="ghost" type="button" onClick={onLogout}>
 								Sign out
+							</button>
+						</div>
+					</div>
+				</div>
+			) : null}
+			{androidQrOpen ? (
+				<div className="modal-backdrop" onClick={() => setAndroidQrOpen(false)}>
+					<div className="modal" onClick={(e) => e.stopPropagation()}>
+						<h2>Get StreamFeeder</h2>
+						<p className="muted">Scan this code on your Android phone to download the StreamFeeder test APK, then allow install from your browser if Android asks.</p>
+						{androidQrSvg ? <div className="download-qr" dangerouslySetInnerHTML={{ __html: androidQrSvg }} /> : <p className="muted">Preparing QR…</p>}
+						<p>
+							<a href={TEST_APK_PATH}>{typeof window !== 'undefined' ? `${window.location.origin}${TEST_APK_PATH}` : TEST_APK_PATH}</a>
+						</p>
+						<div className="modal-actions">
+							<button className="ghost" type="button" onClick={() => setAndroidQrOpen(false)}>
+								Close
 							</button>
 						</div>
 					</div>

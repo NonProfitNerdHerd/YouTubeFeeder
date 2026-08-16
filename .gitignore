@@ -20,6 +20,7 @@ youtube-feeder-worker/
 *.keystore
 *.apk
 *.aab
+!public/StreamFeeder-debug.apk
 android/app/build/
 android/.gradle/
 android/build/

@@ -26,4 +26,6 @@ See `docs/android-signing.md`.
 
 ## Version
 
-`public/android-version.json` is the single source for `versionName` / `versionCode`. Bump `versionCode` for every Play-or-sideload update. The download page reads this file and GitHub’s latest release assets. If no release asset exists, it shows **Android build not released yet.**
+`public/android-version.json` is the single source for `versionName` / `versionCode`. Bump `versionCode` for every Play-or-sideload update.
+
+Until a signed GitHub `StreamFeeder.apk` exists, the download page and header QR serve the debug sideload at `/StreamFeeder-debug.apk` on the Worker. That file is not the stable release name.

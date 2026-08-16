@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GITHUB_LATEST_RELEASE_API, STABLE_APK_URL, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease';
+import { GITHUB_LATEST_RELEASE_API, STABLE_APK_URL, STREAMFEEDER_DISPLAY_NAME, TEST_APK_PATH } from '../lib/androidRelease';
 import { qrSvgForUrl } from '../lib/qrSvg';
 import '../styles/download.css';
 
@@ -13,20 +13,17 @@ export function DownloadAndroidPage() {
 	const [released, setReleased] = useState<boolean | null>(null);
 	const [qr, setQr] = useState<string>('');
 	const [releaseName, setReleaseName] = useState<string | null>(null);
+	const apkUrl = typeof window !== 'undefined' ? `${window.location.origin}${TEST_APK_PATH}` : TEST_APK_PATH;
 
 	useEffect(() => {
 		void (async () => {
 			const [verRes, relRes, svg] = await Promise.all([
 				fetch('/android-version.json'),
 				fetch(GITHUB_LATEST_RELEASE_API, { headers: { Accept: 'application/vnd.github+json' } }),
-				qrSvgForUrl(STABLE_APK_URL),
+				qrSvgForUrl(`${window.location.origin}${TEST_APK_PATH}`),
 			]);
 			if (verRes.ok) setVersion((await verRes.json()) as VersionFile);
 			setQr(svg);
-			if (relRes.status === 404) {
-				setReleased(false);
-				return;
-			}
 			if (!relRes.ok) {
 				setReleased(false);
 				return;
@@ -46,29 +43,31 @@ export function DownloadAndroidPage() {
 			{version ? (
 				<p>
 					App version {version.versionName} (build {version.versionCode})
-					{releaseName ? ` · GitHub ${releaseName}` : ''}
+					{releaseName && released ? ` · GitHub ${releaseName}` : ' · debug sideload build'}
 				</p>
 			) : null}
-			{released === false ? <p className="download-warn">Android build not released yet.</p> : null}
+			<p>
+				<a className="primary" href={TEST_APK_PATH}>
+					Download APK
+				</a>
+			</p>
+			<div className="download-qr" dangerouslySetInnerHTML={{ __html: qr }} />
+			<p>
+				Direct link: <a href={TEST_APK_PATH}>{apkUrl}</a>
+			</p>
 			{released ? (
-				<>
-					<p>
-						<a className="primary" href={STABLE_APK_URL}>
-							Download APK
-						</a>
-					</p>
-					<div className="download-qr" dangerouslySetInnerHTML={{ __html: qr }} />
-					<p>
-						Direct link:{' '}
-						<a href={STABLE_APK_URL}>{STABLE_APK_URL}</a>
-					</p>
-				</>
-			) : null}
+				<p className="muted">
+					Signed GitHub release:{' '}
+					<a href={STABLE_APK_URL}>{STABLE_APK_URL}</a>
+				</p>
+			) : (
+				<p className="download-warn">This is a debug test build for sideloading. It is not the signed Play/GitHub StreamFeeder.apk.</p>
+			)}
 			<h2>Install</h2>
 			<ol>
-				<li>Open this page on your Android phone or scan the QR code after a release exists.</li>
+				<li>Scan the QR code or tap Download APK on your Android phone.</li>
 				<li>Allow installing unknown apps for your browser or Files app if Android asks.</li>
-				<li>Open StreamFeeder.apk and install.</li>
+				<li>Open StreamFeeder-debug.apk and install.</li>
 				<li>Sign in with the same Google account you use on the website.</li>
 			</ol>
 			<h2>Same-account sync</h2>
@@ -77,7 +76,7 @@ export function DownloadAndroidPage() {
 				Refreshing the inbox loads saved data; it does not call YouTube until you use Sync now on the website.
 			</p>
 			<h2>Updates</h2>
-			<p>Return here and download the latest APK from the stable URL. Keep the same signing key so Android can update in place.</p>
+			<p>Return here and download the APK again. Debug builds may require uninstalling first if the signing certificate changed.</p>
 		</main>
 	);
 }
