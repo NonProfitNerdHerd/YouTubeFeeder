@@ -105,7 +105,9 @@ import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
 import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.ChromecastYouTubePlayerContext
 import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.io.infrastructure.ChromecastConnectionListener
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
-import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListenerprivate val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
+import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
+
+private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
 
 @Composable
 fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
