@@ -918,7 +918,7 @@ export function LivePage({
 										{cat.name}
 									</label>
 								))}
-								{categories.length === 0 ? <p className="muted">Create Live categories in Categories Setup first.</p> : null}
+								{categories.length === 0 ? <p className="muted">Create Live categories on the By Category tab first.</p> : null}
 							</div>
 						</div>
 						{editSource ? (

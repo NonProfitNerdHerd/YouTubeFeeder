@@ -703,7 +703,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const phoneLayout = androidClient || narrow;
 	const streamsThreeCol = !androidClient && !phoneLayout && leftTab === 'streams';
 	const watchlistThreeCol = !androidClient && !phoneLayout && leftTab === 'watchlist';
-	const feedThreeCol = streamsThreeCol || watchlistThreeCol;
+	const categoryThreeCol = !androidClient && !phoneLayout && leftTab === 'categories';
+	const feedThreeCol = streamsThreeCol || watchlistThreeCol || categoryThreeCol;
 	const streamsList = categoryId
 		? channels.filter((ch) => ch.categoryIds.includes(categoryId))
 		: channels;
@@ -1170,7 +1171,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						type="button"
 						onClick={() => setLeftTab('categories')}
 					>
-						Categories Setup
+						By Category
 					</button>
 				</nav>
 			) : null}
@@ -1492,6 +1493,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 												type="button"
 												onClick={() => {
 													setCategoryId(cat.id);
+													setSelectedVideoId(null);
 													setRenamingCategoryId(null);
 												}}
 											>
@@ -1554,6 +1556,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						</div>
 					</aside>
 				) : null}
+				{categoryThreeCol ? (
+					<aside className="subs streams-video-list" aria-label="Category videos">
+						<div className="left-scroll">
+							{categoryId
+								? renderFeed(items, true, 'inbox')
+								: (
+									<p className="muted pad">
+										Select a category to see tagged videos. Tag streams from the Streams tab using Edit.
+									</p>
+								)}
+						</div>
+					</aside>
+				) : null}
 				<section className="feed">
 					{phoneLayout && selectedVideo ? (
 						<button
@@ -1608,9 +1623,18 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							{channelId ? renderFeed(items, false) : <p className="muted">Choose a stream on the left to see its videos, or use Edit to change follow settings.</p>}
 						</>
 					) : null}
-					{leftTab === 'categories' ? (
+					{leftTab === 'categories' && categoryThreeCol ? (
+						selectedVideo ? (
+							renderPreview(selectedVideo, 'inbox')
+						) : (
+							<p className="muted">
+								{categoryId ? 'Select a video to preview.' : 'Select a category, then a video to preview.'}
+							</p>
+						)
+					) : null}
+					{leftTab === 'categories' && !categoryThreeCol ? (
 						<>
-							<h2 className="pane-title">{categoryId ? categories.find((c) => c.id === categoryId)?.name ?? 'Category' : 'Categories'}</h2>
+							<h2 className="pane-title">{categoryId ? categories.find((c) => c.id === categoryId)?.name ?? 'Category' : 'By Category'}</h2>
 							{categoryId ? renderFeed(items, false) : <p className="muted">Select a category to see tagged videos. Tag streams from the Streams tab using Edit.</p>}
 						</>
 					) : null}
@@ -1804,7 +1828,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						</label>
 						<fieldset className="modal-cats">
 							<legend>Categories</legend>
-							{categories.length === 0 ? <p className="muted">Add a category in Categories Setup first.</p> : null}
+							{categories.length === 0 ? <p className="muted">Add a category on the By Category tab first.</p> : null}
 							{categories.map((cat) => (
 								<label key={cat.id} className="check">
 									<input type="checkbox" name="categoryIds" value={cat.id} defaultChecked={editing.categoryIds.includes(cat.id)} />
