@@ -10,7 +10,7 @@ import {
 	type YoutubeClient,
 	YoutubeApiError,
 } from './youtube';
-import { enqueueHubSubscriptions, recordYoutubeCalls } from './websub';
+import { enqueueHubSubscriptions, dailyQuotaUsed, recordQuota, recordYoutubeCalls } from './websub';
 
 interface SubscriptionPage {
 	nextPageToken?: string;
@@ -78,6 +78,8 @@ export interface SyncResult {
 	totalChannels?: number;
 	channelsSkipped?: number;
 	warnings?: SyncWarning[];
+	budgetExhausted?: boolean;
+	remainingBudget?: number;
 }
 
 type ChannelContentSyncOutcome =
@@ -132,6 +134,8 @@ const INCREMENTAL_MAX = 100;
 const PLAYLIST_PAGE = 50;
 const CONTENT_BATCH = 8;
 const CATCHUP_PAGE = 50;
+export const CATCHUP_REQUEST_BUDGET = 6;
+export const CATCHUP_DAILY_BUDGET = 80;
 const MAX_CONTENT_BATCHES = 256;
 
 async function recordRun(db: D1Database, userId: string, result: SyncResult, startedAt: string): Promise<void> {
@@ -745,22 +749,25 @@ export async function catchUpChannel(
 	channelId: string,
 	pageToken = '',
 	pulled = 0,
+	ytClient?: YoutubeClient,
 ): Promise<SyncResult> {
 	const startedAt = new Date().toISOString();
-	const yt = createYoutubeClient(accessToken);
+	const yt = ytClient ?? createYoutubeClient(accessToken);
 	try {
 		const ch = await env.DB.prepare(
 			`SELECT c.channel_id, c.title, c.uploads_playlist_id,
 				COALESCE(p.follow_in_inbox, 1) AS follow_in_inbox,
 				COALESCE(p.max_videos_to_pull, 0) AS max_videos_to_pull,
 				p.newest_seen_published_at,
-				c.last_synchronized_at
+				c.last_synchronized_at,
+				p.catchup_page_token,
+				COALESCE(p.catchup_pulled, 0) AS catchup_pulled
 			 FROM channels c
 			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
 			 WHERE c.channel_id = ? AND p.is_subscribed = 1`,
 		)
 			.bind(userId, channelId)
-			.first<ChannelSyncRow>();
+			.first<ChannelSyncRow & { catchup_page_token: string | null; catchup_pulled: number }>();
 		if (!ch?.uploads_playlist_id) {
 			return {
 				syncType: 'content',
@@ -784,8 +791,12 @@ export async function catchUpChannel(
 				errorSummary: 'Set max videos to pull above 0, then catch up.',
 			};
 		}
-		const remaining = Math.max(0, want - pulled);
+		const resume = !pageToken;
+		const token = pageToken || ch.catchup_page_token || '';
+		const alreadyPulled = resume ? Number(ch.catchup_pulled ?? 0) || 0 : pulled;
+		const remaining = Math.max(0, want - alreadyPulled);
 		if (remaining < 1) {
+			await persistCatchupCursor(env.DB, userId, channelId, null, 0);
 			return {
 				syncType: 'content',
 				status: 'ok',
@@ -795,28 +806,102 @@ export async function catchUpChannel(
 				estimatedQuotaUnits: 0,
 				errorSummary: null,
 				done: true,
-				pulled,
+				pulled: alreadyPulled,
 				want,
 				totalChannels: 1,
 			};
 		}
-		const page = await fetchPlaylistPage(yt, ch.uploads_playlist_id, pageToken, Math.min(CATCHUP_PAGE, remaining));
+
+		const dailyLeft = Math.max(0, CATCHUP_DAILY_BUDGET - (await dailyQuotaUsed(env.DB, 'catchup')));
+		const requestBudget = Math.min(CATCHUP_REQUEST_BUDGET, dailyLeft);
+		if (requestBudget < 1) {
+			return {
+				syncType: 'content',
+				status: 'ok',
+				channelsChecked: 1,
+				videosAdded: 0,
+				videosUpdated: 0,
+				estimatedQuotaUnits: 0,
+				errorSummary: 'Catch-up paused: daily API budget exhausted. Resume to continue.',
+				done: false,
+				nextPageToken: token || undefined,
+				pulled: alreadyPulled,
+				want,
+				totalChannels: 1,
+				budgetExhausted: true,
+				remainingBudget: 0,
+			};
+		}
+
+		const page = await fetchPlaylistPage(yt, ch.uploads_playlist_id, token, Math.min(CATCHUP_PAGE, remaining));
 		const pageIds = page.items.map((item) => item.videoId);
-		const details = await fetchVideoDetails(yt, pageIds);
-		const videos = pageIds
-			.map((id) => details.get(id))
-			.filter((video): video is NonNullable<VideosPage['items']>[number] => Boolean(video?.id && video.snippet));
-		videos.sort((a, b) => Date.parse(b.snippet?.publishedAt ?? '') - Date.parse(a.snippet?.publishedAt ?? ''));
-		const counts = await ingestChannelVideos(env, userId, ch, videos, 'catchup');
+		const existing = new Set<string>();
+		if (pageIds.length) {
+			const found = await selectInChunks<{ video_id: string }>(
+				env.DB,
+				(placeholders) => `SELECT video_id FROM videos WHERE video_id IN (${placeholders})`,
+				pageIds,
+			);
+			for (const row of found) existing.add(row.video_id);
+		}
+		const unknown = pageIds.filter((id) => !existing.has(id));
+		const knownIds = pageIds.filter((id) => existing.has(id));
+		for (const videoId of knownIds) {
+			await env.DB.prepare(
+				`INSERT OR IGNORE INTO inbox_state (user_id, video_id, unread, starred, archived, hidden)
+				 VALUES (?, ?, 1, 0, 0, 0)`,
+			)
+				.bind(userId, videoId)
+				.run();
+		}
+
+		let videosAdded = knownIds.length;
+		let videosUpdated = 0;
+		if (unknown.length && yt.quotaUsed < requestBudget) {
+			const details = await fetchVideoDetails(yt, unknown);
+			const videos = unknown
+				.map((id) => details.get(id))
+				.filter((video): video is NonNullable<VideosPage['items']>[number] => Boolean(video?.id && video.snippet));
+			videos.sort((a, b) => Date.parse(b.snippet?.publishedAt ?? '') - Date.parse(a.snippet?.publishedAt ?? ''));
+			const counts = await ingestChannelVideos(env, userId, ch, videos, 'catchup');
+			videosAdded = counts.added;
+			videosUpdated = counts.updated;
+		} else if (unknown.length && yt.quotaUsed >= requestBudget) {
+			await persistCatchupCursor(env.DB, userId, channelId, token || null, alreadyPulled);
+			await recordQuota(env.DB, 'catchup', { callCount: yt.quotaUsed, generalUnits: yt.quotaUsed });
+			await recordYoutubeCalls(env.DB, yt);
+			const result: SyncResult = {
+				syncType: 'content',
+				status: 'ok',
+				channelsChecked: 1,
+				videosAdded,
+				videosUpdated: 0,
+				estimatedQuotaUnits: yt.quotaUsed,
+				errorSummary: 'Catch-up paused: per-request API budget exhausted. Resume to continue.',
+				done: false,
+				nextPageToken: token || undefined,
+				pulled: alreadyPulled,
+				want,
+				totalChannels: 1,
+				budgetExhausted: true,
+				remainingBudget: Math.max(0, dailyLeft - yt.quotaUsed),
+			};
+			await recordRun(env.DB, userId, result, startedAt);
+			return result;
+		}
+
 		await touchChannelSync(env.DB, ch.channel_id);
-		const nextPulled = pulled + pageIds.length;
+		const nextPulled = alreadyPulled + pageIds.length;
 		const done = !page.nextPageToken || nextPulled >= want;
+		await persistCatchupCursor(env.DB, userId, channelId, done ? null : page.nextPageToken ?? null, done ? 0 : nextPulled);
+		if (yt.quotaUsed) await recordQuota(env.DB, 'catchup', { callCount: yt.quotaUsed, generalUnits: yt.quotaUsed });
+		await recordYoutubeCalls(env.DB, yt);
 		const result: SyncResult = {
 			syncType: 'content',
 			status: 'ok',
 			channelsChecked: 1,
-			videosAdded: counts.added,
-			videosUpdated: counts.updated,
+			videosAdded,
+			videosUpdated,
 			estimatedQuotaUnits: yt.quotaUsed,
 			errorSummary: null,
 			done,
@@ -824,9 +909,9 @@ export async function catchUpChannel(
 			pulled: nextPulled,
 			want,
 			totalChannels: 1,
+			remainingBudget: Math.max(0, dailyLeft - yt.quotaUsed),
 		};
 		await recordRun(env.DB, userId, result, startedAt);
-		await recordYoutubeCalls(env.DB, yt);
 		return result;
 	} catch (error) {
 		const quota = error instanceof YoutubeApiError && error.quotaExceeded;
@@ -843,4 +928,20 @@ export async function catchUpChannel(
 		await recordRun(env.DB, userId, result, startedAt);
 		return result;
 	}
+}
+
+async function persistCatchupCursor(
+	db: D1Database,
+	userId: string,
+	channelId: string,
+	pageToken: string | null,
+	pulled: number,
+): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE channel_prefs SET catchup_page_token = ?, catchup_pulled = ?, catchup_updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			 WHERE user_id = ? AND channel_id = ?`,
+		)
+		.bind(pageToken, pulled, userId, channelId)
+		.run();
 }

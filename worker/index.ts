@@ -39,7 +39,7 @@ import { getQuadSettings, putQuadSettings } from './db/quadSettings';
 import { runScheduledQuadRefresh } from './services/quadSchedule';
 import { catchUpChannel, syncSubscriptions } from './services/sync';
 import { runFeedMaintenance, syncFeedNow } from './services/feedSchedule';
-import { handleWebSubNotification, handleWebSubVerification, WEBSUB_CALLBACK_PATH } from './services/websub';
+import { handleWebSubNotification, handleWebSubVerification, WEBSUB_CALLBACK_PATH, countWebSubEvents } from './services/websub';
 import { processPendingWebSubEvents } from './services/websubProcess';
 import { YoutubeApiError } from './services/youtube';
 import { isLiveGridSize } from '../src/types';
@@ -402,7 +402,12 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 	if (path === '/api/sync/status' && request.method === 'GET') {
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
-		return json({ lastSyncAt: await lastSyncAt(env.DB, user.id), connected: Boolean(user.encrypted_refresh_token) });
+		const websubEvents = await countWebSubEvents(env.DB);
+		return json({
+			lastSyncAt: await lastSyncAt(env.DB, user.id),
+			connected: Boolean(user.encrypted_refresh_token),
+			websubEvents,
+		});
 	}
 
 	if ((path === '/api/sync/subscriptions' || path === '/api/sync/content') && request.method === 'POST') {

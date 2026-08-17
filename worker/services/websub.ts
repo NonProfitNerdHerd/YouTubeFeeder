@@ -6,6 +6,7 @@ export const WEBSUB_LEASE_SECONDS = 432000;
 export const MAX_ATOM_BYTES = 256_000;
 export const CHANNEL_ID_RE = /^UC[\w-]{22}$/;
 export const VIDEO_ID_RE = /^[\w-]{11}$/;
+export const ATOM_CONTENT_TYPES = new Set(['application/atom+xml', 'application/xml']);
 
 export function topicForChannel(channelId: string): string {
 	return `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
@@ -23,7 +24,7 @@ export function channelIdFromTopic(topic: string): string | null {
 	}
 }
 
-export async function hubSecretFromSession(sessionSecret: string): Promise<string> {
+async function hmacHex(sessionSecret: string, info: string, bytes: number): Promise<string> {
 	const key = await crypto.subtle.importKey(
 		'raw',
 		new TextEncoder().encode(sessionSecret),
@@ -31,13 +32,32 @@ export async function hubSecretFromSession(sessionSecret: string): Promise<strin
 		false,
 		['sign'],
 	);
-	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('youtube-websub-hub-secret'));
-	const bytes = new Uint8Array(sig);
-	return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(info));
+	return toHex(sig).slice(0, bytes);
+}
+
+export async function hubSecretFromSession(sessionSecret: string): Promise<string> {
+	return hmacHex(sessionSecret, 'youtube-websub-hub-secret', 32);
+}
+
+export async function callbackTokenFromSession(sessionSecret: string): Promise<string> {
+	return hmacHex(sessionSecret, 'youtube-websub-callback-token', 32);
 }
 
 function toHex(bytes: ArrayBuffer): string {
 	return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function timingSafeEqual(left: string, right: string): boolean {
+	if (left.length !== right.length) return false;
+	let ok = 0;
+	for (let i = 0; i < left.length; i++) ok |= left.charCodeAt(i) ^ right.charCodeAt(i);
+	return ok === 0;
+}
+
+export function acceptAtomContentType(header: string | null): boolean {
+	const raw = (header ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+	return ATOM_CONTENT_TYPES.has(raw);
 }
 
 export async function verifyHubSignature(secret: string, body: ArrayBuffer, header: string | null): Promise<boolean> {
@@ -50,10 +70,14 @@ export async function verifyHubSignature(secret: string, body: ArrayBuffer, head
 	const sig = await crypto.subtle.sign('HMAC', key, body);
 	const expected = toHex(sig).toLowerCase();
 	const given = match[1].toLowerCase();
-	if (expected.length !== given.length) return false;
-	let ok = 0;
-	for (let i = 0; i < expected.length; i++) ok |= expected.charCodeAt(i) ^ given.charCodeAt(i);
-	return ok === 0;
+	return timingSafeEqual(expected, given);
+}
+
+export function feedSelfHref(xml: string): string | null {
+	const selfThenHref = /<link\b[^>]*\brel=["']self["'][^>]*\bhref=["']([^"']+)["'][^>]*>/i.exec(xml);
+	if (selfThenHref?.[1]) return selfThenHref[1];
+	const hrefThenSelf = /<link\b[^>]*\bhref=["']([^"']+)["'][^>]*\brel=["']self["'][^>]*>/i.exec(xml);
+	return hrefThenSelf?.[1] ?? null;
 }
 
 function decodeXml(value: string): string {
@@ -134,16 +158,40 @@ export async function recordYoutubeCalls(db: D1Database, yt: { quotaUsed: number
 	}
 }
 
-export function callbackUrl(origin: string): string {
-	return `${origin.replace(/\/$/, '')}${WEBSUB_CALLBACK_PATH}`;
+export async function dailyQuotaUsed(db: D1Database, endpoint: string): Promise<number> {
+	const day = new Date().toISOString().slice(0, 10);
+	const row = await db
+		.prepare(`SELECT general_units FROM api_quota_daily WHERE day = ? AND endpoint = ?`)
+		.bind(day, endpoint)
+		.first<{ general_units: number }>();
+	return row?.general_units ?? 0;
+}
+
+export async function countWebSubEvents(db: D1Database): Promise<{ pending: number; error: number; dead: number }> {
+	const rows = await db
+		.prepare(`SELECT status, COUNT(*) AS n FROM websub_events GROUP BY status`)
+		.all<{ status: string; n: number }>();
+	const counts = { pending: 0, error: 0, dead: 0 };
+	for (const row of rows.results ?? []) {
+		if (row.status === 'pending') counts.pending = row.n;
+		else if (row.status === 'error') counts.error = row.n;
+		else if (row.status === 'dead') counts.dead = row.n;
+	}
+	return counts;
+}
+
+export function callbackUrl(origin: string, token: string): string {
+	const url = new URL(`${origin.replace(/\/$/, '')}${WEBSUB_CALLBACK_PATH}`);
+	url.searchParams.set('token', token);
+	return url.toString();
 }
 
 export async function requestHub(
 	mode: 'subscribe' | 'unsubscribe',
-	params: { origin: string; channelId: string; secret: string },
+	params: { origin: string; channelId: string; secret: string; token: string },
 ): Promise<{ ok: boolean; status: number }> {
 	const body = new URLSearchParams({
-		'hub.callback': callbackUrl(params.origin),
+		'hub.callback': callbackUrl(params.origin, params.token),
 		'hub.topic': topicForChannel(params.channelId),
 		'hub.verify': 'async',
 		'hub.mode': mode,
@@ -224,6 +272,7 @@ export async function subscribeHubChannels(env: Env, channelIds: string[]): Prom
 	const session = env.SESSION_SECRET;
 	if (!origin || !session || channelIds.length === 0) return 0;
 	const secret = await hubSecretFromSession(session);
+	const token = await callbackTokenFromSession(session);
 	const now = new Date().toISOString();
 	let n = 0;
 	for (const channelId of channelIds) {
@@ -235,7 +284,7 @@ export async function subscribeHubChannels(env: Env, channelIds: string[]): Prom
 			.first<{ status: string; lease_expires_at: string | null; failure_count: number }>();
 		if (existing?.status === 'active' && existing.lease_expires_at && existing.lease_expires_at > now) continue;
 		await upsertWebSubRow(env.DB, channelId, { status: 'pending', lastSubscribeAttemptAt: now, lastError: null });
-		const result = await requestHub('subscribe', { origin, channelId, secret });
+		const result = await requestHub('subscribe', { origin, channelId, secret, token });
 		await recordQuota(env.DB, 'websub.subscribe', { callCount: 1, generalUnits: 0 });
 		n += 1;
 		if (!result.ok) {
@@ -260,6 +309,7 @@ export async function unsubscribeIfOrphaned(env: Env, channelIds: string[]): Pro
 	const session = env.SESSION_SECRET;
 	if (!origin || !session) return;
 	const secret = await hubSecretFromSession(session);
+	const token = await callbackTokenFromSession(session);
 	const now = new Date().toISOString();
 	for (const channelId of channelIds) {
 		const row = await env.DB.prepare(
@@ -268,7 +318,7 @@ export async function unsubscribeIfOrphaned(env: Env, channelIds: string[]): Pro
 			.bind(channelId)
 			.first<{ n: number }>();
 		if ((row?.n ?? 0) > 0) continue;
-		await requestHub('unsubscribe', { origin, channelId, secret });
+		await requestHub('unsubscribe', { origin, channelId, secret, token });
 		await recordQuota(env.DB, 'websub.unsubscribe', { callCount: 1, generalUnits: 0 });
 		await upsertWebSubRow(env.DB, channelId, { status: 'inactive', lastSubscribeAttemptAt: now, lastError: null });
 	}
@@ -332,7 +382,21 @@ export async function renewExpiringLeases(env: Env, limit = HUB_FETCH_LIMIT): Pr
 	return subscribed;
 }
 
+async function expectedCallbackToken(env: Env): Promise<string | null> {
+	const secret = env.SESSION_SECRET;
+	if (!secret) return null;
+	return callbackTokenFromSession(secret);
+}
+
 export async function handleWebSubVerification(env: Env, url: URL): Promise<Response> {
+	const expected = await expectedCallbackToken(env);
+	const token = url.searchParams.get('token') ?? '';
+	if (!expected || !timingSafeEqual(token, expected)) {
+		return new Response('invalid callback', { status: 404 });
+	}
+	if (url.pathname !== WEBSUB_CALLBACK_PATH) {
+		return new Response('invalid callback', { status: 404 });
+	}
 	const mode = url.searchParams.get('hub.mode');
 	const topic = url.searchParams.get('hub.topic') ?? '';
 	const challenge = url.searchParams.get('hub.challenge') ?? '';
@@ -368,9 +432,18 @@ export async function handleWebSubVerification(env: Env, url: URL): Promise<Resp
 }
 
 export async function handleWebSubNotification(env: Env, request: Request): Promise<{ response: Response; inserted: number }> {
+	const url = new URL(request.url);
+	const expected = await expectedCallbackToken(env);
+	const token = url.searchParams.get('token') ?? '';
+	if (!expected || url.pathname !== WEBSUB_CALLBACK_PATH || !timingSafeEqual(token, expected)) {
+		return { response: new Response('invalid callback', { status: 404 }), inserted: 0 };
+	}
 	const lengthHeader = Number(request.headers.get('content-length') ?? '0');
 	if (lengthHeader > MAX_ATOM_BYTES) {
 		return { response: new Response('payload too large', { status: 413 }), inserted: 0 };
+	}
+	if (!acceptAtomContentType(request.headers.get('content-type'))) {
+		return { response: new Response('unsupported media type', { status: 415 }), inserted: 0 };
 	}
 	const secret = env.SESSION_SECRET;
 	if (!secret) {
@@ -381,15 +454,34 @@ export async function handleWebSubNotification(env: Env, request: Request): Prom
 		return { response: new Response('payload too large', { status: 413 }), inserted: 0 };
 	}
 	const hubSecret = await hubSecretFromSession(secret);
-	const ok = await verifyHubSignature(hubSecret, body, request.headers.get('x-hub-signature'));
-	if (!ok) {
+	const signed = await verifyHubSignature(hubSecret, body, request.headers.get('x-hub-signature'));
+	if (!signed) {
 		return { response: new Response('invalid signature', { status: 403 }), inserted: 0 };
 	}
 	const xml = new TextDecoder().decode(body);
 	if (!xml.includes('<feed') && !xml.includes('<entry')) {
 		return { response: new Response('malformed atom', { status: 400 }), inserted: 0 };
 	}
+	const selfHref = feedSelfHref(xml);
+	const topicChannel = selfHref ? channelIdFromTopic(selfHref) : null;
+	if (selfHref && !topicChannel) {
+		return { response: new Response('invalid topic', { status: 400 }), inserted: 0 };
+	}
 	const entries = parseAtomEntries(xml);
+	const channels = new Set(entries.map((entry) => entry.channelId));
+	if (channels.size > 1) {
+		return { response: new Response('mixed channel payload', { status: 400 }), inserted: 0 };
+	}
+	const payloadChannel = [...channels][0] ?? topicChannel;
+	if (payloadChannel && topicChannel && payloadChannel !== topicChannel) {
+		return { response: new Response('topic channel mismatch', { status: 400 }), inserted: 0 };
+	}
+	if (payloadChannel && !CHANNEL_ID_RE.test(payloadChannel)) {
+		return { response: new Response('invalid channel', { status: 400 }), inserted: 0 };
+	}
+	if (entries.some((entry) => !VIDEO_ID_RE.test(entry.videoId) || entry.channelId !== payloadChannel)) {
+		return { response: new Response('invalid entry', { status: 400 }), inserted: 0 };
+	}
 	const inserted = await insertWebSubEvents(env.DB, entries);
 	await recordQuota(env.DB, 'websub.notify', { callCount: 1, generalUnits: 0 });
 	return { response: new Response(null, { status: 204 }), inserted };

@@ -1,5 +1,7 @@
 -- Per-user subscription membership, WebSub state, and daily API accounting.
 -- channels.subscribed is retained for compatibility but must not drive queries.
+-- Global subscriptions are NOT copied onto users. Membership comes only from
+-- existing channel_prefs(user_id, channel_id) rows.
 
 ALTER TABLE channel_prefs ADD COLUMN is_subscribed INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE channel_prefs ADD COLUMN last_subscription_sync_id TEXT;
@@ -14,16 +16,8 @@ CREATE INDEX idx_channel_prefs_user_subscribed ON channel_prefs(user_id, is_subs
 CREATE INDEX idx_channel_prefs_channel_subscribed ON channel_prefs(channel_id, is_subscribed);
 CREATE INDEX idx_channel_prefs_sync_id ON channel_prefs(last_subscription_sync_id);
 
--- Copy today's global subscribed list onto each existing user (single-user production).
-INSERT OR IGNORE INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull, is_subscribed)
-SELECT u.id, c.channel_id, 1, 0, 1
-FROM users u
-CROSS JOIN channels c
-WHERE c.subscribed = 1;
-
-UPDATE channel_prefs
-SET is_subscribed = 1
-WHERE channel_id IN (SELECT channel_id FROM channels WHERE subscribed = 1);
+-- Existing prefs only. Do not INSERT from channels.subscribed.
+UPDATE channel_prefs SET is_subscribed = 1;
 
 CREATE TABLE websub_subscriptions (
 	channel_id TEXT PRIMARY KEY,

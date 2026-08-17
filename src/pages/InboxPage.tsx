@@ -25,6 +25,8 @@ interface SyncApiBody {
 	channelsSkipped?: number;
 	warnings?: SyncWarning[];
 	status?: string;
+	budgetExhausted?: boolean;
+	remainingBudget?: number;
 }
 
 function syncMessage(body: SyncApiBody, fallback: string): string {
@@ -384,6 +386,10 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				const nextWant = body.want ?? want;
 				setStatus(`Catching up ${title}… ${pulled} / ${nextWant}`);
 				await load();
+				if (body.budgetExhausted) {
+					setStatus(body.errorSummary || 'Catch-up paused: API budget exhausted. Resume to continue.');
+					break;
+				}
 				if (body.done) break;
 				pageToken = body.nextPageToken ?? '';
 				if (!pageToken) break;

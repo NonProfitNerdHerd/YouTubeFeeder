@@ -20,6 +20,8 @@ export class MemorySyncDb {
 	events = new Map<string, Row>();
 	quota: Row[] = [];
 	users = new Map<string, Row>();
+	reconcileState: Row | null = null;
+	failFanout = false;
 
 	prepare(sql: string) {
 		const statement = {
@@ -99,6 +101,8 @@ export class MemorySyncDb {
 			last_subscription_sync_id: (prev as Row).last_subscription_sync_id ?? null,
 			subscription_seen_at: (prev as Row).subscription_seen_at ?? null,
 			unsubscribed_at: (prev as Row).unsubscribed_at ?? null,
+			catchup_page_token: (prev as Row).catchup_page_token ?? null,
+			catchup_pulled: (prev as Row).catchup_pulled ?? 0,
 		});
 	}
 
@@ -165,9 +169,21 @@ export class MemorySyncDb {
 				row.status = 'done';
 				row.processed_at = nowIso();
 				row.last_error = null;
+				row.last_attempt_at = nowIso();
 				return 1;
 			}
 			return 0;
+		}
+		if (normalized.startsWith('UPDATE websub_events SET status = ?')) {
+			const id = String(bound[bound.length - 1]);
+			const row = this.events.get(id);
+			if (!row) return 0;
+			row.status = bound[0];
+			row.attempts = bound[1];
+			row.last_attempt_at = bound[2];
+			row.next_attempt_at = bound[3];
+			row.last_error = bound[4];
+			return 1;
 		}
 		if (normalized.startsWith('UPDATE websub_events SET status = \'error\'')) {
 			const id = String(bound[bound.length - 1]);
@@ -219,6 +235,7 @@ export class MemorySyncDb {
 			return 1;
 		}
 		if (normalized.startsWith('INSERT OR IGNORE INTO inbox_state') && normalized.includes('SELECT p.user_id')) {
+			if (this.failFanout) throw new Error('fanout_failed');
 			const videoId = String(bound[0]);
 			const channelId = String(bound[1]);
 			let n = 0;
@@ -254,6 +271,8 @@ export class MemorySyncDb {
 				attempts: 0,
 				last_error: null,
 				created_at: nowIso(),
+				last_attempt_at: null,
+				next_attempt_at: null,
 			});
 			return 1;
 		}
@@ -321,12 +340,42 @@ export class MemorySyncDb {
 			return 1;
 		}
 		if (normalized.startsWith('INSERT INTO api_quota_daily')) {
-			this.quota.push({
-				endpoint: bound[1],
-				call_count: bound[2],
-				general_units: bound[3],
-				search_calls: bound[4],
-			});
+			const day = String(bound[0]);
+			const endpoint = String(bound[1]);
+			const existing = this.quota.find((row) => row.day === day && row.endpoint === endpoint);
+			if (existing) {
+				existing.call_count = Number(existing.call_count ?? 0) + Number(bound[2] ?? 0);
+				existing.general_units = Number(existing.general_units ?? 0) + Number(bound[3] ?? 0);
+				existing.search_calls = Number(existing.search_calls ?? 0) + Number(bound[4] ?? 0);
+			} else {
+				this.quota.push({
+					day,
+					endpoint,
+					call_count: bound[2],
+					general_units: bound[3],
+					search_calls: bound[4],
+				});
+			}
+			return 1;
+		}
+		if (normalized.startsWith('INSERT INTO feed_reconcile_state') || normalized.includes('ON CONFLICT(id) DO UPDATE SET')) {
+			if (normalized.includes('feed_reconcile_state')) {
+				this.reconcileState = {
+					id: 1,
+					day: bound[0],
+					units_used: bound[1],
+					last_channel_id: bound[2],
+				};
+				return 1;
+			}
+		}
+		if (normalized.startsWith('UPDATE channel_prefs SET catchup_page_token')) {
+			const key = prefKey(String(bound[2]), String(bound[3]));
+			const pref = this.prefs.get(key);
+			if (!pref) return 0;
+			pref.catchup_page_token = bound[0];
+			pref.catchup_pulled = bound[1];
+			pref.catchup_updated_at = nowIso();
 			return 1;
 		}
 		if (normalized.includes('last_subscription_sync_id') && normalized.startsWith('INSERT INTO channel_prefs')) {
@@ -434,10 +483,65 @@ export class MemorySyncDb {
 			return rows.slice(0, limit);
 		}
 		if (normalized.includes('FROM websub_events WHERE status IN')) {
-			const limit = Number(bound[0] ?? 50);
+			const now = bound.length > 1 ? String(bound[0]) : '';
+			const limit = Number(bound[bound.length - 1] ?? 50);
 			return [...this.events.values()]
-				.filter((row) => row.status === 'pending' || row.status === 'error')
+				.filter((row) => {
+					if (row.status !== 'pending' && row.status !== 'error') return false;
+					if (now && row.next_attempt_at != null && String(row.next_attempt_at) > now) return false;
+					return true;
+				})
 				.slice(0, limit);
+		}
+		if (normalized.includes('SELECT status, COUNT(*) AS n FROM websub_events')) {
+			const counts = new Map<string, number>();
+			for (const row of this.events.values()) {
+				const status = String(row.status);
+				counts.set(status, (counts.get(status) ?? 0) + 1);
+			}
+			return [...counts.entries()].map(([status, n]) => ({ status, n }));
+		}
+		if (normalized.includes('SELECT general_units FROM api_quota_daily')) {
+			const day = String(bound[0]);
+			const endpoint = String(bound[1]);
+			const row = this.quota.find((item) => item.day === day && item.endpoint === endpoint);
+			return row ? [{ general_units: row.general_units ?? 0 }] : [];
+		}
+		if (normalized.includes('FROM feed_reconcile_state')) {
+			return this.reconcileState ? [this.reconcileState] : [];
+		}
+		if (normalized.includes('LEFT JOIN websub_subscriptions w') && normalized.includes('FROM channels c')) {
+			const now = String(bound[0] ?? '');
+			const rows = [...this.channels.values()]
+				.filter((ch) => [...this.prefs.values()].some((p) => p.channel_id === ch.channel_id && p.is_subscribed === 1))
+				.map((ch) => {
+					const w = this.websub.get(String(ch.channel_id));
+					return {
+						channel_id: ch.channel_id,
+						uploads_playlist_id: ch.uploads_playlist_id,
+						last_synchronized_at: ch.last_synchronized_at ?? null,
+						websub_status: w?.status ?? null,
+						lease_expires_at: w?.lease_expires_at ?? null,
+						last_verified_at: w?.last_verified_at ?? null,
+						_priority:
+							!w ||
+							['error', 'pending', 'inactive'].includes(String(w.status)) ||
+							w.lease_expires_at == null ||
+							String(w.lease_expires_at) <= now ||
+							w.last_verified_at == null
+								? 0
+								: 1,
+					};
+				});
+			rows.sort((a, b) => {
+				if (a._priority !== b._priority) return a._priority - b._priority;
+				if (!a.last_synchronized_at && b.last_synchronized_at) return -1;
+				if (a.last_synchronized_at && !b.last_synchronized_at) return 1;
+				const byTime = String(a.last_synchronized_at ?? '').localeCompare(String(b.last_synchronized_at ?? ''));
+				if (byTime !== 0) return byTime;
+				return String(a.channel_id).localeCompare(String(b.channel_id));
+			});
+			return rows.slice(0, 80);
 		}
 		if (normalized.includes('SELECT channel_id FROM channel_prefs') && normalized.includes('last_subscription_sync_id')) {
 			const userId = String(bound[0]);
@@ -505,6 +609,8 @@ export class MemorySyncDb {
 					max_videos_to_pull: pref.max_videos_to_pull ?? 0,
 					newest_seen_published_at: pref.newest_seen_published_at ?? null,
 					last_synchronized_at: ch.last_synchronized_at ?? null,
+					catchup_page_token: pref.catchup_page_token ?? null,
+					catchup_pulled: pref.catchup_pulled ?? 0,
 				},
 			];
 		}

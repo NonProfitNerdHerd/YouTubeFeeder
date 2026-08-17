@@ -1,8 +1,8 @@
 import { randomToken } from '../auth/crypto';
 import { accessTokenForUser } from './googleToken';
 import { syncSubscriptions, type SyncResult } from './sync';
-import { processPendingWebSubEvents, runGlobalBootstrap } from './websubProcess';
-import { RECONCILE_USER_LIMIT, renewExpiringLeases } from './websub';
+import { processPendingWebSubEvents, runGlobalBootstrap, runStaleChannelReconcile } from './websubProcess';
+import { countWebSubEvents, RECONCILE_USER_LIMIT, renewExpiringLeases } from './websub';
 
 const EVENT_RETRY_LIMIT = 50;
 const BOOTSTRAP_BUDGET = 8;
@@ -65,24 +65,42 @@ export async function reconcileStaleSubscriptions(env: Env, limit = RECONCILE_US
 export async function runFeedMaintenance(env: Env): Promise<{
 	renewed: number;
 	eventsProcessed: number;
+	eventsFailed: number;
+	eventsDead: number;
 	reconciled: number;
 	bootstrapped: number;
+	swept: number;
 }> {
 	const renewed = await renewExpiringLeases(env);
 	const events = await processPendingWebSubEvents(env, EVENT_RETRY_LIMIT);
 	const bootstrapped = await runGlobalBootstrap(env, BOOTSTRAP_BUDGET);
+	const sweep = await runStaleChannelReconcile(env);
 	const reconciled = await reconcileStaleSubscriptions(env);
+	const eventCounts = await countWebSubEvents(env.DB);
 	console.log(
 		JSON.stringify({
 			operation: 'feed_maintenance',
 			renewed,
 			eventsProcessed: events.processed,
 			eventsFailed: events.failed,
+			eventsDead: eventCounts.dead,
+			eventsPending: eventCounts.pending,
+			eventsError: eventCounts.error,
 			reconciled,
 			bootstrapped: bootstrapped.channels,
+			swept: sweep.channels,
+			sweepUnits: sweep.unitsUsed,
 		}),
 	);
-	return { renewed, eventsProcessed: events.processed, reconciled, bootstrapped: bootstrapped.channels };
+	return {
+		renewed,
+		eventsProcessed: events.processed,
+		eventsFailed: events.failed,
+		eventsDead: eventCounts.dead,
+		reconciled,
+		bootstrapped: bootstrapped.channels,
+		swept: sweep.channels,
+	};
 }
 
 /** Manual Sync now: drain WebSub events and a small global bootstrap budget. Always done:true for InboxPage. */
