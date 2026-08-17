@@ -406,7 +406,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		if (!user.encrypted_refresh_token) {
-			return apiError(409, 'not_connected', 'Reconnect with Create account with Google so YouTubeFeeder can store a refresh token.');
+			return apiError(409, 'not_connected', 'Reconnect with Create account with Google so StreamFeeder can store a refresh token.');
 		}
 		const recent = await lastSyncAt(env.DB, user.id);
 		const offset = Number(url.searchParams.get('offset') ?? '0') || 0;
@@ -431,7 +431,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		if (!user.encrypted_refresh_token) {
-			return apiError(409, 'not_connected', 'Reconnect with Create account with Google so YouTubeFeeder can store a refresh token.');
+			return apiError(409, 'not_connected', 'Reconnect with Create account with Google so StreamFeeder can store a refresh token.');
 		}
 		const body = await readJson<{ channelId?: string; pageToken?: string; pulled?: number }>(request);
 		if (!body?.channelId) return apiError(400, 'invalid_json', 'Expected channelId.');
@@ -482,7 +482,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		if (!user.encrypted_refresh_token) {
-			return apiError(409, 'not_connected', 'Reconnect with Create account with Google so YouTubeFeeder can store a refresh token.');
+			return apiError(409, 'not_connected', 'Reconnect with Create account with Google so StreamFeeder can store a refresh token.');
 		}
 		try {
 			const token = await accessTokenForUser(env, user);

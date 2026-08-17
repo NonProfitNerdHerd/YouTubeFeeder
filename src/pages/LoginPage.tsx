@@ -23,7 +23,7 @@ export function LoginPage() {
 	return (
 		<main className="login">
 			<section className="login-card">
-				<h1>{android ? STREAMFEEDER_DISPLAY_NAME : 'YouTubeFeeder'}</h1>
+				<h1>{STREAMFEEDER_DISPLAY_NAME}</h1>
 				<p>
 					{android
 						? 'Sign in with Google. Inbox and watchlists stay in sync with the website under the same account.'

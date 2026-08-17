@@ -1035,7 +1035,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							<span className="hamburger" aria-hidden="true" />
 						</button>
 					) : null}
-					<h1>{androidClient ? STREAMFEEDER_DISPLAY_NAME : 'YouTubeFeeder'}</h1>
+					<h1>{STREAMFEEDER_DISPLAY_NAME}</h1>
 					{androidClient ? null : (
 					<div className="app-tabs" role="tablist" aria-label="Main">
 						<button
