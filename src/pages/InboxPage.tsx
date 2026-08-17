@@ -397,27 +397,43 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		await load();
 	}
 
-	async function saveEdit(event: FormEvent<HTMLFormElement>) {
-		event.preventDefault();
-		if (!editing) return;
-		const form = new FormData(event.currentTarget);
+	async function persistChannelEdit(channel: ChannelRecord, form: FormData): Promise<number | null> {
 		const selected = form.getAll('categoryIds').map(String);
-		const res = await fetch(`/api/channels/${encodeURIComponent(editing.channelId)}`, {
+		const maxVideosToPull = Number(form.get('maxVideosToPull') || 0);
+		const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}`, {
 			method: 'PATCH',
 			headers: { 'content-type': 'application/json' },
 			credentials: 'same-origin',
 			body: JSON.stringify({
 				followInInbox: form.get('followInInbox') === 'on',
-				maxVideosToPull: Number(form.get('maxVideosToPull') || 0),
+				maxVideosToPull,
 				categoryIds: selected,
 			}),
 		});
 		if (!res.ok) {
 			setError('Could not save channel settings.');
-			return;
+			return null;
 		}
+		return maxVideosToPull;
+	}
+
+	async function saveEdit(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!editing) return;
+		const pull = await persistChannelEdit(editing, new FormData(event.currentTarget));
+		if (pull === null) return;
 		setEditing(null);
 		await load();
+	}
+
+	async function catchUpFromEdit(form: HTMLFormElement) {
+		if (!editing || syncing) return;
+		const channel = editing;
+		const pull = await persistChannelEdit(channel, new FormData(form));
+		if (pull === null) return;
+		setEditing(null);
+		await load();
+		await catchUpChannel(channel.channelId, channel.title, pull);
 	}
 
 	async function removeCategory(id: string) {
@@ -1378,7 +1394,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					{leftTab === 'streams' ? (
 						<div className="left-scroll">
 							{streamsList.map((ch) => (
-								<div key={ch.channelId} className={channelId === ch.channelId ? 'sub-row active stream-row' : 'sub-row stream-row'}>
+								<div key={ch.channelId} className={channelId === ch.channelId ? 'sub-row active' : 'sub-row'}>
 									<button
 										className="sub"
 										type="button"
@@ -1390,9 +1406,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 										<img src={ch.thumbnailUrl} alt="" />
 										<span>
 											<strong className="video-title">{ch.title}</strong>
-											<small className="muted">
-												{ch.followInInbox ? 'Following' : 'Not following'} · pull {ch.maxVideosToPull}
-											</small>
+											<small className="muted">{ch.followInInbox ? 'Following' : 'Not following'}</small>
 											<small className="muted">
 												{ch.lastSynchronizedAt
 													? `Last synced: ${new Date(ch.lastSynchronizedAt).toLocaleString()}`
@@ -1400,14 +1414,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 											</small>
 											<small className="muted cat-tags">{categoryNames(ch, categories)}</small>
 										</span>
-									</button>
-									<button
-										className="ghost tiny"
-										type="button"
-										disabled={syncing}
-										onClick={() => void catchUpChannel(ch.channelId, ch.title, ch.maxVideosToPull)}
-									>
-										Catch up
 									</button>
 									<button className="ghost tiny" type="button" onClick={() => setEditing(ch)}>
 										Edit
@@ -1694,7 +1700,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							Follow in inbox (always pull new videos)
 						</label>
 						<label>
-							Max existing videos to pull
+							How many older videos to catch up (0–500)
 							<input type="number" name="maxVideosToPull" min={0} max={500} defaultValue={editing.maxVideosToPull} />
 						</label>
 						<fieldset className="modal-cats">
@@ -1710,6 +1716,17 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<div className="modal-actions">
 							<button className="ghost" type="button" onClick={() => setEditing(null)}>
 								Cancel
+							</button>
+							<button
+								className="ghost"
+								type="button"
+								disabled={syncing}
+								onClick={(event) => {
+									const form = event.currentTarget.form;
+									if (form) void catchUpFromEdit(form);
+								}}
+							>
+								{syncing ? 'Catching up…' : 'Catch up'}
 							</button>
 							<button className="ghost" type="submit">
 								Save

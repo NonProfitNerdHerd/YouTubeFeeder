@@ -686,10 +686,6 @@
 	border-radius: 8px;
 }
 
-.sub-row.stream-row {
-	grid-template-columns: 1fr auto auto;
-}
-
 .sub-row.active {
 	background: #243044;
 }
