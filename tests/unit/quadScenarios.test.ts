@@ -8,7 +8,7 @@ function mockYt(handler: (path: string, params: Record<string, string>) => unkno
 	return {
 		quotaUsed: 0,
 		searchQueries: 0,
-		calls: { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 },
+		calls: { search: 0, videos: 0, playlistItems: 0, channels: 0, subscriptions: 0, other: 0 },
 		async getJson(path, params) {
 			if (path === 'search') {
 				this.quotaUsed += 100;
@@ -222,10 +222,11 @@ describe('Quad simulated API-call scenarios', () => {
 	it('Scenario 9: Feed sync and Quad refresh stay isolated', () => {
 		const index = readFileSync(new URL('../../worker/index.ts', import.meta.url), 'utf8');
 		expect(index).toContain('runScheduledQuadRefresh');
-		expect(index).toContain('syncAllDueContent');
+		expect(index).toContain('runFeedMaintenance');
 		const scheduled = index.slice(index.indexOf('async scheduled'));
-		expect(scheduled.indexOf('syncAllDueContent')).toBeGreaterThan(-1);
-		expect(scheduled.indexOf('runScheduledQuadRefresh')).toBeGreaterThan(scheduled.indexOf('syncAllDueContent'));
+		expect(scheduled.indexOf('runFeedMaintenance')).toBeGreaterThan(-1);
+		expect(scheduled.indexOf('runScheduledQuadRefresh')).toBeGreaterThan(scheduled.indexOf('runFeedMaintenance'));
+		expect(scheduled).not.toContain('syncAllDueContent');
 		const refresh = readFileSync(new URL('../../worker/services/quadRefresh.ts', import.meta.url), 'utf8');
 		expect(refresh).toContain("withLock(store, userId, 'confirm'");
 		expect(refresh).toContain("withLock(store, userId, 'discover'");

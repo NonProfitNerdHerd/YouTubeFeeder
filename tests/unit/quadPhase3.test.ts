@@ -10,7 +10,7 @@ function mockYt(handler: (path: string, params: Record<string, string>) => unkno
 	return {
 		quotaUsed: 0,
 		searchQueries: 0,
-		calls: { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 },
+		calls: { search: 0, videos: 0, playlistItems: 0, channels: 0, subscriptions: 0, other: 0 },
 		async getJson(path, params) {
 			if (path === 'search') {
 				this.quotaUsed += 100;
@@ -83,10 +83,11 @@ describe('quad phase 3 intervals and UI copy', () => {
 
 	it('scheduled handler runs Feed and Quad in separate waitUntil blocks', () => {
 		const index = readFileSync(new URL('../../worker/index.ts', import.meta.url), 'utf8');
-		expect(index).toMatch(/syncAllDueContent/);
+		expect(index).toMatch(/runFeedMaintenance/);
 		expect(index).toMatch(/runScheduledQuadRefresh/);
 		expect(index).not.toMatch(/continueCronContent/);
-		expect(index.split('ctx.waitUntil').length).toBe(3);
+		const scheduled = index.slice(index.indexOf('async scheduled'));
+		expect(scheduled.split('ctx.waitUntil').length).toBe(3);
 	});
 
 	it('Quad settings live in live_quad_settings not Feed settings', () => {

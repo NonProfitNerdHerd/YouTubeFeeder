@@ -1,9 +1,13 @@
-/** Minimal D1 stand-in for content-sync unit tests. */
+/** Minimal D1 stand-in for content-sync and WebSub unit tests. */
 
 type Row = Record<string, unknown>;
 
 function nowIso() {
 	return new Date().toISOString();
+}
+
+function prefKey(userId: string, channelId: string) {
+	return `${userId}:${channelId}`;
 }
 
 export class MemorySyncDb {
@@ -12,6 +16,10 @@ export class MemorySyncDb {
 	inbox = new Map<string, Row>();
 	prefs = new Map<string, Row>();
 	syncRuns: Row[] = [];
+	websub = new Map<string, Row>();
+	events = new Map<string, Row>();
+	quota: Row[] = [];
+	users = new Map<string, Row>();
 
 	prepare(sql: string) {
 		const statement = {
@@ -22,8 +30,8 @@ export class MemorySyncDb {
 				return statement;
 			},
 			run: async () => {
-				this.exec(sql, statement._bound);
-				return { success: true };
+				const changes = this.exec(sql, statement._bound);
+				return { success: true, meta: { changes } };
 			},
 			first: async <T>() => {
 				const rows = this.query(sql, statement._bound);
@@ -42,58 +50,132 @@ export class MemorySyncDb {
 		return [];
 	}
 
-	seedChannel(row: {
-		channel_id: string;
-		title?: string;
-		uploads_playlist_id: string | null;
-		subscribed?: number;
-		follow_in_inbox?: number;
-		max_videos_to_pull?: number;
-		newest_seen_published_at?: string | null;
-		last_synchronized_at?: string | null;
-	}) {
+	seedUser(id: string, extras?: Row) {
+		this.users.set(id, { id, google_account_id: id, display_name: id, encrypted_refresh_token: 'enc', ...extras });
+	}
+
+	seedChannel(
+		row: {
+			channel_id: string;
+			title?: string;
+			uploads_playlist_id: string | null;
+			subscribed?: number;
+			follow_in_inbox?: number;
+			max_videos_to_pull?: number;
+			newest_seen_published_at?: string | null;
+			last_synchronized_at?: string | null;
+			is_subscribed?: number;
+			bootstrap_status?: string | null;
+			bootstrap_page_token?: string | null;
+		},
+		userId = 'user-1',
+	) {
+		const existing = this.channels.get(row.channel_id) ?? {};
 		this.channels.set(row.channel_id, {
+			...existing,
 			channel_id: row.channel_id,
 			title: row.title ?? row.channel_id,
 			description: '',
 			thumbnail_url: '',
 			uploads_playlist_id: row.uploads_playlist_id,
 			subscribed: row.subscribed ?? 1,
-			last_synchronized_at: row.last_synchronized_at ?? null,
+			last_synchronized_at: row.last_synchronized_at ?? (existing as Row).last_synchronized_at ?? null,
+			bootstrap_status: row.bootstrap_status ?? (existing as Row).bootstrap_status ?? null,
+			bootstrap_page_token: row.bootstrap_page_token ?? (existing as Row).bootstrap_page_token ?? null,
 		});
-		this.prefs.set(`${'user-1'}:${row.channel_id}`, {
-			user_id: 'user-1',
+		const key = prefKey(userId, row.channel_id);
+		const prev = this.prefs.get(key) ?? {};
+		this.prefs.set(key, {
+			...prev,
+			user_id: userId,
 			channel_id: row.channel_id,
 			follow_in_inbox: row.follow_in_inbox ?? 1,
 			max_videos_to_pull: row.max_videos_to_pull ?? 0,
 			newest_seen_published_at: row.newest_seen_published_at ?? null,
+			is_subscribed: row.is_subscribed ?? 1,
+			last_subscription_sync_id: (prev as Row).last_subscription_sync_id ?? null,
+			subscription_seen_at: (prev as Row).subscription_seen_at ?? null,
+			unsubscribed_at: (prev as Row).unsubscribed_at ?? null,
 		});
 	}
 
-	private exec(sql: string, bound: unknown[]) {
+	private exec(sql: string, bound: unknown[]): number {
 		const normalized = sql.replace(/\s+/g, ' ').trim();
 		if (normalized.startsWith('UPDATE channels SET last_synchronized_at')) {
 			const channelId = String(bound[bound.length - 1]);
 			const row = this.channels.get(channelId);
 			if (row) row.last_synchronized_at = bound.length > 1 ? String(bound[0]) : nowIso();
-			return;
+			return row ? 1 : 0;
 		}
 		if (normalized.startsWith('UPDATE channels SET uploads_playlist_id = NULL')) {
 			const channelId = String(bound[0]);
 			const row = this.channels.get(channelId);
 			if (row) row.uploads_playlist_id = null;
-			return;
+			return row ? 1 : 0;
 		}
 		if (normalized.startsWith('UPDATE channels SET uploads_playlist_id = ?')) {
 			const playlistId = bound[0] as string | null;
 			const channelId = String(bound[1]);
 			const row = this.channels.get(channelId);
 			if (row) row.uploads_playlist_id = playlistId;
-			return;
+			return row ? 1 : 0;
+		}
+		if (normalized.includes('UPDATE channels SET bootstrap_status')) {
+			const channelId = String(bound[bound.length - 1]);
+			const row = this.channels.get(channelId) ?? { channel_id: channelId };
+			if (normalized.includes("bootstrap_status = 'unavailable'")) {
+				row.bootstrap_status = 'unavailable';
+				row.bootstrap_updated_at = bound[0];
+			} else if (normalized.includes("bootstrap_status = 'in_progress'")) {
+				row.bootstrap_status = 'in_progress';
+				row.bootstrap_page_token = bound[0];
+				row.bootstrap_updated_at = bound[1];
+			} else if (normalized.includes("bootstrap_status = 'done'")) {
+				row.bootstrap_status = 'done';
+				row.bootstrap_page_token = null;
+				row.bootstrap_updated_at = bound[0];
+			}
+			this.channels.set(channelId, row);
+			return 1;
 		}
 		if (normalized.startsWith('UPDATE channels SET subscribed = 0')) {
 			for (const row of this.channels.values()) row.subscribed = 0;
-			return;
+			return this.channels.size;
+		}
+		if (normalized.startsWith('UPDATE channel_prefs') && normalized.includes('is_subscribed = 0')) {
+			const seenAt = String(bound[0]);
+			const userId = String(bound[1]);
+			const syncId = String(bound[2]);
+			let n = 0;
+			for (const pref of this.prefs.values()) {
+				if (pref.user_id !== userId || pref.is_subscribed !== 1) continue;
+				if (pref.last_subscription_sync_id != null && pref.last_subscription_sync_id === syncId) continue;
+				pref.is_subscribed = 0;
+				pref.unsubscribed_at = seenAt;
+				n += 1;
+			}
+			return n;
+		}
+		if (normalized.startsWith('UPDATE websub_events SET status = \'done\'')) {
+			const row = this.events.get(String(bound[0]));
+			if (row) {
+				row.status = 'done';
+				row.processed_at = nowIso();
+				row.last_error = null;
+				return 1;
+			}
+			return 0;
+		}
+		if (normalized.startsWith('UPDATE websub_events SET status = \'error\'')) {
+			const id = String(bound[bound.length - 1]);
+			const row = this.events.get(id);
+			if (!row) return 0;
+			row.status = 'error';
+			row.attempts = Number(row.attempts ?? 0) + 1;
+			if (bound.length > 1) row.last_error = bound[0];
+			else if (normalized.includes('missing_api_key')) row.last_error = 'missing_api_key';
+			else if (normalized.includes('video_not_found')) row.last_error = 'video_not_found';
+			return 1;
 		}
 		if (normalized.startsWith('INSERT INTO sync_runs')) {
 			this.syncRuns.push({
@@ -108,9 +190,9 @@ export class MemorySyncDb {
 				estimated_quota_units: bound[8],
 				error_summary: bound[9],
 			});
-			return;
+			return 1;
 		}
-		if (normalized.startsWith('INSERT INTO videos')) {
+		if (normalized.startsWith('INSERT INTO videos') || normalized.startsWith('INSERT INTO videos (')) {
 			const videoId = String(bound[0]);
 			const existing = this.videos.get(videoId);
 			this.videos.set(videoId, {
@@ -131,17 +213,101 @@ export class MemorySyncDb {
 				embeddable: bound[14],
 				updated: Boolean(existing),
 			});
-			return;
+			return 1;
+		}
+		if (normalized.startsWith('INSERT OR IGNORE INTO inbox_state') && normalized.includes('SELECT p.user_id')) {
+			const videoId = String(bound[0]);
+			const channelId = String(bound[1]);
+			let n = 0;
+			for (const pref of this.prefs.values()) {
+				if (pref.channel_id !== channelId || pref.is_subscribed !== 1 || pref.follow_in_inbox !== 1) continue;
+				const key = `${pref.user_id}:${videoId}`;
+				if (!this.inbox.has(key)) {
+					this.inbox.set(key, { user_id: pref.user_id, video_id: videoId, unread: 1 });
+					n += 1;
+				}
+			}
+			return n;
 		}
 		if (normalized.startsWith('INSERT OR IGNORE INTO inbox_state')) {
 			const key = `${bound[0]}:${bound[1]}`;
 			if (!this.inbox.has(key)) {
 				this.inbox.set(key, { user_id: bound[0], video_id: bound[1], unread: 1 });
+				return 1;
 			}
-			return;
+			return 0;
+		}
+		if (normalized.startsWith('INSERT OR IGNORE INTO websub_events') || normalized.startsWith('INSERT OR IGNORE INTO websub_events')) {
+			const id = String(bound[0]);
+			if (this.events.has(id)) return 0;
+			this.events.set(id, {
+				id,
+				channel_id: bound[1],
+				video_id: bound[2],
+				title: bound[3],
+				published_at: bound[4],
+				updated_at: bound[5],
+				status: 'pending',
+				attempts: 0,
+				last_error: null,
+				created_at: nowIso(),
+			});
+			return 1;
+		}
+		if (normalized.startsWith('INSERT INTO websub_subscriptions') || normalized.startsWith('INSERT INTO websub_subscriptions')) {
+			const channelId = String(bound[0]);
+			const existing = this.websub.get(channelId) ?? {};
+			const status = bound[1] ?? existing.status ?? 'pending';
+			this.websub.set(channelId, {
+				...existing,
+				channel_id: channelId,
+				status: bound[1] ?? existing.status ?? 'pending',
+				lease_expires_at: bound[2] ?? existing.lease_expires_at ?? null,
+				last_subscribe_attempt_at: bound[3] ?? existing.last_subscribe_attempt_at ?? null,
+				last_verified_at: bound[4] ?? existing.last_verified_at ?? null,
+				failure_count: bound[5] ?? existing.failure_count ?? 0,
+				last_error: bound[6],
+			});
+			if (normalized.includes('ON CONFLICT')) {
+				const patch: Row = { ...existing, channel_id: channelId };
+				if (bound[1] != null) patch.status = bound[1];
+				if (bound[2] != null) patch.lease_expires_at = bound[2];
+				if (bound[3] != null) patch.last_subscribe_attempt_at = bound[3];
+				if (bound[4] != null) patch.last_verified_at = bound[4];
+				if (bound[5] != null) patch.failure_count = bound[5];
+				patch.last_error = bound[6];
+				this.websub.set(channelId, patch);
+			}
+			void status;
+			return 1;
+		}
+		if (normalized.startsWith('INSERT INTO api_quota_daily')) {
+			this.quota.push({
+				endpoint: bound[1],
+				call_count: bound[2],
+				general_units: bound[3],
+				search_calls: bound[4],
+			});
+			return 1;
+		}
+		if (normalized.includes('last_subscription_sync_id') && normalized.startsWith('INSERT INTO channel_prefs')) {
+			const key = prefKey(String(bound[0]), String(bound[1]));
+			const existing = this.prefs.get(key) ?? {};
+			this.prefs.set(key, {
+				...existing,
+				user_id: bound[0],
+				channel_id: bound[1],
+				follow_in_inbox: existing.follow_in_inbox ?? 1,
+				max_videos_to_pull: existing.max_videos_to_pull ?? 0,
+				is_subscribed: 1,
+				last_subscription_sync_id: bound[2],
+				subscription_seen_at: bound[3],
+				unsubscribed_at: null,
+			});
+			return 1;
 		}
 		if (normalized.startsWith('INSERT INTO channel_prefs')) {
-			const key = `${bound[0]}:${bound[1]}`;
+			const key = prefKey(String(bound[0]), String(bound[1]));
 			const existing = this.prefs.get(key) ?? {};
 			this.prefs.set(key, {
 				...existing,
@@ -150,11 +316,12 @@ export class MemorySyncDb {
 				follow_in_inbox: bound[2],
 				max_videos_to_pull: bound[3],
 				newest_seen_published_at: bound[4],
+				is_subscribed: existing.is_subscribed ?? 1,
 			});
-			return;
+			return 1;
 		}
 		if (normalized.startsWith('INSERT OR IGNORE INTO channel_prefs')) {
-			const key = `${bound[0]}:${bound[1]}`;
+			const key = prefKey(String(bound[0]), String(bound[1]));
 			if (!this.prefs.has(key)) {
 				this.prefs.set(key, {
 					user_id: bound[0],
@@ -162,9 +329,11 @@ export class MemorySyncDb {
 					follow_in_inbox: 1,
 					max_videos_to_pull: 0,
 					newest_seen_published_at: null,
+					is_subscribed: 1,
 				});
+				return 1;
 			}
-			return;
+			return 0;
 		}
 		if (normalized.startsWith('INSERT INTO channels')) {
 			const channelId = String(bound[0]);
@@ -175,26 +344,64 @@ export class MemorySyncDb {
 				title: bound[1],
 				description: bound[2],
 				thumbnail_url: bound[3],
-				subscribed: 1,
+				subscribed: (existing as Row).subscribed ?? 0,
 				last_synchronized_at: (existing as Row).last_synchronized_at ?? null,
 				uploads_playlist_id: (existing as Row).uploads_playlist_id ?? null,
 			});
-			return;
+			return 1;
 		}
+		return 0;
 	}
 
 	private query(sql: string, bound: unknown[]): Row[] {
 		const normalized = sql.replace(/\s+/g, ' ').trim();
+		if (normalized.includes('SELECT COUNT(*) AS n FROM channel_prefs')) {
+			const channelId = String(bound[0]);
+			const n = [...this.prefs.values()].filter((p) => p.channel_id === channelId && p.is_subscribed === 1).length;
+			return [{ n }];
+		}
+		if (normalized.includes('FROM websub_subscriptions WHERE channel_id = ?')) {
+			const row = this.websub.get(String(bound[0]));
+			return row ? [row] : [];
+		}
+		if (normalized.includes('FROM websub_subscriptions') && normalized.includes("status IN ('active', 'pending', 'error')")) {
+			const cutoff = String(bound[0]);
+			return [...this.websub.values()].filter(
+				(row) =>
+					['active', 'pending', 'error'].includes(String(row.status)) &&
+					(row.lease_expires_at == null || String(row.lease_expires_at) <= cutoff),
+			);
+		}
+		if (normalized.includes('FROM websub_events WHERE status IN')) {
+			const limit = Number(bound[0] ?? 50);
+			return [...this.events.values()]
+				.filter((row) => row.status === 'pending' || row.status === 'error')
+				.slice(0, limit);
+		}
+		if (normalized.includes('SELECT channel_id FROM channel_prefs') && normalized.includes('last_subscription_sync_id')) {
+			const userId = String(bound[0]);
+			const syncId = String(bound[1]);
+			return [...this.prefs.values()]
+				.filter(
+					(p) =>
+						p.user_id === userId &&
+						p.is_subscribed === 1 &&
+						(p.last_subscription_sync_id == null || p.last_subscription_sync_id !== syncId),
+				)
+				.map((p) => ({ channel_id: p.channel_id }));
+		}
+		if (normalized.includes('SELECT channel_id FROM channels WHERE uploads_playlist_id IS NULL')) {
+			const ids = new Set(bound.map(String));
+			return [...this.channels.values()]
+				.filter((ch) => ids.has(String(ch.channel_id)) && !ch.uploads_playlist_id)
+				.map((ch) => ({ channel_id: ch.channel_id }));
+		}
 		if (normalized.includes('FROM channels c') && normalized.includes('uploads_playlist_id IS NOT NULL')) {
 			const userId = String(bound[0]);
 			let rows = [...this.channels.values()]
-				.filter((ch) => ch.subscribed === 1 && ch.uploads_playlist_id)
 				.map((ch) => {
-					const pref = this.prefs.get(`${userId}:${ch.channel_id}`) ?? {
-						follow_in_inbox: 1,
-						max_videos_to_pull: 0,
-						newest_seen_published_at: null,
-					};
+					const pref = this.prefs.get(`${userId}:${ch.channel_id}`);
+					if (!pref || pref.is_subscribed !== 1 || !ch.uploads_playlist_id) return null;
 					return {
 						channel_id: ch.channel_id,
 						title: ch.title,
@@ -204,7 +411,8 @@ export class MemorySyncDb {
 						newest_seen_published_at: pref.newest_seen_published_at ?? null,
 						last_synchronized_at: ch.last_synchronized_at ?? null,
 					};
-				});
+				})
+				.filter((row): row is NonNullable<typeof row> => Boolean(row));
 			if (normalized.includes('last_synchronized_at IS NULL OR')) {
 				const staleBefore = String(bound[bound.length - 1]);
 				rows = rows
@@ -221,16 +429,57 @@ export class MemorySyncDb {
 			}
 			return rows;
 		}
+		if (normalized.includes('LEFT JOIN channel_prefs p') || (normalized.includes('FROM channels c') && normalized.includes('c.channel_id = ?'))) {
+			const userId = String(bound[0]);
+			const channelId = String(bound[1]);
+			const ch = this.channels.get(channelId);
+			const pref = this.prefs.get(prefKey(userId, channelId));
+			if (!ch || pref?.is_subscribed !== 1) return [];
+			return [
+				{
+					channel_id: ch.channel_id,
+					title: ch.title,
+					uploads_playlist_id: ch.uploads_playlist_id,
+					follow_in_inbox: pref.follow_in_inbox ?? 1,
+					max_videos_to_pull: pref.max_videos_to_pull ?? 0,
+					newest_seen_published_at: pref.newest_seen_published_at ?? null,
+					last_synchronized_at: ch.last_synchronized_at ?? null,
+				},
+			];
+		}
+		if (normalized.includes('FROM channels c') && normalized.includes('bootstrap_status')) {
+			return [...this.channels.values()]
+				.filter((ch) => {
+					const hasFollower = [...this.prefs.values()].some((p) => p.channel_id === ch.channel_id && p.is_subscribed === 1);
+					const status = ch.bootstrap_status;
+					return hasFollower && (status == null || status === 'pending' || status === 'in_progress');
+				})
+				.sort((a, b) => String(a.channel_id).localeCompare(String(b.channel_id)))
+				.slice(0, 20);
+		}
 		if (normalized.includes('SELECT video_id FROM videos WHERE video_id IN')) {
 			return bound
 				.map((id) => this.videos.get(String(id)))
 				.filter(Boolean)
 				.map((row) => ({ video_id: (row as Row).video_id }));
 		}
+		if (normalized.includes('FROM users u')) {
+			const cutoff = String(bound[0]);
+			const limit = Number(bound[1] ?? 10);
+			return [...this.users.values()]
+				.filter((u) => u.encrypted_refresh_token)
+				.filter((u) => {
+					const seen = [...this.prefs.values()].some(
+						(p) => p.user_id === u.id && p.subscription_seen_at && String(p.subscription_seen_at) > cutoff,
+					);
+					return !seen;
+				})
+				.slice(0, limit);
+		}
 		return [];
 	}
 }
 
-export function asEnv(db: MemorySyncDb): Env {
-	return { DB: db as unknown as D1Database } as Env;
+export function asEnv(db: MemorySyncDb, extras?: Partial<Env>): Env {
+	return { DB: db as unknown as D1Database, ...extras } as Env;
 }

@@ -42,4 +42,10 @@ describe('OAuth and Feed isolation audit', () => {
 		expect(wrangler.match(/"database_id"/g)?.length).toBe(1);
 		expect(wrangler).toContain('0 1,4,6,8,10,12,14,16,18,20,23 * * *');
 	});
+
+	it('scheduled handler no longer playlist-polls every user', () => {
+		const index = readFileSync(new URL('../../worker/index.ts', import.meta.url), 'utf8');
+		expect(index).not.toContain('syncAllDueContent');
+		expect(index).toContain('runFeedMaintenance');
+	});
 });

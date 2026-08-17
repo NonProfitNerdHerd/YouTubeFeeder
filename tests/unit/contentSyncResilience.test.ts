@@ -6,7 +6,7 @@ import { formatSyncCompletion, skippedChannelNames } from '../../src/lib/syncSta
 import { asEnv, MemorySyncDb } from './helpers/memorySyncDb';
 
 function emptyCalls() {
-	return { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 };
+	return { search: 0, videos: 0, playlistItems: 0, channels: 0, subscriptions: 0, other: 0 };
 }
 
 function mockYt(handler: YoutubeClient['getJson']): YoutubeClient {
@@ -24,6 +24,7 @@ function mockYt(handler: YoutubeClient['getJson']): YoutubeClient {
 				if (path === 'videos') yt.calls.videos += 1;
 				else if (path === 'playlistItems') yt.calls.playlistItems += 1;
 				else if (path === 'channels') yt.calls.channels += 1;
+				else if (path === 'subscriptions') yt.calls.subscriptions += 1;
 				else yt.calls.other += 1;
 			}
 			return handler(path, params);
@@ -442,7 +443,7 @@ describe('content sync playlist resilience', () => {
 });
 
 describe('subscription uploads playlist refresh', () => {
-	it('clears stale uploads playlist when channels.list omits a subscribed channel', async () => {
+	it('bootstraps uploads playlist only when missing and leaves existing playlists', async () => {
 		const db = new MemorySyncDb();
 		db.seedChannel({
 			channel_id: 'UCstale',
@@ -452,10 +453,10 @@ describe('subscription uploads playlist refresh', () => {
 		db.seedChannel({
 			channel_id: 'UCgood',
 			title: 'Good',
-			uploads_playlist_id: 'UUold',
+			uploads_playlist_id: null,
 		});
 
-		const yt = mockYt(async (path) => {
+		const yt = mockYt(async (path, params) => {
 			if (path === 'subscriptions') {
 				return {
 					items: [
@@ -465,6 +466,7 @@ describe('subscription uploads playlist refresh', () => {
 				};
 			}
 			if (path === 'channels') {
+				expect(params.id).toBe('UCgood');
 				return {
 					items: [
 						{
@@ -480,10 +482,11 @@ describe('subscription uploads playlist refresh', () => {
 		const result = await syncSubscriptions(asEnv(db), 'user-1', 'token', yt);
 		expect(result.status).toBe('ok');
 		expect(db.channels.get('UCgood')?.uploads_playlist_id).toBe('UUgood');
-		expect(db.channels.get('UCstale')?.uploads_playlist_id).toBeNull();
+		expect(db.channels.get('UCstale')?.uploads_playlist_id).toBe('UUstale');
+		expect(yt.calls.channels).toBe(1);
 	});
 
-	it('does not overwrite last_synchronized_at on existing channels', async () => {
+	it('does not overwrite last_synchronized_at or existing uploads playlist', async () => {
 		const db = new MemorySyncDb();
 		db.seedChannel({
 			channel_id: 'UCgood',
@@ -497,16 +500,12 @@ describe('subscription uploads playlist refresh', () => {
 					items: [{ snippet: { title: 'Good', resourceId: { channelId: 'UCgood' }, thumbnails: {} } }],
 				};
 			}
-			if (path === 'channels') {
-				return {
-					items: [{ id: 'UCgood', contentDetails: { relatedPlaylists: { uploads: 'UUgood' } } }],
-				};
-			}
 			throw new Error(path);
 		});
 		await syncSubscriptions(asEnv(db), 'user-1', 'token', yt);
 		expect(db.channels.get('UCgood')?.last_synchronized_at).toBe('2026-08-01T00:00:00Z');
-		expect(db.channels.get('UCgood')?.uploads_playlist_id).toBe('UUgood');
+		expect(db.channels.get('UCgood')?.uploads_playlist_id).toBe('UUold');
+		expect(yt.calls.channels).toBe(0);
 	});
 });
 

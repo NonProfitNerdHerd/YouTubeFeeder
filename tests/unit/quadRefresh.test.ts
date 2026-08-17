@@ -9,7 +9,7 @@ function mockYt(handler: (path: string, params: Record<string, string>) => unkno
 	return {
 		quotaUsed: 0,
 		searchQueries: 0,
-		calls: { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 },
+		calls: { search: 0, videos: 0, playlistItems: 0, channels: 0, subscriptions: 0, other: 0 },
 		async getJson(path, params) {
 			if (path === 'search') {
 				this.quotaUsed += 100;
