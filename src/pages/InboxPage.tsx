@@ -1141,16 +1141,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					>
 						Streams
 					</button>
-					{!androidClient && leftTab === 'streams' ? (
-						<button
-							className="feed-toolbar-sync"
-							type="button"
-							disabled={syncing}
-							onClick={() => void syncSubscriptionsOnly()}
-						>
-							{syncing ? 'Syncing…' : 'Sync subscriptions'}
-						</button>
-					) : null}
 					<button
 						className={leftTab === 'categories' ? 'tab active' : 'tab'}
 						type="button"
@@ -1199,6 +1189,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								))}
 							</select>
 						</label>
+					) : null}
+					{!androidClient && leftTab === 'streams' ? (
+						<button
+							className="feed-toolbar-sync"
+							type="button"
+							disabled={syncing}
+							onClick={() => void syncSubscriptionsOnly()}
+						>
+							{syncing ? 'Syncing…' : `Sync subscriptions (${streamsList.length})`}
+						</button>
 					) : null}
 				</nav>
 			) : null}
