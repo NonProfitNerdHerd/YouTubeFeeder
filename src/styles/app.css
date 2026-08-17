@@ -40,8 +40,37 @@
 	color: var(--muted);
 }
 
+.status-line p {
+	margin: 0;
+}
+
 .status-line.error {
 	color: #ffb4b4;
+}
+
+.status-line.warning {
+	color: #e6c27a;
+}
+
+.status-details-toggle {
+	margin-top: 6px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+	font: inherit;
+}
+
+.status-skip-list {
+	margin: 6px 0 0;
+	padding-left: 1.2rem;
+}
+
+.status-skip-hint {
+	margin: 4px 0 0;
+	opacity: 0.9;
 }
 
 .home {

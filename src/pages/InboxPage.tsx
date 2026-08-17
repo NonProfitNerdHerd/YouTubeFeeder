@@ -5,6 +5,7 @@ import { youtubeEmbedUrl, youtubeWatchUrl } from '../lib/youtubeUrl';
 import { isAndroidClient, isNarrowFeeder } from '../lib/androidClient';
 import { TEST_APK_PATH, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease';
 import { qrSvgForUrl } from '../lib/qrSvg';
+import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../lib/syncStatus';
 import { LivePage } from './LivePage';
 import '../styles/app.css';
 import '../styles/live.css';
@@ -21,6 +22,9 @@ interface SyncApiBody {
 	pulled?: number;
 	want?: number;
 	totalChannels?: number;
+	channelsSkipped?: number;
+	warnings?: SyncWarning[];
+	status?: string;
 }
 
 function syncMessage(body: SyncApiBody, fallback: string): string {
@@ -160,6 +164,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [error, setError] = useState<string | null>(null);
 	const [syncing, setSyncing] = useState(false);
 	const [status, setStatus] = useState<string | null>(null);
+	const [syncWarnings, setSyncWarnings] = useState<SyncWarning[]>([]);
+	const [showSkipDetails, setShowSkipDetails] = useState(false);
 	const autoStarted = useRef(false);
 	const androidClient = isAndroidClient();
 	const [narrow, setNarrow] = useState(isNarrowFeeder());
@@ -253,6 +259,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	async function syncNow() {
 		setSyncing(true);
 		setError(null);
+		setSyncWarnings([]);
+		setShowSkipDetails(false);
 		setStatus('Syncing subscriptions…');
 		try {
 			const sub = await fetch('/api/sync/subscriptions?force=1', { method: 'POST', credentials: 'same-origin' });
@@ -262,19 +270,25 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			await load();
 			let offset = 0;
 			let added = 0;
+			const accumulatedWarnings: SyncWarning[] = [];
 			for (;;) {
 				const content = await fetch(`/api/sync/content?force=1&offset=${offset}`, { method: 'POST', credentials: 'same-origin' });
 				const contentBody = (await content.json()) as SyncApiBody;
 				if (!content.ok) throw new Error(syncMessage(contentBody, 'Video sync failed.'));
 				added += contentBody.videosAdded ?? 0;
+				if (contentBody.warnings?.length) accumulatedWarnings.push(...contentBody.warnings);
 				const next = contentBody.nextOffset ?? offset;
 				setStatus(`Fetching videos… ${next} / ${contentBody.totalChannels ?? next} channels`);
 				await load();
 				if (contentBody.done) break;
+				if (next === offset) throw new Error('Video sync stalled without progressing.');
 				offset = next;
 			}
-			setStatus(`Updated ${added} videos.`);
+			setSyncWarnings(accumulatedWarnings);
+			setStatus(formatSyncCompletion(added, accumulatedWarnings));
 		} catch (err: unknown) {
+			setStatus(null);
+			setSyncWarnings([]);
 			setError(err instanceof Error ? err.message : 'Sync failed.');
 			await load().catch(() => undefined);
 		} finally {
@@ -845,7 +859,40 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			</header>
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
 			{status || error ? (
-				<p className={error ? 'status-line error' : 'status-line'}>{[status, error].filter(Boolean).join(' — ')}</p>
+				<div
+					className={
+						error
+							? 'status-line error'
+							: syncWarnings.length
+								? 'status-line warning'
+								: 'status-line'
+					}
+				>
+					<p>{[status, error].filter(Boolean).join(' — ')}</p>
+					{!error && syncWarnings.length > 1 ? (
+						<>
+							<button
+								className="status-details-toggle"
+								type="button"
+								onClick={() => setShowSkipDetails((open) => !open)}
+							>
+								{showSkipDetails ? 'Hide skipped channels' : 'Show skipped channels'}
+							</button>
+							{showSkipDetails ? (
+								<ul className="status-skip-list" title={skippedChannelNames(syncWarnings).join(', ')}>
+									{skippedChannelNames(syncWarnings).map((name) => (
+										<li key={name}>{name}</li>
+									))}
+								</ul>
+							) : null}
+						</>
+					) : null}
+					{!error && syncWarnings.length === 1 ? (
+						<p className="status-skip-hint" title={syncWarnings[0]?.channelId}>
+							{syncWarnings[0]?.message}
+						</p>
+					) : null}
+				</div>
 			) : null}
 			{mainSection === 'live' ? (
 				<LivePage sidebarOpen={liveSidebarOpen} onHeaderStatus={setLiveHeaderStatus} onGridChrome={setLiveGridChrome} />

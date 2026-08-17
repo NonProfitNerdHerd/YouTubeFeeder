@@ -3,9 +3,27 @@ export class YoutubeApiError extends Error {
 		message: string,
 		readonly status: number,
 		readonly quotaExceeded: boolean,
+		readonly path: string = '',
+		readonly reason: string | null = null,
 	) {
 		super(message);
 		this.name = 'YoutubeApiError';
+	}
+
+	/** playlistItems 404 is a per-channel miss, not a global sync failure. */
+	get isPlaylistNotFound(): boolean {
+		return this.path === 'playlistItems' && this.status === 404;
+	}
+
+	/** Quota / rate / auth failures must abort the whole sync. */
+	get isGlobalFatal(): boolean {
+		if (this.quotaExceeded) return true;
+		if (this.status === 401 || this.status === 429) return true;
+		if (this.reason === 'quotaExceeded' || this.reason === 'dailyLimitExceeded') return true;
+		if (this.reason === 'authError' || this.reason === 'unauthorized' || this.reason === 'forbidden') {
+			return this.status === 401 || this.status === 403;
+		}
+		return false;
 	}
 }
 
@@ -18,6 +36,33 @@ export interface YoutubeClient {
 
 function emptyCalls() {
 	return { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 };
+}
+
+/** Extract a short YouTube error reason without retaining raw credential-bearing payloads. */
+export function extractYoutubeErrorReason(body: string): string | null {
+	if (!body) return null;
+	try {
+		const parsed = JSON.parse(body) as {
+			error?: { errors?: Array<{ reason?: string }>; status?: string };
+		};
+		const reason = parsed.error?.errors?.[0]?.reason;
+		if (typeof reason === 'string' && reason.length > 0 && reason.length <= 120) {
+			return reason.replace(/[^\w.-]/g, '');
+		}
+	} catch {
+		/* fall through to substring checks */
+	}
+	if (body.includes('quotaExceeded')) return 'quotaExceeded';
+	if (body.includes('dailyLimitExceeded')) return 'dailyLimitExceeded';
+	return null;
+}
+
+function sanitizeErrorMessage(path: string, status: number, quotaExceeded: boolean): string {
+	if (quotaExceeded) return 'YouTube API quota exhausted.';
+	if (status === 403) return 'YouTube API forbidden.';
+	if (status === 401) return 'YouTube API authorization failed.';
+	if (status === 429) return 'YouTube API rate limited.';
+	return `YouTube API ${path} failed (${status}).`;
 }
 
 export function createYoutubeClient(accessToken: string): YoutubeClient {
@@ -40,13 +85,21 @@ export function createYoutubeClient(accessToken: string): YoutubeClient {
 				else this.calls.other += 1;
 			}
 			const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-			if (res.status === 403 || res.status === 429) {
-				const body = await res.text();
-				const quotaExceeded = body.includes('quotaExceeded') || body.includes('dailyLimitExceeded');
-				throw new YoutubeApiError(quotaExceeded ? 'YouTube API quota exhausted.' : 'YouTube API forbidden.', res.status, quotaExceeded);
-			}
 			if (!res.ok) {
-				throw new YoutubeApiError(`YouTube API ${path} failed (${res.status}).`, res.status, false);
+				const body = await res.text();
+				const reason = extractYoutubeErrorReason(body);
+				const quotaExceeded =
+					reason === 'quotaExceeded' ||
+					reason === 'dailyLimitExceeded' ||
+					body.includes('quotaExceeded') ||
+					body.includes('dailyLimitExceeded');
+				throw new YoutubeApiError(
+					sanitizeErrorMessage(path, res.status, quotaExceeded),
+					res.status,
+					quotaExceeded,
+					path,
+					reason,
+				);
 			}
 			return (await res.json()) as T;
 		},
