@@ -252,15 +252,13 @@
 
 .inbox-avatar-select:hover .channel-avatar,
 .inbox-avatar-select:focus-visible .channel-avatar,
-.inbox-avatar-select.is-selected .channel-avatar,
-.inbox-item.selecting .inbox-avatar-select .channel-avatar {
+.inbox-avatar-select.is-selected .channel-avatar {
 	opacity: 0;
 }
 
 .inbox-avatar-select:hover .inbox-check,
 .inbox-avatar-select:focus-visible .inbox-check,
-.inbox-avatar-select.is-selected .inbox-check,
-.inbox-item.selecting .inbox-avatar-select .inbox-check {
+.inbox-avatar-select.is-selected .inbox-check {
 	display: flex;
 }
 

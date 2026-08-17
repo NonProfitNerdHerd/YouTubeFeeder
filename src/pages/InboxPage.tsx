@@ -767,7 +767,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			compact ? (
 				<div
 					key={item.videoId}
-					className={`${selectedVideo?.videoId === item.videoId ? 'inbox-item active' : 'inbox-item'}${item.unread ? ' unread' : ''}${inboxSelectedIds.includes(item.videoId) ? ' is-checked' : ''}${inboxSelectedIds.length > 0 && actions === 'inbox' && !androidClient ? ' selecting' : ''}`}
+					className={`${selectedVideo?.videoId === item.videoId ? 'inbox-item active' : 'inbox-item'}${item.unread ? ' unread' : ''}${inboxSelectedIds.includes(item.videoId) ? ' is-checked' : ''}`}
 				>
 					{actions === 'inbox' && !androidClient ? (
 						<button
