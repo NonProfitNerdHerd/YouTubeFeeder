@@ -84,6 +84,10 @@
 	overflow: hidden;
 }
 
+.home.home-streams {
+	grid-template-columns: minmax(200px, 1fr) minmax(200px, 1fr) minmax(280px, 2fr);
+}
+
 .subs {
 	border-right: 1px solid var(--border);
 	padding: 8px;
@@ -333,10 +337,6 @@
 	color: var(--text);
 }
 
-.streams-toolbar {
-	padding: 4px 4px 8px;
-}
-
 .feed-toolbar {
 	display: flex;
 	flex-wrap: wrap;
@@ -371,6 +371,12 @@
 	font: inherit;
 	font-size: 0.85rem;
 	line-height: 1.2;
+}
+
+.feed-toolbar-sync {
+	margin-left: 4px;
+	flex: 0 0 auto;
+	white-space: nowrap;
 }
 
 .tabs {
@@ -680,6 +686,10 @@
 	align-items: flex-start;
 	gap: 2px;
 	min-width: 0;
+}
+
+.sub .video-title {
+	font-weight: 400;
 }
 
 .cat-tags {

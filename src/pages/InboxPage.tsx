@@ -641,6 +641,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	}
 
 	const phoneLayout = androidClient || narrow;
+	const streamsThreeCol = !androidClient && !phoneLayout && leftTab === 'streams';
 	const selectedVideo =
 		items?.find((item) => item.videoId === selectedVideoId) ?? (phoneLayout ? null : (items?.[0] ?? null));
 
@@ -663,7 +664,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		);
 	}
 
-	function renderPreview(item: InboxItem, mode: 'inbox' | 'snoozed' | 'deleted' | 'watchlist') {
+	function renderPreview(item: InboxItem, mode: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams') {
 		return (
 			<div className="preview">
 				<header className="preview-header">
@@ -684,6 +685,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									onClick={() => void patchInbox(item.videoId, { action: 'restore' })}
 								>
 									<IconRestore />
+								</button>
+								{watchlistButton(item)}
+							</>
+						) : mode === 'streams' ? (
+							<>
+								<button
+									className="icon-btn"
+									type="button"
+									title="Delete"
+									aria-label="Delete"
+									onClick={() => void patchInbox(item.videoId, { action: 'delete' })}
+								>
+									<IconTrash />
 								</button>
 								{watchlistButton(item)}
 							</>
@@ -776,7 +790,11 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		);
 	}
 
-	function renderFeed(list: InboxItem[] | null, compact: boolean, actions: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'none' = 'none') {
+	function renderFeed(
+		list: InboxItem[] | null,
+		compact: boolean,
+		actions: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams' | 'none' = 'none',
+	) {
 		if (list === null && !error) return <p className="muted">Loading feed…</p>;
 		if (list?.length === 0) return <p className="muted">No videos in this view.</p>;
 		const allowMultiSelect = !androidClient && (actions === 'inbox' || actions === 'snoozed' || actions === 'deleted');
@@ -832,6 +850,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 										onClick={() => void patchInbox(item.videoId, { action: 'restore' })}
 									>
 										<IconRestore />
+									</button>
+									{watchlistButton(item)}
+								</>
+							) : actions === 'streams' ? (
+								<>
+									<button
+										className="icon-btn"
+										type="button"
+										title="Delete"
+										aria-label="Delete"
+										onClick={() => void patchInbox(item.videoId, { action: 'delete' })}
+									>
+										<IconTrash />
 									</button>
 									{watchlistButton(item)}
 								</>
@@ -1057,6 +1088,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					>
 						Categories Setup
 					</button>
+					{!androidClient ? (
+						<button
+							className="ghost tiny feed-toolbar-sync"
+							type="button"
+							disabled={syncing}
+							onClick={() => void syncSubscriptionsOnly()}
+						>
+							{syncing ? 'Syncing…' : 'Sync subscriptions'}
+						</button>
+					) : null}
 				</nav>
 			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
@@ -1099,7 +1140,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			{mainSection === 'live' ? (
 				<LivePage sidebarOpen={liveSidebarOpen} onHeaderStatus={setLiveHeaderStatus} onGridChrome={setLiveGridChrome} />
 			) : (
-			<div className={phoneLayout && selectedVideo ? 'home mobile-detail' : 'home'}>
+			<div
+				className={`${phoneLayout && selectedVideo ? 'home mobile-detail' : 'home'}${streamsThreeCol ? ' home-streams' : ''}`}
+			>
 				<aside className="subs">
 					{leftTab === 'inbox' ? (
 						<>
@@ -1315,17 +1358,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					) : null}
 					{leftTab === 'streams' ? (
 						<div className="left-scroll">
-							<div className="streams-toolbar">
-								<button className="ghost" type="button" disabled={syncing} onClick={() => void syncSubscriptionsOnly()}>
-									{syncing ? 'Syncing…' : 'Sync subscriptions'}
-								</button>
-							</div>
 							{channels.map((ch) => (
 								<div key={ch.channelId} className={channelId === ch.channelId ? 'sub-row active stream-row' : 'sub-row stream-row'}>
-									<button className="sub" type="button" onClick={() => setChannelId(ch.channelId)}>
+									<button
+										className="sub"
+										type="button"
+										onClick={() => {
+											setChannelId(ch.channelId);
+											setSelectedVideoId(null);
+										}}
+									>
 										<img src={ch.thumbnailUrl} alt="" />
 										<span>
-											<strong>{ch.title}</strong>
+											<strong className="video-title">{ch.title}</strong>
 											<small className="muted">
 												{ch.followInInbox ? 'Following' : 'Not following'} · pull {ch.maxVideosToPull}
 											</small>
@@ -1374,6 +1419,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						</div>
 					) : null}
 				</aside>
+				{streamsThreeCol ? (
+					<aside className="subs streams-video-list" aria-label="Stream videos">
+						<div className="left-scroll">
+							{channelId
+								? renderFeed(items, true, 'streams')
+								: (
+									<p className="muted pad">
+										Choose a stream on the left to see its videos, or use Edit to change follow settings.
+									</p>
+								)}
+						</div>
+					</aside>
+				) : null}
 				<section className="feed">
 					{phoneLayout && selectedVideo ? (
 						<button
@@ -1396,9 +1454,20 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					{leftTab === 'watchlist' && watchlistId && selectedVideo ? renderPreview(selectedVideo, 'watchlist') : null}
 					{leftTab === 'watchlist' && watchlistId && !selectedVideo ? <p className="muted">No videos in this watchlist.</p> : null}
 					{leftTab === 'watchlist' && !watchlistId ? <p className="muted">Select a watchlist to see saved videos.</p> : null}
-					{leftTab === 'streams' ? (
+					{streamsThreeCol ? (
+						selectedVideo ? (
+							renderPreview(selectedVideo, 'streams')
+						) : (
+							<p className="muted">
+								{channelId ? 'Select a video to preview.' : 'Select a stream, then a video to preview.'}
+							</p>
+						)
+					) : null}
+					{leftTab === 'streams' && !streamsThreeCol ? (
 						<>
-							<h2 className="pane-title">{channelId ? channels.find((c) => c.channelId === channelId)?.title ?? 'Stream' : 'Select a stream'}</h2>
+							<h2 className="pane-title video-title">
+								{channelId ? channels.find((c) => c.channelId === channelId)?.title ?? 'Stream' : 'Select a stream'}
+							</h2>
 							{channelId ? renderFeed(items, false) : <p className="muted">Choose a stream on the left to see its videos, or use Edit to change follow settings.</p>}
 						</>
 					) : null}
