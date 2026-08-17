@@ -9,7 +9,7 @@ import {
 	type YoutubeClient,
 	YoutubeApiError,
 } from './youtube';
-import { ensureHubSubscriptions, recordYoutubeCalls, unsubscribeIfOrphaned } from './websub';
+import { enqueueHubSubscriptions, recordYoutubeCalls } from './websub';
 
 interface SubscriptionPage {
 	nextPageToken?: string;
@@ -222,12 +222,6 @@ export async function syncSubscriptions(
 			);
 		}
 
-		const dropped = await env.DB.prepare(
-			`SELECT channel_id FROM channel_prefs
-			 WHERE user_id = ? AND is_subscribed = 1 AND (last_subscription_sync_id IS NULL OR last_subscription_sync_id != ?)`,
-		)
-			.bind(userId, syncId)
-			.all<{ channel_id: string }>();
 		await env.DB.prepare(
 			`UPDATE channel_prefs
 			 SET is_subscribed = 0, unsubscribed_at = ?
@@ -236,8 +230,7 @@ export async function syncSubscriptions(
 			.bind(seenAt, userId, syncId)
 			.run();
 
-		await ensureHubSubscriptions(env, ids);
-		await unsubscribeIfOrphaned(env, (dropped.results ?? []).map((row) => row.channel_id));
+		await enqueueHubSubscriptions(env, ids);
 
 		if (ids.length) {
 			const missing = await env.DB.prepare(

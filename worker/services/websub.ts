@@ -1,3 +1,5 @@
+import { chunk } from './youtube';
+
 export const YOUTUBE_HUB = 'https://pubsubhubbub.appspot.com/subscribe';
 export const WEBSUB_CALLBACK_PATH = '/api/websub/callback';
 export const WEBSUB_LEASE_SECONDS = 432000;
@@ -192,12 +194,38 @@ export async function upsertWebSubRow(
 		.run();
 }
 
-export async function ensureHubSubscriptions(env: Env, channelIds: string[]): Promise<void> {
+export async function enqueueHubSubscriptions(env: Env, channelIds: string[]): Promise<number> {
+	const ids = [...new Set(channelIds.filter((id) => CHANNEL_ID_RE.test(id)))];
+	for (const group of chunk(ids, 20)) {
+		await env.DB.batch(
+			group.map((channelId) =>
+				env.DB.prepare(
+					`INSERT INTO websub_subscriptions (channel_id, status, failure_count)
+					 VALUES (?, 'pending', 0)
+					 ON CONFLICT(channel_id) DO UPDATE SET
+						status = CASE WHEN websub_subscriptions.status = 'inactive' THEN 'pending' ELSE websub_subscriptions.status END`,
+				).bind(channelId),
+			),
+		);
+	}
+	return ids.length;
+}
+
+/** Heal rows missing after a crashed Reload: one D1 statement, no hub fetch. */
+export async function enqueueMissingHubSubscriptions(env: Env): Promise<void> {
+	await env.DB.prepare(
+		`INSERT OR IGNORE INTO websub_subscriptions (channel_id, status, failure_count)
+		 SELECT DISTINCT channel_id, 'pending', 0 FROM channel_prefs WHERE is_subscribed = 1`,
+	).run();
+}
+
+export async function subscribeHubChannels(env: Env, channelIds: string[]): Promise<number> {
 	const origin = env.PUBLIC_ORIGIN;
 	const session = env.SESSION_SECRET;
-	if (!origin || !session || channelIds.length === 0) return;
+	if (!origin || !session || channelIds.length === 0) return 0;
 	const secret = await hubSecretFromSession(session);
 	const now = new Date().toISOString();
+	let n = 0;
 	for (const channelId of channelIds) {
 		if (!CHANNEL_ID_RE.test(channelId)) continue;
 		const existing = await env.DB.prepare(
@@ -209,6 +237,7 @@ export async function ensureHubSubscriptions(env: Env, channelIds: string[]): Pr
 		await upsertWebSubRow(env.DB, channelId, { status: 'pending', lastSubscribeAttemptAt: now, lastError: null });
 		const result = await requestHub('subscribe', { origin, channelId, secret });
 		await recordQuota(env.DB, 'websub.subscribe', { callCount: 1, generalUnits: 0 });
+		n += 1;
 		if (!result.ok) {
 			await upsertWebSubRow(env.DB, channelId, {
 				status: 'error',
@@ -218,6 +247,12 @@ export async function ensureHubSubscriptions(env: Env, channelIds: string[]): Pr
 			});
 		}
 	}
+	return n;
+}
+
+/** @deprecated Reload/reconcile must enqueue only. Kept name for call sites that should not hub-POST. */
+export async function ensureHubSubscriptions(env: Env, channelIds: string[]): Promise<void> {
+	await enqueueHubSubscriptions(env, channelIds);
 }
 
 export async function unsubscribeIfOrphaned(env: Env, channelIds: string[]): Promise<void> {
@@ -258,41 +293,43 @@ export async function insertWebSubEvents(db: D1Database, entries: ParsedWebSubEn
 	return inserted;
 }
 
-export const LEASE_RENEW_LIMIT = 25;
-export const RECONCILE_USER_LIMIT = 10;
+export const HUB_FETCH_LIMIT = 20;
+export const LEASE_RENEW_LIMIT = HUB_FETCH_LIMIT;
+export const RECONCILE_USER_LIMIT = 2;
 
-export async function renewExpiringLeases(env: Env, limit = LEASE_RENEW_LIMIT): Promise<number> {
+export async function renewExpiringLeases(env: Env, limit = HUB_FETCH_LIMIT): Promise<number> {
+	await enqueueMissingHubSubscriptions(env);
 	const cutoff = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 	const staleAttempt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-	const rows = await env.DB.prepare(
-		`SELECT channel_id, status, lease_expires_at, last_subscribe_attempt_at FROM websub_subscriptions
-		 WHERE status IN ('active', 'pending', 'error')
-		 AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+	const due = await env.DB.prepare(
+		`SELECT w.channel_id FROM websub_subscriptions w
+		 WHERE w.status IN ('active', 'pending', 'error')
+		 AND (w.lease_expires_at IS NULL OR w.lease_expires_at <= ?)
+		 AND (w.last_subscribe_attempt_at IS NULL OR w.last_subscribe_attempt_at <= ?)
+		 AND EXISTS (SELECT 1 FROM channel_prefs p WHERE p.channel_id = w.channel_id AND p.is_subscribed = 1)
+		 ORDER BY CASE WHEN w.last_subscribe_attempt_at IS NULL THEN 0 ELSE 1 END,
+			w.last_subscribe_attempt_at ASC, w.channel_id ASC
 		 LIMIT ?`,
 	)
-		.bind(cutoff, limit * 4)
-		.all<{
-			channel_id: string;
-			status: string;
-			lease_expires_at: string | null;
-			last_subscribe_attempt_at: string | null;
-		}>();
-	const due = (rows.results ?? []).filter(
-		(row) => !row.last_subscribe_attempt_at || row.last_subscribe_attempt_at <= staleAttempt,
-	);
-	const ids = due.slice(0, limit).map((row) => row.channel_id);
-	const keep: string[] = [];
-	for (const channelId of ids) {
-		const followers = await env.DB.prepare(
-			`SELECT COUNT(*) AS n FROM channel_prefs WHERE channel_id = ? AND is_subscribed = 1`,
-		)
-			.bind(channelId)
-			.first<{ n: number }>();
-		if ((followers?.n ?? 0) > 0) keep.push(channelId);
-		else await unsubscribeIfOrphaned(env, [channelId]);
-	}
-	await ensureHubSubscriptions(env, keep);
-	return keep.length;
+		.bind(cutoff, staleAttempt, limit)
+		.all<{ channel_id: string }>();
+	const subscribeIds = (due.results ?? []).map((row) => row.channel_id);
+	const subscribed = await subscribeHubChannels(env, subscribeIds);
+	const remaining = Math.max(0, limit - subscribed);
+	if (remaining < 1) return subscribed;
+	const orphans = await env.DB.prepare(
+		`SELECT w.channel_id FROM websub_subscriptions w
+		 WHERE w.status IN ('active', 'pending', 'error')
+		 AND (w.last_subscribe_attempt_at IS NULL OR w.last_subscribe_attempt_at <= ?)
+		 AND NOT EXISTS (SELECT 1 FROM channel_prefs p WHERE p.channel_id = w.channel_id AND p.is_subscribed = 1)
+		 ORDER BY CASE WHEN w.last_subscribe_attempt_at IS NULL THEN 0 ELSE 1 END,
+			w.last_subscribe_attempt_at ASC, w.channel_id ASC
+		 LIMIT ?`,
+	)
+		.bind(staleAttempt, remaining)
+		.all<{ channel_id: string }>();
+	await unsubscribeIfOrphaned(env, (orphans.results ?? []).map((row) => row.channel_id));
+	return subscribed;
 }
 
 export async function handleWebSubVerification(env: Env, url: URL): Promise<Response> {

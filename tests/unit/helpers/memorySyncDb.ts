@@ -254,10 +254,47 @@ export class MemorySyncDb {
 			});
 			return 1;
 		}
-		if (normalized.startsWith('INSERT INTO websub_subscriptions') || normalized.startsWith('INSERT INTO websub_subscriptions')) {
+		if (normalized.startsWith('INSERT OR IGNORE INTO websub_subscriptions')) {
+			let n = 0;
+			for (const pref of this.prefs.values()) {
+				if (pref.is_subscribed !== 1) continue;
+				const channelId = String(pref.channel_id);
+				if (!this.websub.has(channelId)) {
+					this.websub.set(channelId, {
+						channel_id: channelId,
+						status: 'pending',
+						lease_expires_at: null,
+						last_subscribe_attempt_at: null,
+						last_verified_at: null,
+						failure_count: 0,
+						last_error: null,
+					});
+					n += 1;
+				}
+			}
+			return n;
+		}
+		if (normalized.includes("WHEN websub_subscriptions.status = 'inactive'")) {
+			const channelId = String(bound[0]);
+			const existing = this.websub.get(channelId);
+			if (!existing) {
+				this.websub.set(channelId, {
+					channel_id: channelId,
+					status: 'pending',
+					lease_expires_at: null,
+					last_subscribe_attempt_at: null,
+					last_verified_at: null,
+					failure_count: 0,
+					last_error: null,
+				});
+			} else if (existing.status === 'inactive') {
+				existing.status = 'pending';
+			}
+			return 1;
+		}
+		if (normalized.startsWith('INSERT INTO websub_subscriptions')) {
 			const channelId = String(bound[0]);
 			const existing = this.websub.get(channelId) ?? {};
-			const status = bound[1] ?? existing.status ?? 'pending';
 			this.websub.set(channelId, {
 				...existing,
 				channel_id: channelId,
@@ -269,7 +306,7 @@ export class MemorySyncDb {
 				last_error: bound[6],
 			});
 			if (normalized.includes('ON CONFLICT')) {
-				const patch: Row = { ...existing, channel_id: channelId };
+				const patch: Row = { ...this.websub.get(channelId), channel_id: channelId };
 				if (bound[1] != null) patch.status = bound[1];
 				if (bound[2] != null) patch.lease_expires_at = bound[2];
 				if (bound[3] != null) patch.last_subscribe_attempt_at = bound[3];
@@ -278,7 +315,6 @@ export class MemorySyncDb {
 				patch.last_error = bound[6];
 				this.websub.set(channelId, patch);
 			}
-			void status;
 			return 1;
 		}
 		if (normalized.startsWith('INSERT INTO api_quota_daily')) {
@@ -365,12 +401,34 @@ export class MemorySyncDb {
 			return row ? [row] : [];
 		}
 		if (normalized.includes('FROM websub_subscriptions') && normalized.includes("status IN ('active', 'pending', 'error')")) {
-			const cutoff = String(bound[0]);
-			return [...this.websub.values()].filter(
-				(row) =>
-					['active', 'pending', 'error'].includes(String(row.status)) &&
-					(row.lease_expires_at == null || String(row.lease_expires_at) <= cutoff),
-			);
+			const cutoff = normalized.includes('lease_expires_at') ? String(bound[0]) : '9999';
+			const staleAttempt = normalized.includes('last_subscribe_attempt_at')
+				? String(bound[normalized.includes('lease_expires_at') ? 1 : 0])
+				: '9999';
+			const limit = Number(bound[bound.length - 1] ?? 20);
+			const wantFollowers = normalized.includes('EXISTS') && !normalized.includes('NOT EXISTS');
+			const wantOrphans = normalized.includes('NOT EXISTS');
+			const rows = [...this.websub.values()].filter((row) => {
+				if (!['active', 'pending', 'error'].includes(String(row.status))) return false;
+				if (normalized.includes('lease_expires_at') && row.lease_expires_at != null && String(row.lease_expires_at) > cutoff) {
+					return false;
+				}
+				if (row.last_subscribe_attempt_at != null && String(row.last_subscribe_attempt_at) > staleAttempt) return false;
+				const followers = [...this.prefs.values()].some(
+					(p) => p.channel_id === row.channel_id && p.is_subscribed === 1,
+				);
+				if (wantFollowers && !followers) return false;
+				if (wantOrphans && followers) return false;
+				return true;
+			});
+			rows.sort((a, b) => {
+				if (a.last_subscribe_attempt_at == null && b.last_subscribe_attempt_at != null) return -1;
+				if (a.last_subscribe_attempt_at != null && b.last_subscribe_attempt_at == null) return 1;
+				const byAttempt = String(a.last_subscribe_attempt_at ?? '').localeCompare(String(b.last_subscribe_attempt_at ?? ''));
+				if (byAttempt !== 0) return byAttempt;
+				return String(a.channel_id).localeCompare(String(b.channel_id));
+			});
+			return rows.slice(0, limit);
 		}
 		if (normalized.includes('FROM websub_events WHERE status IN')) {
 			const limit = Number(bound[0] ?? 50);

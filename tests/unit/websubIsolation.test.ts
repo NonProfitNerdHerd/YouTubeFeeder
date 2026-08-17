@@ -7,7 +7,9 @@ import {
 	channelEligibleForUnsubscribe,
 	handleWebSubNotification,
 	handleWebSubVerification,
+	HUB_FETCH_LIMIT,
 	hubSecretFromSession,
+	renewExpiringLeases,
 	topicForChannel,
 	unsubscribeIfOrphaned,
 } from '../../worker/services/websub';
@@ -296,6 +298,57 @@ describe('WebSub callback and fan-out', () => {
 		expect(calls.some((url) => url.includes('pubsubhubbub.appspot.com'))).toBe(true);
 		expect(db.websub.get(CH_A)?.status).toBe('inactive');
 	});
+
+	it('Reload enqueues hub rows without calling the hub', async () => {
+		const db = new MemorySyncDb();
+		const calls: string[] = [];
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			calls.push(String(input));
+			return new Response(undefined, { status: 204 });
+		}) as typeof fetch;
+		const yt = mockYt(async (path) => {
+			if (path === 'subscriptions') return subItems([CH_A, CH_SHARED]);
+			return { items: [] };
+		});
+		const result = await syncSubscriptions(
+			asEnv(db, { PUBLIC_ORIGIN: 'https://example.com', SESSION_SECRET: SESSION }),
+			'user-1',
+			'token',
+			yt,
+		);
+		expect(result.status).toBe('ok');
+		expect(db.websub.get(CH_A)?.status).toBe('pending');
+		expect(db.websub.get(CH_SHARED)?.status).toBe('pending');
+		expect(calls.some((url) => url.includes('pubsubhubbub.appspot.com'))).toBe(false);
+	});
+
+	it('cron hub-subscribes never-attempted channels first, then the next batch', async () => {
+		expect(HUB_FETCH_LIMIT).toBe(20);
+		const db = new MemorySyncDb();
+		const ids = Array.from({ length: 45 }, (_, i) => `UC${String(i).padStart(22, '0')}`);
+		for (const channelId of ids) {
+			db.seedChannel({ channel_id: channelId, uploads_playlist_id: 'UU' }, 'user-1');
+		}
+		const hubCalls: string[] = [];
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			hubCalls.push(`${String(input)} ${String(init?.body ?? '')}`);
+			return new Response(undefined, { status: 204 });
+		}) as typeof fetch;
+		const env = asEnv(db, { PUBLIC_ORIGIN: 'https://example.com', SESSION_SECRET: SESSION });
+		expect(await renewExpiringLeases(env, 20)).toBe(20);
+		expect(hubCalls).toHaveLength(20);
+		const first = ids.filter((id) => db.websub.get(id)?.last_subscribe_attempt_at);
+		expect(first).toHaveLength(20);
+		hubCalls.length = 0;
+		expect(await renewExpiringLeases(env, 20)).toBe(20);
+		expect(hubCalls).toHaveLength(20);
+		const attempted = ids.filter((id) => db.websub.get(id)?.last_subscribe_attempt_at);
+		expect(attempted).toHaveLength(40);
+		hubCalls.length = 0;
+		expect(await renewExpiringLeases(env, 20)).toBe(5);
+		expect(hubCalls).toHaveLength(5);
+		expect(ids.every((id) => db.websub.get(id)?.last_subscribe_attempt_at)).toBe(true);
+	});
 });
 
 describe('scheduler and quota accounting', () => {
@@ -307,6 +360,10 @@ describe('scheduler and quota accounting', () => {
 		const feed = readFileSync(new URL('../../worker/services/feedSchedule.ts', import.meta.url), 'utf8');
 		expect(feed).not.toContain('syncAllDueContent');
 		expect(feed).not.toContain('syncContent(');
+		const sync = readFileSync(new URL('../../worker/services/sync.ts', import.meta.url), 'utf8');
+		expect(sync).toContain('enqueueHubSubscriptions');
+		expect(sync).not.toContain('subscribeHubChannels');
+		expect(sync).not.toContain('unsubscribeIfOrphaned');
 	});
 
 	it('search.list does not consume 100 general units', async () => {
