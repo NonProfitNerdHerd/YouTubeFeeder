@@ -1064,32 +1064,34 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
 						Inbox
 					</button>
-					<label className="feed-toolbar-filter">
-						<select
-							value={categoryId ?? ''}
-							aria-label="Category"
-							onChange={(event) => {
-								const next = event.target.value || null;
-								setCategoryId(next);
-								setSelectedVideoId(null);
-								setInboxSelectedIds([]);
-								if (leftTab === 'streams' && channelId) {
-									const selected = channels.find((ch) => ch.channelId === channelId);
-									if (next && selected && !selected.categoryIds.includes(next)) {
-										setChannelId(null);
+					{leftTab !== 'watchlist' && leftTab !== 'categories' ? (
+						<label className="feed-toolbar-filter">
+							<select
+								value={categoryId ?? ''}
+								aria-label="Category"
+								onChange={(event) => {
+									const next = event.target.value || null;
+									setCategoryId(next);
+									setSelectedVideoId(null);
+									setInboxSelectedIds([]);
+									if (leftTab === 'streams' && channelId) {
+										const selected = channels.find((ch) => ch.channelId === channelId);
+										if (next && selected && !selected.categoryIds.includes(next)) {
+											setChannelId(null);
+										}
 									}
-								}
-								leftScrollRef.current?.scrollTo({ top: 0 });
-							}}
-						>
-							<option value="">All categories</option>
-							{categories.map((cat) => (
-								<option key={cat.id} value={cat.id}>
-									{cat.name}
-								</option>
-							))}
-						</select>
-					</label>
+									leftScrollRef.current?.scrollTo({ top: 0 });
+								}}
+							>
+								<option value="">All categories</option>
+								{categories.map((cat) => (
+									<option key={cat.id} value={cat.id}>
+										{cat.name}
+									</option>
+								))}
+							</select>
+						</label>
+					) : null}
 					{!androidClient && leftTab === 'streams' ? (
 						<button
 							className="feed-toolbar-sync"
