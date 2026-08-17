@@ -1,0 +1,360 @@
+export const YOUTUBE_HUB = 'https://pubsubhubbub.appspot.com/subscribe';
+export const WEBSUB_CALLBACK_PATH = '/api/websub/callback';
+export const WEBSUB_LEASE_SECONDS = 432000;
+export const MAX_ATOM_BYTES = 256_000;
+export const CHANNEL_ID_RE = /^UC[\w-]{22}$/;
+export const VIDEO_ID_RE = /^[\w-]{11}$/;
+
+export function topicForChannel(channelId: string): string {
+	return `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+}
+
+export function channelIdFromTopic(topic: string): string | null {
+	try {
+		const url = new URL(topic);
+		if (url.hostname !== 'www.youtube.com' && url.hostname !== 'youtube.com') return null;
+		if (url.pathname !== '/feeds/videos.xml' && url.pathname !== '/xml/feeds/videos.xml') return null;
+		const id = url.searchParams.get('channel_id') ?? '';
+		return CHANNEL_ID_RE.test(id) ? id : null;
+	} catch {
+		return null;
+	}
+}
+
+export async function hubSecretFromSession(sessionSecret: string): Promise<string> {
+	const key = await crypto.subtle.importKey(
+		'raw',
+		new TextEncoder().encode(sessionSecret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign'],
+	);
+	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('youtube-websub-hub-secret'));
+	const bytes = new Uint8Array(sig);
+	return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+}
+
+function toHex(bytes: ArrayBuffer): string {
+	return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function verifyHubSignature(secret: string, body: ArrayBuffer, header: string | null): Promise<boolean> {
+	if (!header) return false;
+	const match = /^sha1=([a-fA-F0-9]{40})$/.exec(header.trim());
+	if (!match) return false;
+	const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, [
+		'sign',
+	]);
+	const sig = await crypto.subtle.sign('HMAC', key, body);
+	const expected = toHex(sig).toLowerCase();
+	const given = match[1].toLowerCase();
+	if (expected.length !== given.length) return false;
+	let ok = 0;
+	for (let i = 0; i < expected.length; i++) ok |= expected.charCodeAt(i) ^ given.charCodeAt(i);
+	return ok === 0;
+}
+
+function decodeXml(value: string): string {
+	return value
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&amp;/g, '&')
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'");
+}
+
+function tagValue(xml: string, tag: string): string | null {
+	const match = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(xml);
+	return match ? decodeXml(match[1].trim()) : null;
+}
+
+export interface ParsedWebSubEntry {
+	id: string;
+	channelId: string;
+	videoId: string;
+	title: string;
+	publishedAt: string | null;
+	updatedAt: string | null;
+}
+
+export function parseAtomEntries(xml: string): ParsedWebSubEntry[] {
+	if (!xml.includes('<entry')) return [];
+	const chunks = xml.split(/<entry[\s>]/i).slice(1);
+	const entries: ParsedWebSubEntry[] = [];
+	for (const raw of chunks) {
+		const entry = raw.split(/<\/entry>/i)[0] ?? '';
+		const videoId = tagValue(entry, 'yt:videoId') ?? tagValue(entry, 'videoId');
+		const channelId = tagValue(entry, 'yt:channelId') ?? tagValue(entry, 'channelId');
+		if (!videoId || !VIDEO_ID_RE.test(videoId) || !channelId || !CHANNEL_ID_RE.test(channelId)) continue;
+		const atomId = tagValue(entry, 'id') ?? `yt:video:${videoId}`;
+		const updatedAt = tagValue(entry, 'updated');
+		entries.push({
+			id: `${videoId}:${updatedAt ?? atomId}`,
+			channelId,
+			videoId,
+			title: (tagValue(entry, 'title') ?? '').slice(0, 500),
+			publishedAt: tagValue(entry, 'published'),
+			updatedAt,
+		});
+	}
+	return entries;
+}
+
+export async function recordQuota(
+	db: D1Database,
+	endpoint: string,
+	opts: { callCount?: number; generalUnits?: number; searchCalls?: number },
+): Promise<void> {
+	const day = new Date().toISOString().slice(0, 10);
+	await db
+		.prepare(
+			`INSERT INTO api_quota_daily (day, endpoint, call_count, general_units, search_calls)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(day, endpoint) DO UPDATE SET
+				call_count = call_count + excluded.call_count,
+				general_units = general_units + excluded.general_units,
+				search_calls = search_calls + excluded.search_calls`,
+		)
+		.bind(day, endpoint, opts.callCount ?? 1, opts.generalUnits ?? 0, opts.searchCalls ?? 0)
+		.run();
+}
+
+export async function recordYoutubeCalls(db: D1Database, yt: { quotaUsed: number; searchQueries: number; calls: Record<string, number> }): Promise<void> {
+	const mapping: Array<[string, number, number, number]> = [
+		['subscriptions.list', yt.calls.subscriptions ?? 0, yt.calls.subscriptions ?? 0, 0],
+		['channels.list', yt.calls.channels ?? 0, yt.calls.channels ?? 0, 0],
+		['playlistItems.list', yt.calls.playlistItems ?? 0, yt.calls.playlistItems ?? 0, 0],
+		['videos.list', yt.calls.videos ?? 0, yt.calls.videos ?? 0, 0],
+		['search.list', yt.calls.search ?? 0, 0, yt.searchQueries],
+	];
+	for (const [endpoint, calls, general, search] of mapping) {
+		if (calls > 0 || search > 0) await recordQuota(db, endpoint, { callCount: calls || search, generalUnits: general, searchCalls: search });
+	}
+}
+
+export function callbackUrl(origin: string): string {
+	return `${origin.replace(/\/$/, '')}${WEBSUB_CALLBACK_PATH}`;
+}
+
+export async function requestHub(
+	mode: 'subscribe' | 'unsubscribe',
+	params: { origin: string; channelId: string; secret: string },
+): Promise<{ ok: boolean; status: number }> {
+	const body = new URLSearchParams({
+		'hub.callback': callbackUrl(params.origin),
+		'hub.topic': topicForChannel(params.channelId),
+		'hub.verify': 'async',
+		'hub.mode': mode,
+		'hub.lease_seconds': String(WEBSUB_LEASE_SECONDS),
+		'hub.secret': params.secret,
+	});
+	const res = await fetch(YOUTUBE_HUB, {
+		method: 'POST',
+		headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		body,
+	});
+	return { ok: res.status >= 200 && res.status < 300, status: res.status };
+}
+
+export async function upsertWebSubRow(
+	db: D1Database,
+	channelId: string,
+	patch: {
+		status?: string;
+		leaseExpiresAt?: string | null;
+		lastSubscribeAttemptAt?: string | null;
+		lastVerifiedAt?: string | null;
+		failureCount?: number;
+		lastError?: string | null;
+	},
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO websub_subscriptions (channel_id, status, lease_expires_at, last_subscribe_attempt_at, last_verified_at, failure_count, last_error)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(channel_id) DO UPDATE SET
+				status = COALESCE(excluded.status, websub_subscriptions.status),
+				lease_expires_at = COALESCE(excluded.lease_expires_at, websub_subscriptions.lease_expires_at),
+				last_subscribe_attempt_at = COALESCE(excluded.last_subscribe_attempt_at, websub_subscriptions.last_subscribe_attempt_at),
+				last_verified_at = COALESCE(excluded.last_verified_at, websub_subscriptions.last_verified_at),
+				failure_count = COALESCE(excluded.failure_count, websub_subscriptions.failure_count),
+				last_error = excluded.last_error`,
+		)
+		.bind(
+			channelId,
+			patch.status ?? 'pending',
+			patch.leaseExpiresAt ?? null,
+			patch.lastSubscribeAttemptAt ?? null,
+			patch.lastVerifiedAt ?? null,
+			patch.failureCount ?? 0,
+			patch.lastError ?? null,
+		)
+		.run();
+}
+
+export async function ensureHubSubscriptions(env: Env, channelIds: string[]): Promise<void> {
+	const origin = env.PUBLIC_ORIGIN;
+	const session = env.SESSION_SECRET;
+	if (!origin || !session || channelIds.length === 0) return;
+	const secret = await hubSecretFromSession(session);
+	const now = new Date().toISOString();
+	for (const channelId of channelIds) {
+		if (!CHANNEL_ID_RE.test(channelId)) continue;
+		const existing = await env.DB.prepare(
+			`SELECT status, lease_expires_at, failure_count FROM websub_subscriptions WHERE channel_id = ?`,
+		)
+			.bind(channelId)
+			.first<{ status: string; lease_expires_at: string | null; failure_count: number }>();
+		if (existing?.status === 'active' && existing.lease_expires_at && existing.lease_expires_at > now) continue;
+		await upsertWebSubRow(env.DB, channelId, { status: 'pending', lastSubscribeAttemptAt: now, lastError: null });
+		const result = await requestHub('subscribe', { origin, channelId, secret });
+		await recordQuota(env.DB, 'websub.subscribe', { callCount: 1, generalUnits: 0 });
+		if (!result.ok) {
+			await upsertWebSubRow(env.DB, channelId, {
+				status: 'error',
+				lastSubscribeAttemptAt: now,
+				failureCount: (existing?.failure_count ?? 0) + 1,
+				lastError: `hub_${result.status}`,
+			});
+		}
+	}
+}
+
+export async function unsubscribeIfOrphaned(env: Env, channelIds: string[]): Promise<void> {
+	const origin = env.PUBLIC_ORIGIN;
+	const session = env.SESSION_SECRET;
+	if (!origin || !session) return;
+	const secret = await hubSecretFromSession(session);
+	const now = new Date().toISOString();
+	for (const channelId of channelIds) {
+		const row = await env.DB.prepare(
+			`SELECT COUNT(*) AS n FROM channel_prefs WHERE channel_id = ? AND is_subscribed = 1`,
+		)
+			.bind(channelId)
+			.first<{ n: number }>();
+		if ((row?.n ?? 0) > 0) continue;
+		await requestHub('unsubscribe', { origin, channelId, secret });
+		await recordQuota(env.DB, 'websub.unsubscribe', { callCount: 1, generalUnits: 0 });
+		await upsertWebSubRow(env.DB, channelId, { status: 'inactive', lastSubscribeAttemptAt: now, lastError: null });
+	}
+}
+
+export function channelEligibleForUnsubscribe(followerCount: number): boolean {
+	return followerCount <= 0;
+}
+
+export async function insertWebSubEvents(db: D1Database, entries: ParsedWebSubEntry[]): Promise<number> {
+	let inserted = 0;
+	for (const entry of entries) {
+		const result = await db
+			.prepare(
+				`INSERT OR IGNORE INTO websub_events (id, channel_id, video_id, title, published_at, updated_at, status)
+				 VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+			)
+			.bind(entry.id, entry.channelId, entry.videoId, entry.title, entry.publishedAt, entry.updatedAt)
+			.run();
+		if ((result.meta.changes ?? 0) > 0) inserted += 1;
+	}
+	return inserted;
+}
+
+export const LEASE_RENEW_LIMIT = 25;
+export const RECONCILE_USER_LIMIT = 10;
+
+export async function renewExpiringLeases(env: Env, limit = LEASE_RENEW_LIMIT): Promise<number> {
+	const cutoff = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+	const staleAttempt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+	const rows = await env.DB.prepare(
+		`SELECT channel_id, status, lease_expires_at, last_subscribe_attempt_at FROM websub_subscriptions
+		 WHERE status IN ('active', 'pending', 'error')
+		 AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+		 LIMIT ?`,
+	)
+		.bind(cutoff, limit * 4)
+		.all<{
+			channel_id: string;
+			status: string;
+			lease_expires_at: string | null;
+			last_subscribe_attempt_at: string | null;
+		}>();
+	const due = (rows.results ?? []).filter(
+		(row) => !row.last_subscribe_attempt_at || row.last_subscribe_attempt_at <= staleAttempt,
+	);
+	const ids = due.slice(0, limit).map((row) => row.channel_id);
+	const keep: string[] = [];
+	for (const channelId of ids) {
+		const followers = await env.DB.prepare(
+			`SELECT COUNT(*) AS n FROM channel_prefs WHERE channel_id = ? AND is_subscribed = 1`,
+		)
+			.bind(channelId)
+			.first<{ n: number }>();
+		if ((followers?.n ?? 0) > 0) keep.push(channelId);
+		else await unsubscribeIfOrphaned(env, [channelId]);
+	}
+	await ensureHubSubscriptions(env, keep);
+	return keep.length;
+}
+
+export async function handleWebSubVerification(env: Env, url: URL): Promise<Response> {
+	const mode = url.searchParams.get('hub.mode');
+	const topic = url.searchParams.get('hub.topic') ?? '';
+	const challenge = url.searchParams.get('hub.challenge') ?? '';
+	const lease = Number(url.searchParams.get('hub.lease_seconds') ?? WEBSUB_LEASE_SECONDS) || WEBSUB_LEASE_SECONDS;
+	const channelId = channelIdFromTopic(topic);
+	if ((mode !== 'subscribe' && mode !== 'unsubscribe') || !channelId || !challenge) {
+		return new Response('invalid hub challenge', { status: 404 });
+	}
+	const followers = await env.DB.prepare(
+		`SELECT COUNT(*) AS n FROM channel_prefs WHERE channel_id = ? AND is_subscribed = 1`,
+	)
+		.bind(channelId)
+		.first<{ n: number }>();
+	const count = followers?.n ?? 0;
+	if (mode === 'subscribe' && count < 1) {
+		return new Response('no subscribers', { status: 404 });
+	}
+	const now = new Date().toISOString();
+	if (mode === 'subscribe') {
+		const expires = new Date(Date.now() + lease * 1000).toISOString();
+		await upsertWebSubRow(env.DB, channelId, {
+			status: 'active',
+			leaseExpiresAt: expires,
+			lastVerifiedAt: now,
+			failureCount: 0,
+			lastError: null,
+		});
+	} else {
+		await upsertWebSubRow(env.DB, channelId, { status: 'inactive', lastVerifiedAt: now, lastError: null });
+	}
+	await recordQuota(env.DB, 'websub.verify', { callCount: 1, generalUnits: 0 });
+	return new Response(challenge, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+}
+
+export async function handleWebSubNotification(env: Env, request: Request): Promise<{ response: Response; inserted: number }> {
+	const lengthHeader = Number(request.headers.get('content-length') ?? '0');
+	if (lengthHeader > MAX_ATOM_BYTES) {
+		return { response: new Response('payload too large', { status: 413 }), inserted: 0 };
+	}
+	const secret = env.SESSION_SECRET;
+	if (!secret) {
+		return { response: new Response('misconfigured', { status: 500 }), inserted: 0 };
+	}
+	const body = await request.arrayBuffer();
+	if (body.byteLength > MAX_ATOM_BYTES) {
+		return { response: new Response('payload too large', { status: 413 }), inserted: 0 };
+	}
+	const hubSecret = await hubSecretFromSession(secret);
+	const ok = await verifyHubSignature(hubSecret, body, request.headers.get('x-hub-signature'));
+	if (!ok) {
+		return { response: new Response('invalid signature', { status: 403 }), inserted: 0 };
+	}
+	const xml = new TextDecoder().decode(body);
+	if (!xml.includes('<feed') && !xml.includes('<entry')) {
+		return { response: new Response('malformed atom', { status: 400 }), inserted: 0 };
+	}
+	const entries = parseAtomEntries(xml);
+	const inserted = await insertWebSubEvents(env.DB, entries);
+	await recordQuota(env.DB, 'websub.notify', { callCount: 1, generalUnits: 0 });
+	return { response: new Response(null, { status: 204 }), inserted };
+}
+
