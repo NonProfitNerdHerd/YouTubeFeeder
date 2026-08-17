@@ -936,9 +936,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<p className="muted">Snoozed until {new Date(item.snoozedUntil).toLocaleString()}</p>
 					) : null}
 					<p className="preview-description">{item.descriptionExcerpt}</p>
-					<a className="ghost" href={youtubeWatchUrl(item.videoId)} target="_blank" rel="noreferrer">
-						Open on YouTube
-					</a>
 				</div>
 				<label className="notes-label">
 					<span className="muted">Notes</span>
@@ -1635,7 +1632,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 												<span className="category-label">
 													<span className="category-label-name">{cat.name}</span>
 													<span className="muted category-label-meta">
-														{` - ${videoCount} video${videoCount === 1 ? '' : 's'} - ${streamCount} channel${streamCount === 1 ? '' : 's'}`}
+														{`${videoCount} video${videoCount === 1 ? '' : 's'} - ${streamCount} channel${streamCount === 1 ? '' : 's'}`}
 													</span>
 												</span>
 											</button>

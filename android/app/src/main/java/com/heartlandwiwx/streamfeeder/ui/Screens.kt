@@ -973,11 +973,11 @@ private fun CategoriesPanel(
                                 fontSize = 13.sp,
                             ),
                         ) {
-                            append(" - $videoCount video${if (videoCount == 1) "" else "s"} - $streamCount channel${if (streamCount == 1) "" else "s"}")
+                            append("\n$videoCount video${if (videoCount == 1) "" else "s"} - $streamCount channel${if (streamCount == 1) "" else "s"}")
                         }
                     },
                     style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
