@@ -96,6 +96,16 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 browsingChannelId = null,
                 pendingSnoozeItem = null,
                 editingChannel = null,
+                categoryId = if (
+                    view == FeedView.Inbox ||
+                    view == FeedView.Snoozed ||
+                    view == FeedView.Deleted ||
+                    view == FeedView.Streams
+                ) {
+                    null
+                } else {
+                    it.categoryId
+                },
                 items = if (view == FeedView.Categories || view == FeedView.Streams) emptyList() else it.items,
             )
         }
@@ -110,7 +120,8 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectCategory(id: String?) {
         _state.update { it.copy(categoryId = id, selected = null) }
-        if (_state.value.view == FeedView.Inbox) {
+        val view = _state.value.view
+        if (view == FeedView.Inbox || view == FeedView.Snoozed || view == FeedView.Deleted) {
             refreshFeed()
         }
     }
@@ -668,6 +679,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             }
             FeedView.Categories -> emptyList()
             FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId)
+            FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId)
             else -> api.inbox(view = s.view.api)
         }
     }

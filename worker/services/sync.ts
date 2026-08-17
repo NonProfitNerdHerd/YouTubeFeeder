@@ -1,4 +1,5 @@
 import { classifyYouTubeVideo } from '../../src/lib/classifyVideo';
+import { isUncategorizedFilter } from '../../src/lib/categories';
 import { randomToken } from '../auth/crypto';
 import {
 	chunk,
@@ -591,7 +592,10 @@ export async function syncContent(
 			 JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
 			 WHERE p.is_subscribed = 1 AND c.uploads_playlist_id IS NOT NULL`;
 		const binds: string[] = [userId];
-		if (categoryId) {
+		if (isUncategorizedFilter(categoryId)) {
+			sql += ` AND NOT EXISTS (SELECT 1 FROM channel_categories cc WHERE cc.user_id = ? AND cc.channel_id = c.channel_id)`;
+			binds.push(userId);
+		} else if (categoryId) {
 			sql += ` AND c.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)`;
 			binds.push(userId, categoryId);
 		}

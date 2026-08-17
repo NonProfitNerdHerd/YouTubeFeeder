@@ -1,4 +1,5 @@
 import type { CategoryRecord, ChannelRecord, InboxItem, WatchlistRecord } from '../../src/types';
+import { isUncategorizedFilter } from '../../src/lib/categories';
 import { randomToken } from '../auth/crypto';
 
 export async function listSubscribedChannels(db: D1Database, userId: string): Promise<ChannelRecord[]> {
@@ -36,6 +37,29 @@ export async function listSubscribedChannels(db: D1Database, userId: string): Pr
 		byChannel.set(row.channel_id, list);
 	}
 
+	const nowExpr = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+	const counts = await db
+		.prepare(
+			`SELECT v.channel_id, COUNT(*) AS n
+			 FROM inbox_state i
+			 JOIN videos v ON v.video_id = i.video_id
+			 WHERE i.user_id = ?
+			 AND i.archived = 0
+			 AND i.hidden = 0
+			 AND (i.snoozed_until IS NULL OR i.snoozed_until <= ${nowExpr})
+			 AND NOT EXISTS (
+				SELECT 1 FROM watchlist_items wi
+				WHERE wi.user_id = i.user_id AND wi.video_id = i.video_id
+			 )
+			 GROUP BY v.channel_id`,
+		)
+		.bind(userId)
+		.all<{ channel_id: string; n: number }>();
+	const countByChannel = new Map<string, number>();
+	for (const row of counts.results ?? []) {
+		countByChannel.set(row.channel_id, Number(row.n ?? 0));
+	}
+
 	return (rows.results ?? []).map((row) => ({
 		channelId: row.channel_id,
 		title: row.title,
@@ -46,6 +70,7 @@ export async function listSubscribedChannels(db: D1Database, userId: string): Pr
 		lastSynchronizedAt: row.last_synchronized_at,
 		followInInbox: row.follow_in_inbox === 1,
 		maxVideosToPull: row.max_videos_to_pull,
+		inboxVideoCount: countByChannel.get(row.channel_id) ?? 0,
 		categoryIds: byChannel.get(row.channel_id) ?? [],
 	}));
 }
@@ -79,7 +104,13 @@ function inboxWhere(
 		${snoozeFilter}
 		${watchFilter}
 		${channelId ? 'AND v.channel_id = ?' : ''}
-		${categoryId ? 'AND v.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)' : ''}
+		${
+			isUncategorizedFilter(categoryId)
+				? 'AND NOT EXISTS (SELECT 1 FROM channel_categories cc WHERE cc.user_id = ? AND cc.channel_id = v.channel_id)'
+				: categoryId
+					? 'AND v.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)'
+					: ''
+		}
 	`;
 }
 
@@ -93,7 +124,8 @@ function inboxBinds(
 	const binds: string[] = [userId];
 	if (view === 'watchlist' && watchlistId) binds.push(userId, watchlistId);
 	if (channelId) binds.push(channelId);
-	if (categoryId) binds.push(userId, categoryId);
+	if (isUncategorizedFilter(categoryId)) binds.push(userId);
+	else if (categoryId) binds.push(userId, categoryId);
 	return binds;
 }
 

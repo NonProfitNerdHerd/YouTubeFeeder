@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import type { CategoryRecord, ChannelRecord, CurrentUser, InboxItem, LiveGridSize, WatchlistRecord } from '../types';
 import { LIVE_GRID_SIZES } from '../types';
 import { youtubeEmbedUrl, youtubeWatchUrl } from '../lib/youtubeUrl';
 import { isAndroidClient, isNarrowFeeder } from '../lib/androidClient';
 import { TEST_APK_PATH, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease';
+import { UNCATEGORIZED_CATEGORY_ID, isUncategorizedFilter } from '../lib/categories';
 import { qrSvgForUrl } from '../lib/qrSvg';
 import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../lib/syncStatus';
 import { LivePage } from './LivePage';
@@ -130,12 +132,34 @@ function IconList() {
 	);
 }
 
+function IconYouTube() {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<path
+				fill="currentColor"
+				d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8zM9.6 15.5V8.5L16 12l-6.4 3.5z"
+			/>
+		</svg>
+	);
+}
+
 function IconPhone() {
 	return (
 		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
 			<path
 				fill="currentColor"
 				d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 3v12h10V5H7zm5 15.25a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5z"
+			/>
+		</svg>
+	);
+}
+
+function IconGear() {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<path
+				fill="currentColor"
+				d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.49.42l-.36 2.54c-.59.22-1.14.53-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.63 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.75 14.52a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.48.41 1.03.73 1.62.94l.36 2.54c.05.24.25.42.49.42h4c.24 0 .44-.18.49-.42l.36-2.54c.59-.22 1.14-.53 1.62-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
 			/>
 		</svg>
 	);
@@ -287,6 +311,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		leftScrollRef.current?.scrollTo({ top: 0 });
 	}, [categoryId, leftTab, watchlistId, channelId]);
 
+	function selectFeedView(tab: 'inbox' | 'snoozed' | 'deleted' | 'streams') {
+		setLeftTab(tab);
+		setCategoryId(null);
+		setInboxSelectedIds([]);
+		requestAnimationFrame(() => {
+			leftScrollRef.current?.scrollTo({ top: 0 });
+			requestAnimationFrame(() => leftScrollRef.current?.scrollTo({ top: 0 }));
+		});
+	}
+
 	useEffect(() => {
 		setInboxSelectedIds([]);
 		setBulkSnoozeIds(null);
@@ -296,11 +330,20 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	useEffect(() => {
 		if (leftTab !== 'streams' || !channelId || !categoryId) return;
 		const selected = channels.find((ch) => ch.channelId === channelId);
-		if (selected && !selected.categoryIds.includes(categoryId)) {
+		const matches = isUncategorizedFilter(categoryId)
+			? (selected?.categoryIds.length ?? 0) === 0
+			: Boolean(selected?.categoryIds.includes(categoryId));
+		if (selected && !matches) {
 			setChannelId(null);
 			setSelectedVideoId(null);
 		}
 	}, [leftTab, channelId, categoryId, channels]);
+
+	function channelMatchesCategory(channel: ChannelRecord, filterId: string | null): boolean {
+		if (!filterId) return true;
+		if (isUncategorizedFilter(filterId)) return channel.categoryIds.length === 0;
+		return channel.categoryIds.includes(filterId);
+	}
 
 	const listMultiSelectEnabled =
 		!androidClient && (leftTab === 'inbox' || leftTab === 'snoozed' || leftTab === 'deleted');
@@ -748,9 +791,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const watchlistThreeCol = !androidClient && !phoneLayout && leftTab === 'watchlist';
 	const categoryThreeCol = !androidClient && !phoneLayout && leftTab === 'categories';
 	const feedThreeCol = streamsThreeCol || watchlistThreeCol || categoryThreeCol;
-	const streamsList = categoryId
-		? channels.filter((ch) => ch.categoryIds.includes(categoryId))
-		: channels;
+	const streamsList = categoryId ? channels.filter((ch) => channelMatchesCategory(ch, categoryId)) : channels;
 	const selectedVideo =
 		items?.find((item) => item.videoId === selectedVideoId) ?? (phoneLayout ? null : (items?.[0] ?? null));
 
@@ -770,6 +811,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			>
 				<IconList />
 			</button>
+		);
+	}
+
+	function youtubeOpenButton(item: InboxItem) {
+		return (
+			<a
+				className="icon-btn"
+				href={youtubeWatchUrl(item.videoId)}
+				target="_blank"
+				rel="noreferrer"
+				title="Open on YouTube"
+				aria-label="Open on YouTube"
+			>
+				<IconYouTube />
+			</a>
 		);
 	}
 
@@ -795,6 +851,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								>
 									<IconRestore />
 								</button>
+								{youtubeOpenButton(item)}
 								{watchlistButton(item)}
 							</>
 						) : mode === 'streams' ? (
@@ -808,6 +865,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								>
 									<IconTrash />
 								</button>
+								{youtubeOpenButton(item)}
 								{watchlistButton(item)}
 							</>
 						) : (
@@ -855,6 +913,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 										<IconClock />
 									</button>
 								)}
+								{youtubeOpenButton(item)}
 								{mode === 'inbox' || mode === 'snoozed' ? watchlistButton(item) : null}
 							</>
 						)}
@@ -960,6 +1019,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									>
 										<IconRestore />
 									</button>
+									{youtubeOpenButton(item)}
 									{watchlistButton(item)}
 								</>
 							) : actions === 'streams' ? (
@@ -973,6 +1033,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									>
 										<IconTrash />
 									</button>
+									{youtubeOpenButton(item)}
 									{watchlistButton(item)}
 								</>
 							) : (
@@ -1020,6 +1081,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 											<IconClock />
 										</button>
 									)}
+									{youtubeOpenButton(item)}
 									{actions === 'inbox' || actions === 'snoozed' ? watchlistButton(item) : null}
 								</>
 							)}
@@ -1123,6 +1185,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<button className="ghost" type="button" onClick={onLogout}>
 						Sign out
 					</button>
+					<Link className="icon-btn" to="/settings" title="Settings" aria-label="Settings">
+						<IconGear />
+					</Link>
 					{androidClient ? null : (
 						<button
 							className="icon-btn"
@@ -1150,7 +1215,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			</header>
 			{mainSection === 'feed' && leftTab !== 'watchlist' ? (
 				<nav className="feed-toolbar" aria-label="Feed views">
-					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
+					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => selectFeedView('inbox')}>
 						Inbox{inboxCount === null ? '' : ` (${inboxCount})`}
 					</button>
 					<button
@@ -1163,21 +1228,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<button
 						className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
 						type="button"
-						onClick={() => setLeftTab('snoozed')}
+						onClick={() => selectFeedView('snoozed')}
 					>
 						Snoozed
 					</button>
 					<button
 						className={leftTab === 'deleted' ? 'tab active' : 'tab'}
 						type="button"
-						onClick={() => setLeftTab('deleted')}
+						onClick={() => selectFeedView('deleted')}
 					>
 						Deleted
 					</button>
 					<button
 						className={leftTab === 'streams' ? 'tab active' : 'tab'}
 						type="button"
-						onClick={() => setLeftTab('streams')}
+						onClick={() => selectFeedView('streams')}
 					>
 						Subscriptions
 					</button>
@@ -1206,7 +1271,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 										setInboxSelectedIds([]);
 										if (leftTab === 'streams' && channelId) {
 											const selected = channels.find((ch) => ch.channelId === channelId);
-											if (next && selected && !selected.categoryIds.includes(next)) {
+											if (next && selected && !channelMatchesCategory(selected, next)) {
 												setChannelId(null);
 											}
 										}
@@ -1214,6 +1279,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									}}
 								>
 									<option value="">All categories</option>
+									<option value={UNCATEGORIZED_CATEGORY_ID}>No category</option>
 									{categories.map((cat) => (
 										<option key={cat.id} value={cat.id}>
 											{cat.name}
@@ -1494,7 +1560,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 										<img src={ch.thumbnailUrl} alt="" />
 										<span>
 											<strong className="video-title">{ch.title}</strong>
-											<small className="muted">{ch.followInInbox ? 'Following' : 'Not following'}</small>
+											<small className="muted">
+												{`${ch.inboxVideoCount} video${ch.inboxVideoCount === 1 ? '' : 's'} - ${ch.followInInbox ? 'Following' : 'Not following'}`}
+											</small>
 											<small className="muted">
 												{ch.lastSynchronizedAt
 													? `Last video sync: ${new Date(ch.lastSynchronizedAt).toLocaleString()}`
@@ -1528,7 +1596,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								</button>
 							</form>
 							{categories.map((cat) => {
-								const streamCount = channels.filter((ch) => ch.categoryIds.includes(cat.id)).length;
+								const tagged = channels.filter((ch) => ch.categoryIds.includes(cat.id));
+								const streamCount = tagged.length;
+								const videoCount = tagged.reduce((sum, ch) => sum + (ch.inboxVideoCount ?? 0), 0);
 								return (
 									<div
 										key={cat.id}
@@ -1554,7 +1624,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 											</form>
 										) : (
 											<button
-												className="sub watchlist-name"
+												className="sub watchlist-name category-name"
 												type="button"
 												onClick={() => {
 													setCategoryId(cat.id);
@@ -1562,8 +1632,12 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 													setRenamingCategoryId(null);
 												}}
 											>
-												{cat.name}
-												{streamCount > 0 ? ` (${streamCount})` : ''}
+												<span className="category-label">
+													<span className="category-label-name">{cat.name}</span>
+													<span className="muted category-label-meta">
+														{` - ${videoCount} video${videoCount === 1 ? '' : 's'} - ${streamCount} channel${streamCount === 1 ? '' : 's'}`}
+													</span>
+												</span>
 											</button>
 										)}
 										<button
@@ -1706,7 +1780,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				</section>
 				{phoneLayout ? (
 					<nav className="mobile-nav" aria-label="Feeder">
-						<button className={leftTab === 'inbox' ? 'active' : undefined} type="button" onClick={() => setLeftTab('inbox')}>
+						<button className={leftTab === 'inbox' ? 'active' : undefined} type="button" onClick={() => selectFeedView('inbox')}>
 							Inbox{inboxCount === null ? '' : ` (${inboxCount})`}
 						</button>
 						<button className={leftTab === 'watchlist' ? 'active' : undefined} type="button" onClick={() => setLeftTab('watchlist')}>
@@ -1729,6 +1803,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<p>{user.displayName}</p>
 						<p className="muted">Inbox and watchlists use the same signed-in account as the website. Refresh loads saved data without calling YouTube.</p>
 						<div className="modal-actions">
+							<Link className="ghost" to="/settings" onClick={() => setMobilePanel('inbox')}>
+								Settings
+							</Link>
 							<button className="ghost" type="button" onClick={() => void load()}>
 								Refresh inbox
 							</button>

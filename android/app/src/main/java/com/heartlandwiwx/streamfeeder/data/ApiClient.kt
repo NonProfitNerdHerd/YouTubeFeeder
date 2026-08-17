@@ -170,6 +170,7 @@ class ApiClient(
             thumbnailUrl = o.optString("thumbnailUrl", ""),
             followInInbox = o.optBoolean("followInInbox", true),
             maxVideosToPull = o.optInt("maxVideosToPull", 0),
+            inboxVideoCount = o.optInt("inboxVideoCount", 0),
             categoryIds = categoryIds,
         )
     }

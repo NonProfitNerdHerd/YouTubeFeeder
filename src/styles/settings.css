@@ -1,0 +1,89 @@
+.settings-shell {
+	overflow: auto;
+}
+
+.settings-page {
+	max-width: 40rem;
+	margin: 0 auto;
+	padding: 24px;
+	display: flex;
+	flex-direction: column;
+	gap: 28px;
+}
+
+.settings-intro h2 {
+	margin: 0 0 8px;
+	font-size: 1.35rem;
+}
+
+.settings-intro p {
+	margin: 0;
+}
+
+.settings-section {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding-bottom: 24px;
+	border-bottom: 1px solid var(--border);
+}
+
+.settings-section:last-child {
+	border-bottom: 0;
+	padding-bottom: 0;
+}
+
+.settings-section h3 {
+	margin: 0;
+	font-size: 1rem;
+	font-weight: 500;
+}
+
+.settings-section > .muted {
+	margin: 0;
+}
+
+.settings-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(10rem, 14rem);
+	align-items: center;
+	gap: 12px;
+	font-size: 0.92rem;
+}
+
+.settings-row input[type='text'],
+.settings-row select {
+	width: 100%;
+	background: #0f1115;
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 8px 10px;
+	font: inherit;
+}
+
+.settings-row input[type='checkbox'] {
+	justify-self: start;
+	width: 1rem;
+	height: 1rem;
+}
+
+.settings-row-disabled {
+	opacity: 0.72;
+}
+
+.settings-note {
+	margin: 0;
+	font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+	.settings-page {
+		padding: 16px;
+	}
+
+	.settings-row {
+		grid-template-columns: 1fr;
+		gap: 6px;
+	}
+}

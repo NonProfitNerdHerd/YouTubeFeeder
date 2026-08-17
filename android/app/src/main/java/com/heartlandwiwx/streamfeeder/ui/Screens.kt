@@ -2,6 +2,8 @@ package com.heartlandwiwx.streamfeeder.ui
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.view.View
@@ -49,6 +51,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -94,9 +97,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -117,6 +123,16 @@ import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
 
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
+
+private fun openOnYouTube(context: android.content.Context, videoId: String) {
+    val app = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:$videoId"))
+    val web = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=$videoId"))
+    try {
+        context.startActivity(app)
+    } catch (_: ActivityNotFoundException) {
+        context.startActivity(web)
+    }
+}
 
 @Composable
 fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
@@ -625,6 +641,7 @@ fun FeedScreen(
                         FeedView.Categories -> {
                             CategoriesPanel(
                                 categories = state.categories,
+                                channels = state.channels,
                                 onRename = onRenameCategory,
                                 onDelete = onDeleteCategory,
                             )
@@ -753,10 +770,12 @@ private fun InboxListPane(
     onToggleSelect: (String) -> Unit,
     onEnterSelection: (String) -> Unit,
 ) {
-    val selectedCategoryName = state.categories
-        .firstOrNull { it.id == state.categoryId }
-        ?.name
-        ?: "All categories"
+    val uncategorizedId = "__uncategorized__"
+    val selectedCategoryName = when (state.categoryId) {
+        null -> "All categories"
+        uncategorizedId -> "No category"
+        else -> state.categories.firstOrNull { it.id == state.categoryId }?.name ?: "All categories"
+    }
     FilterDropdown(
         expanded = categoryMenuOpen,
         onExpandedChange = onCategoryMenuOpenChange,
@@ -768,6 +787,13 @@ private fun InboxListPane(
             onClick = {
                 onCategoryMenuOpenChange(false)
                 onSelectCategory(null)
+            },
+        )
+        DropdownMenuItem(
+            text = { Text("No category") },
+            onClick = {
+                onCategoryMenuOpenChange(false)
+                onSelectCategory(uncategorizedId)
             },
         )
         state.categories.forEach { cat ->
@@ -910,6 +936,7 @@ private fun BulkWatchlistDialog(
 @Composable
 private fun CategoriesPanel(
     categories: List<CategoryRecord>,
+    channels: List<ChannelRecord>,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
 ) {
@@ -924,6 +951,9 @@ private fun CategoriesPanel(
     }
     LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         items(categories, key = { it.id }) { cat ->
+            val tagged = channels.filter { cat.id in it.categoryIds }
+            val streamCount = tagged.size
+            val videoCount = tagged.sumOf { it.inboxVideoCount }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -934,7 +964,23 @@ private fun CategoriesPanel(
                 IconButton(onClick = { editing = cat }) {
                     Icon(Icons.Default.Edit, contentDescription = "Edit category")
                 }
-                Text(cat.name, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    buildAnnotatedString {
+                        append(cat.name)
+                        withStyle(
+                            SpanStyle(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                            ),
+                        ) {
+                            append(" - $videoCount video${if (videoCount == 1) "" else "s"} - $streamCount channel${if (streamCount == 1) "" else "s"}")
+                        }
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
@@ -988,11 +1034,19 @@ private fun StreamsListPanel(
 ) {
     var categoryMenuOpen by remember { mutableStateOf(false) }
     var filterCategoryId by remember { mutableStateOf<String?>(null) }
+    val uncategorizedId = "__uncategorized__"
     val filteredChannels = remember(channels, filterCategoryId) {
-        if (filterCategoryId == null) channels
-        else channels.filter { filterCategoryId in it.categoryIds }
+        when (filterCategoryId) {
+            null -> channels
+            uncategorizedId -> channels.filter { it.categoryIds.isEmpty() }
+            else -> channels.filter { filterCategoryId in it.categoryIds }
+        }
     }
-    val filterLabel = categories.firstOrNull { it.id == filterCategoryId }?.name ?: "All categories"
+    val filterLabel = when (filterCategoryId) {
+        null -> "All categories"
+        uncategorizedId -> "No category"
+        else -> categories.firstOrNull { it.id == filterCategoryId }?.name ?: "All categories"
+    }
 
     Column(Modifier.fillMaxSize()) {
         FilterDropdown(
@@ -1006,6 +1060,13 @@ private fun StreamsListPanel(
                 onClick = {
                     categoryMenuOpen = false
                     filterCategoryId = null
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("No category") },
+                onClick = {
+                    categoryMenuOpen = false
+                    filterCategoryId = uncategorizedId
                 },
             )
             categories.forEach { cat ->
@@ -1070,14 +1131,16 @@ private fun StreamsListPanel(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(ch.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                "${if (ch.followInInbox) "Following" else "Not following"} · pull ${ch.maxVideosToPull}",
+                                "${ch.inboxVideoCount} video${if (ch.inboxVideoCount == 1) "" else "s"} - ${if (ch.followInInbox) "Following" else "Not following"}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             val names = categories.filter { it.id in ch.categoryIds }.joinToString(", ") { it.name }
-                            if (names.isNotBlank()) {
-                                Text(names, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+                            Text(
+                                names.ifBlank { "No category" },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
@@ -1887,9 +1950,15 @@ private fun DetailScreen(
                     if (embedded) {
                         if (view == FeedView.Deleted) {
                             TextButton(onClick = onRestore) { Text("Restore") }
+                            IconButton(onClick = { openOnYouTube(context, item.videoId) }) {
+                                Icon(Icons.Default.PlayCircle, contentDescription = "Open on YouTube")
+                            }
                         } else {
                             IconButton(onClick = { watchOpen = true }) {
                                 Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
+                            }
+                            IconButton(onClick = { openOnYouTube(context, item.videoId) }) {
+                                Icon(Icons.Default.PlayCircle, contentDescription = "Open on YouTube")
                             }
                             if (view == FeedView.Snoozed) {
                                 TextButton(onClick = onUnsnooze) { Text("Unsnooze") }
@@ -1928,9 +1997,15 @@ private fun DetailScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (view == FeedView.Deleted) {
                         Button(onClick = onRestore) { Text("Restore") }
+                        IconButton(onClick = { openOnYouTube(context, item.videoId) }) {
+                            Icon(Icons.Default.PlayCircle, contentDescription = "Open on YouTube")
+                        }
                     } else {
                         IconButton(onClick = { watchOpen = true }) {
                             Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
+                        }
+                        IconButton(onClick = { openOnYouTube(context, item.videoId) }) {
+                            Icon(Icons.Default.PlayCircle, contentDescription = "Open on YouTube")
                         }
                         if (view == FeedView.Snoozed) {
                             Button(onClick = onUnsnooze) { Text("Unsnooze") }

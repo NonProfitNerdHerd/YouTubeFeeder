@@ -22,6 +22,7 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 		lastSynchronizedAt: new Date().toISOString(),
 		followInInbox: true,
 		maxVideosToPull: 5,
+		inboxVideoCount: 0,
 		categoryIds: [],
 	},
 	{
@@ -34,6 +35,7 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 		lastSynchronizedAt: new Date().toISOString(),
 		followInInbox: true,
 		maxVideosToPull: 5,
+		inboxVideoCount: 0,
 		categoryIds: [],
 	},
 	{
@@ -46,6 +48,7 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 		lastSynchronizedAt: new Date().toISOString(),
 		followInInbox: true,
 		maxVideosToPull: 5,
+		inboxVideoCount: 0,
 		categoryIds: [],
 	},
 ];

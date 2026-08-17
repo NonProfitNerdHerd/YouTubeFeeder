@@ -32,6 +32,7 @@ data class ChannelRecord(
     val thumbnailUrl: String,
     val followInInbox: Boolean,
     val maxVideosToPull: Int,
+    val inboxVideoCount: Int,
     val categoryIds: List<String>,
 )
 

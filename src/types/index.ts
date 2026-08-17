@@ -58,6 +58,8 @@ export interface ChannelRecord {
 	lastSynchronizedAt: string | null;
 	followInInbox: boolean;
 	maxVideosToPull: number;
+	/** Active inbox videos for this channel (same filters as the default Inbox view). */
+	inboxVideoCount: number;
 	categoryIds: string[];
 }
 
