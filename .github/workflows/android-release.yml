@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - cursor/youtube-feeder-foundation
+      - main
     tags:
       - "android-v*"
   pull_request:
     branches:
-      - cursor/youtube-feeder-foundation
+      - main
 
 jobs:
   debug:
