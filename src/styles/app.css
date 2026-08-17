@@ -337,6 +337,15 @@
 	color: var(--text);
 }
 
+.icon-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.icon-btn:disabled:hover {
+	color: var(--muted);
+}
+
 .feed-toolbar {
 	display: flex;
 	flex-wrap: wrap;

@@ -156,6 +156,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [newWatchlist, setNewWatchlist] = useState('');
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [renameValue, setRenameValue] = useState('');
+	const [renamingCategoryId, setRenamingCategoryId] = useState<string | null>(null);
+	const [categoryRenameValue, setCategoryRenameValue] = useState('');
 	const [watchlisting, setWatchlisting] = useState<InboxItem | null>(null);
 	const [snoozing, setSnoozing] = useState<InboxItem | null>(null);
 	const [snoozeUntil, setSnoozeUntil] = useState(toLocalInputValue(tomorrowMorning()));
@@ -437,8 +439,41 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	}
 
 	async function removeCategory(id: string) {
-		await fetch(`/api/categories/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'same-origin' });
+		const attached = channels.some((ch) => ch.categoryIds.includes(id));
+		if (attached) {
+			setError('Remove this category from all streams (Edit on Streams) before deleting it.');
+			return;
+		}
+		if (!window.confirm('Delete this category?')) return;
+		setError(null);
+		const res = await fetch(`/api/categories/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'same-origin' });
+		const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+		if (!res.ok) {
+			setError(body.error?.message || 'Could not delete category.');
+			return;
+		}
 		if (categoryId === id) setCategoryId(null);
+		if (renamingCategoryId === id) setRenamingCategoryId(null);
+		await load();
+	}
+
+	async function saveCategoryName(event: FormEvent) {
+		event.preventDefault();
+		if (!renamingCategoryId) return;
+		setError(null);
+		const res = await fetch(`/api/categories/${encodeURIComponent(renamingCategoryId)}`, {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify({ name: categoryRenameValue }),
+		});
+		const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+		if (!res.ok) {
+			setError(body.error?.message || 'Could not rename category.');
+			return;
+		}
+		setRenamingCategoryId(null);
+		setCategoryRenameValue('');
 		await load();
 	}
 
@@ -1426,20 +1461,73 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									Add
 								</button>
 							</form>
-							{categories.map((cat) => (
-								<div key={cat.id} className={categoryId === cat.id ? 'sub-row active' : 'sub-row'}>
-									<button
-										className="sub"
-										type="button"
-										onClick={() => setCategoryId(cat.id)}
+							{categories.map((cat) => {
+								const streamCount = channels.filter((ch) => ch.categoryIds.includes(cat.id)).length;
+								return (
+									<div
+										key={cat.id}
+										className={categoryId === cat.id ? 'sub-row active watchlist-row' : 'sub-row watchlist-row'}
 									>
-										{cat.name}
-									</button>
-									<button className="ghost tiny" type="button" onClick={() => void removeCategory(cat.id)}>
-										Delete
-									</button>
-								</div>
-							))}
+										{renamingCategoryId === cat.id ? (
+											<form className="watchlist-rename" onSubmit={(e) => void saveCategoryName(e)}>
+												<input
+													value={categoryRenameValue}
+													onChange={(e) => setCategoryRenameValue(e.target.value)}
+													aria-label="Category name"
+													autoFocus
+													onKeyDown={(e) => {
+														if (e.key === 'Escape') {
+															e.preventDefault();
+															setRenamingCategoryId(null);
+														}
+													}}
+												/>
+												<button className="ghost tiny" type="submit">
+													Save
+												</button>
+											</form>
+										) : (
+											<button
+												className="sub watchlist-name"
+												type="button"
+												onClick={() => {
+													setCategoryId(cat.id);
+													setRenamingCategoryId(null);
+												}}
+											>
+												{cat.name}
+												{streamCount > 0 ? ` (${streamCount})` : ''}
+											</button>
+										)}
+										<button
+											className="icon-btn"
+											type="button"
+											title="Rename category"
+											aria-label="Rename category"
+											onClick={() => {
+												setRenamingCategoryId(cat.id);
+												setCategoryRenameValue(cat.name);
+											}}
+										>
+											<IconPencil />
+										</button>
+										<button
+											className="icon-btn"
+											type="button"
+											title={
+												streamCount > 0
+													? 'Remove this category from all streams before deleting'
+													: 'Delete category'
+											}
+											aria-label="Delete category"
+											disabled={streamCount > 0}
+											onClick={() => void removeCategory(cat.id)}
+										>
+											<IconTrash />
+										</button>
+									</div>
+								);
+							})}
 							{categories.length === 0 ? <p className="muted pad">Add a category, then tag streams under Edit.</p> : null}
 						</div>
 					) : null}

@@ -259,8 +259,20 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		const id = decodeURIComponent(path.slice('/api/categories/'.length));
-		await deleteCategory(env.DB, user.id, id);
-		return json({ ok: true });
+		if (!id) return apiError(400, 'invalid_json', 'Expected a category id.');
+		try {
+			await deleteCategory(env.DB, user.id, id);
+			return json({ ok: true });
+		} catch (err: unknown) {
+			if (err instanceof Error && err.message === 'in_use') {
+				return apiError(
+					409,
+					'in_use',
+					'Remove this category from all streams (Edit on Streams) before deleting it.',
+				);
+			}
+			throw err;
+		}
 	}
 
 	if (path === '/api/watchlists' && request.method === 'GET') {
