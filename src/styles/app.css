@@ -130,6 +130,11 @@
 	min-height: 0;
 }
 
+.feed:has(.preview) {
+	overflow: hidden;
+	padding-bottom: 16px;
+}
+
 .row {
 	display: grid;
 	grid-template-columns: 160px 1fr;
@@ -314,6 +319,10 @@
 	display: flex;
 	flex-direction: column;
 	gap: 10px;
+	flex: 1;
+	min-height: 0;
+	height: 100%;
+	overflow: hidden;
 }
 
 .preview-header {
@@ -323,6 +332,7 @@
 	gap: 16px;
 	padding: 4px 0 12px;
 	border-bottom: 1px solid var(--border);
+	flex: 0 0 auto;
 }
 
 .preview-identity {
@@ -335,6 +345,10 @@
 .preview-identity strong {
 	font-size: 1.25rem;
 	line-height: 1.35;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
 }
 
 .preview-header-actions {
@@ -423,8 +437,12 @@
 
 .preview-player {
 	position: relative;
-	width: 100%;
+	flex: 0 1 auto;
+	width: min(100%, calc(min(42vh, 520px) * 16 / 9));
+	max-width: 100%;
+	max-height: min(42vh, 520px);
 	aspect-ratio: 16 / 9;
+	align-self: flex-start;
 	background: #000;
 	border-radius: 8px;
 	overflow: hidden;
@@ -439,6 +457,23 @@
 	border: 0;
 	object-fit: contain;
 	background: #000;
+}
+
+.preview-meta {
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+}
+
+.preview-description {
+	margin: 0;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	overflow: hidden;
+	line-height: 1.4;
 }
 
 .watchlist-add {
@@ -467,6 +502,8 @@
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
+	flex: 0 0 auto;
+	min-height: 0;
 }
 
 .notes-label textarea {
@@ -476,7 +513,8 @@
 	border-radius: 8px;
 	padding: 10px;
 	font: inherit;
-	min-height: 120px;
+	min-height: 72px;
+	max-height: 18vh;
 	resize: vertical;
 }
 
@@ -734,8 +772,18 @@
 		border-color: var(--accent);
 	}
 
+	.feed:has(.preview) {
+		overflow-y: auto;
+	}
+
 	.preview-player {
-		min-height: 40vh;
+		width: 100%;
+		max-height: min(36vh, 360px);
+		min-height: 0;
+	}
+
+	.notes-label textarea {
+		max-height: 22vh;
 	}
 }
 

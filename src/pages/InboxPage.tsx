@@ -639,19 +639,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<img src={item.thumbnailUrl} alt="" />
 					)}
 				</div>
-				{mode === 'snoozed' && item.snoozedUntil ? (
-					<p className="muted">Snoozed until {new Date(item.snoozedUntil).toLocaleString()}</p>
-				) : null}
-				<p>{item.descriptionExcerpt}</p>
-				<a className="ghost" href={youtubeWatchUrl(item.videoId)} target="_blank" rel="noreferrer">
-					Open on YouTube
-				</a>
+				<div className="preview-meta">
+					{mode === 'snoozed' && item.snoozedUntil ? (
+						<p className="muted">Snoozed until {new Date(item.snoozedUntil).toLocaleString()}</p>
+					) : null}
+					<p className="preview-description">{item.descriptionExcerpt}</p>
+					<a className="ghost" href={youtubeWatchUrl(item.videoId)} target="_blank" rel="noreferrer">
+						Open on YouTube
+					</a>
+				</div>
 				<label className="notes-label">
 					<span className="muted">Notes</span>
 					<textarea
 						key={item.videoId}
 						defaultValue={item.notes}
-						rows={5}
+						rows={3}
 						placeholder="Notes for this video"
 						onBlur={(event) => {
 							const next = event.target.value;
