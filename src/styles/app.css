@@ -38,14 +38,28 @@
 }
 
 .status-line {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
 	margin: 0;
 	padding: 10px 24px;
 	border-bottom: 1px solid var(--border);
 	color: var(--muted);
 }
 
+.status-line-body {
+	min-width: 0;
+	flex: 1;
+}
+
 .status-line p {
 	margin: 0;
+}
+
+.status-dismiss {
+	flex-shrink: 0;
+	margin-left: auto;
 }
 
 .status-line.error {

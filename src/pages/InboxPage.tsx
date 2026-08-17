@@ -303,6 +303,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const listMultiSelectEnabled =
 		!androidClient && (leftTab === 'inbox' || leftTab === 'snoozed' || leftTab === 'deleted');
 
+	function dismissStatusBanner() {
+		setStatus(null);
+		setError(null);
+		setSyncWarnings([]);
+		setShowSkipDetails(false);
+	}
+
 	function nextVideoIdAfterRemoval(list: InboxItem[], removedId: string): string | null {
 		const index = list.findIndex((item) => item.videoId === removedId);
 		if (index < 0) return list[0]?.videoId ?? null;
@@ -471,7 +478,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	async function removeCategory(id: string) {
 		const attached = channels.some((ch) => ch.categoryIds.includes(id));
 		if (attached) {
-			setError('Remove this category from all streams (Edit on Streams) before deleting it.');
+			setError('Remove this category from all streams (Edit on Subscriptions) before deleting it.');
 			return;
 		}
 		if (!window.confirm('Delete this category?')) return;
@@ -1166,7 +1173,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						type="button"
 						onClick={() => setLeftTab('streams')}
 					>
-						Streams
+						Subscriptions
 					</button>
 					{leftTab !== 'categories' ? (
 						<>
@@ -1233,30 +1240,35 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								: 'status-line'
 					}
 				>
-					<p>{[status, error].filter(Boolean).join(' — ')}</p>
-					{!error && syncWarnings.length > 1 ? (
-						<>
-							<button
-								className="status-details-toggle"
-								type="button"
-								onClick={() => setShowSkipDetails((open) => !open)}
-							>
-								{showSkipDetails ? 'Hide skipped channels' : 'Show skipped channels'}
-							</button>
-							{showSkipDetails ? (
-								<ul className="status-skip-list" title={skippedChannelNames(syncWarnings).join(', ')}>
-									{skippedChannelNames(syncWarnings).map((name) => (
-										<li key={name}>{name}</li>
-									))}
-								</ul>
-							) : null}
-						</>
-					) : null}
-					{!error && syncWarnings.length === 1 ? (
-						<p className="status-skip-hint" title={syncWarnings[0]?.channelId}>
-							{syncWarnings[0]?.message}
-						</p>
-					) : null}
+					<div className="status-line-body">
+						<p>{[status, error].filter(Boolean).join(' — ')}</p>
+						{!error && syncWarnings.length > 1 ? (
+							<>
+								<button
+									className="status-details-toggle"
+									type="button"
+									onClick={() => setShowSkipDetails((open) => !open)}
+								>
+									{showSkipDetails ? 'Hide skipped channels' : 'Show skipped channels'}
+								</button>
+								{showSkipDetails ? (
+									<ul className="status-skip-list" title={skippedChannelNames(syncWarnings).join(', ')}>
+										{skippedChannelNames(syncWarnings).map((name) => (
+											<li key={name}>{name}</li>
+										))}
+									</ul>
+								) : null}
+							</>
+						) : null}
+						{!error && syncWarnings.length === 1 ? (
+							<p className="status-skip-hint" title={syncWarnings[0]?.channelId}>
+								{syncWarnings[0]?.message}
+							</p>
+						) : null}
+					</div>
+					<button className="ghost tiny status-dismiss" type="button" onClick={dismissStatusBanner}>
+						Dismiss
+					</button>
 				</div>
 			) : null}
 			{mainSection === 'live' ? (
@@ -1610,7 +1622,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								? renderFeed(items, true, 'inbox')
 								: (
 									<p className="muted pad">
-										Select a category to see tagged videos. Tag streams from the Streams tab using Edit.
+										Select a category to see tagged videos. Tag streams from the Subscriptions tab using Edit.
 									</p>
 								)}
 						</div>
@@ -1682,7 +1694,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					{leftTab === 'categories' && !categoryThreeCol ? (
 						<>
 							<h2 className="pane-title">{categoryId ? categories.find((c) => c.id === categoryId)?.name ?? 'Category' : 'By Category'}</h2>
-							{categoryId ? renderFeed(items, false) : <p className="muted">Select a category to see tagged videos. Tag streams from the Streams tab using Edit.</p>}
+							{categoryId ? renderFeed(items, false) : <p className="muted">Select a category to see tagged videos. Tag streams from the Subscriptions tab using Edit.</p>}
 						</>
 					) : null}
 				</section>
