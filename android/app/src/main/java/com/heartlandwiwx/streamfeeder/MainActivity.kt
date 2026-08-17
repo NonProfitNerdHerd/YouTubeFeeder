@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
                             onRequestSnooze = viewModel::requestSnooze,
                             onConfirmPendingSnooze = viewModel::confirmPendingSnooze,
                             onCancelPendingSnooze = viewModel::cancelPendingSnooze,
+                            onCompleteSnoozeExit = viewModel::completeSnoozeExit,
                             onUndoArchive = viewModel::undoArchive,
                             onUndoWatchlist = viewModel::undoWatchlistAdd,
                             onCreateWatchlist = viewModel::createWatchlist,

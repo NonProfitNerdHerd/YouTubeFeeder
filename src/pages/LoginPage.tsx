@@ -23,13 +23,13 @@ export function LoginPage() {
 	return (
 		<main className="login">
 			<section className="login-card">
-				<h1>{STREAMFEEDER_DISPLAY_NAME}</h1>
 				<p>
 					{android
 						? 'Sign in with Google. Inbox and watchlists stay in sync with the website under the same account.'
 						: 'Sign in or create your account with Google. Your YouTube subscriptions stay on this personal dashboard.'}
 				</p>
 				{message ? <p className="login-error">{message}</p> : null}
+				<h1 className="brand">{STREAMFEEDER_DISPLAY_NAME}</h1>
 				<div className="login-actions">
 					<a className="primary" href="/api/auth/google?intent=login">
 						Sign in with Google

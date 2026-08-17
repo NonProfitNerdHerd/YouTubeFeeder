@@ -12,8 +12,15 @@
 	--video: #4c8dff;
 	/* App system font — Roboto for readable video titles and UI */
 	--font-system: "Roboto", system-ui, -apple-system, sans-serif;
+	--font-brand: "Merriweather", Georgia, serif;
 	font-family: var(--font-system);
 	font-weight: 400;
+}
+
+.brand {
+	font-family: var(--font-brand);
+	font-weight: 700;
+	letter-spacing: 0;
 }
 
 * {

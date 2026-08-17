@@ -1115,7 +1115,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							<span className="hamburger" aria-hidden="true" />
 						</button>
 					) : null}
-					<h1>{STREAMFEEDER_DISPLAY_NAME}</h1>
+					<h1 className="brand">{STREAMFEEDER_DISPLAY_NAME}</h1>
 					{androidClient ? null : (
 					<div className="app-tabs" role="tablist" aria-label="Main">
 						<button
@@ -1813,7 +1813,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			{androidQrOpen ? (
 				<div className="modal-backdrop" onClick={() => setAndroidQrOpen(false)}>
 					<div className="modal" onClick={(e) => e.stopPropagation()}>
-						<h2>Get VortiQuest</h2>
+						<h2 className="brand">Get VortiQuest</h2>
 						<p className="muted">Scan this code on your Android phone to download the VortiQuest test APK, then allow install from your browser if Android asks.</p>
 						{androidQrSvg ? <div className="download-qr" dangerouslySetInnerHTML={{ __html: androidQrSvg }} /> : <p className="muted">Preparing QR…</p>}
 						{androidAppVersion ? (

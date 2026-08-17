@@ -44,6 +44,8 @@ data class FeedUiState(
     val browsingChannelId: String? = null,
     val selected: InboxItem? = null,
     val pendingSnoozeItem: InboxItem? = null,
+    val snoozeExitVideoId: String? = null,
+    val snoozeExitUntilMillis: Long? = null,
     val editingChannel: ChannelRecord? = null,
     val undoArchiveVideoId: String? = null,
     val undoWatchlistVideoId: String? = null,
@@ -95,33 +97,45 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 selected = null,
                 browsingChannelId = null,
                 pendingSnoozeItem = null,
+                snoozeExitVideoId = null,
+                snoozeExitUntilMillis = null,
                 editingChannel = null,
                 categoryId = if (
                     view == FeedView.Inbox ||
                     view == FeedView.Snoozed ||
                     view == FeedView.Deleted ||
-                    view == FeedView.Streams
+                    view == FeedView.Streams ||
+                    view == FeedView.Categories
                 ) {
                     null
                 } else {
                     it.categoryId
                 },
-                items = if (view == FeedView.Categories || view == FeedView.Streams) emptyList() else it.items,
+                items = if (view == FeedView.Streams || view == FeedView.Categories) emptyList() else it.items,
             )
         }
-        if (view != FeedView.Categories && view != FeedView.Streams) {
+        if (view != FeedView.Streams && view != FeedView.Categories) {
             refreshFeed()
-        } else if (view == FeedView.Streams) {
-            refreshMeta()
         } else {
             refreshMeta()
         }
     }
 
     fun selectCategory(id: String?) {
-        _state.update { it.copy(categoryId = id, selected = null) }
         val view = _state.value.view
-        if (view == FeedView.Inbox || view == FeedView.Snoozed || view == FeedView.Deleted) {
+        _state.update {
+            it.copy(
+                categoryId = id,
+                selected = null,
+                items = if (view == FeedView.Categories && id == null) emptyList() else it.items,
+            )
+        }
+        if (
+            view == FeedView.Inbox ||
+            view == FeedView.Snoozed ||
+            view == FeedView.Deleted ||
+            (view == FeedView.Categories && id != null)
+        ) {
             refreshFeed()
         }
     }
@@ -193,8 +207,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun snoozeSelected(untilEpochMillis: Long) {
         val item = _state.value.selected ?: return
-        val until = Instant.ofEpochMilli(untilEpochMillis).toString()
-        mutate(item.videoId, JSONObject().put("action", "snooze").put("until", until), "Snoozed", clearSelected = true)
+        startSnoozeExit(item, untilEpochMillis)
     }
 
     fun archiveItem(item: InboxItem) {
@@ -311,8 +324,39 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun confirmPendingSnooze(untilEpochMillis: Long) {
         val item = _state.value.pendingSnoozeItem ?: return
-        _state.update { it.copy(pendingSnoozeItem = null) }
-        snoozeItem(item, untilEpochMillis)
+        startSnoozeExit(item, untilEpochMillis)
+    }
+
+    fun completeSnoozeExit() {
+        val s = _state.value
+        val videoId = s.snoozeExitVideoId ?: return
+        val untilMillis = s.snoozeExitUntilMillis ?: return
+        val item = s.items.firstOrNull { it.videoId == videoId }
+        _state.update { it.copy(snoozeExitVideoId = null, snoozeExitUntilMillis = null) }
+        if (item != null) {
+            snoozeItem(item, untilMillis)
+        } else {
+            val until = Instant.ofEpochMilli(untilMillis).toString()
+            mutate(
+                videoId,
+                JSONObject().put("action", "snooze").put("until", until),
+                "Snoozed",
+                clearSelected = false,
+                silent = true,
+            )
+        }
+    }
+
+    private fun startSnoozeExit(item: InboxItem, untilEpochMillis: Long) {
+        if (_state.value.snoozeExitVideoId != null) return
+        _state.update {
+            it.copy(
+                pendingSnoozeItem = null,
+                selected = if (it.selected?.videoId == item.videoId) null else it.selected,
+                snoozeExitVideoId = item.videoId,
+                snoozeExitUntilMillis = untilEpochMillis,
+            )
+        }
     }
 
     fun snoozeItem(item: InboxItem, untilEpochMillis: Long) {
@@ -613,8 +657,9 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                         signedIn = true,
                     )
                 }
-                val items = if (_state.value.view == FeedView.Categories ||
-                    (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null)
+                val items = if (
+                    (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null) ||
+                    (_state.value.view == FeedView.Categories && _state.value.categoryId == null)
                 ) {
                     emptyList()
                 } else {
@@ -639,8 +684,9 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun refreshFeed() {
         viewModelScope.launch {
-            if (_state.value.view == FeedView.Categories ||
-                (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null)
+            if (
+                (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null) ||
+                (_state.value.view == FeedView.Categories && _state.value.categoryId == null)
             ) {
                 _state.update { it.copy(loading = false, items = emptyList()) }
                 return@launch
@@ -677,7 +723,10 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 val channelId = s.browsingChannelId ?: return emptyList()
                 api.inbox(view = "inbox", channelId = channelId)
             }
-            FeedView.Categories -> emptyList()
+            FeedView.Categories -> {
+                val categoryId = s.categoryId ?: return emptyList()
+                api.inbox(view = "inbox", categoryId = categoryId)
+            }
             FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId)
             FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId)
             else -> api.inbox(view = s.view.api)

@@ -16,6 +16,9 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -32,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -96,6 +100,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -103,6 +108,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -121,6 +127,8 @@ import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsend
 import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.io.infrastructure.ChromecastConnectionListener
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
 
@@ -144,12 +152,17 @@ fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("VortiQuest", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
         Text(
             "Sign in with the same Google account as the website to see your feed.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "VortiQuest",
+            style = MaterialTheme.typography.headlineLarge,
+            fontFamily = BrandFont,
+            fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(24.dp))
         Button(onClick = {
@@ -196,6 +209,7 @@ fun FeedScreen(
     onRequestSnooze: (InboxItem) -> Unit,
     onConfirmPendingSnooze: (Long) -> Unit,
     onCancelPendingSnooze: () -> Unit,
+    onCompleteSnoozeExit: () -> Unit,
     onUndoArchive: () -> Unit,
     onUndoWatchlist: () -> Unit,
     onCreateWatchlist: (String) -> Unit,
@@ -218,6 +232,7 @@ fun FeedScreen(
         FeedView.Snoozed,
         FeedView.Deleted,
         FeedView.Watchlist,
+        FeedView.Categories,
     )
     val useListMasterDetail = useMasterDetail && state.view in listMasterDetailViews
     val useStreamsMasterDetail = useMasterDetail && state.view == FeedView.Streams
@@ -237,6 +252,7 @@ fun FeedScreen(
 
     val overlaysClear = state.pendingSnoozeItem == null && state.editingChannel == null &&
         !confirmArchiveOpen && !watchlistBulkOpen && !bulkSnoozeOpen
+    val browsingCategory = state.view == FeedView.Categories && state.categoryId != null
     val atRootInbox = state.view == FeedView.Inbox &&
         !navOpen &&
         state.selected == null &&
@@ -247,11 +263,15 @@ fun FeedScreen(
         !navOpen &&
         state.selected == null &&
         browsingChannel == null &&
+        !browsingCategory &&
         !selectionMode &&
         overlaysClear
 
     BackHandler(enabled = state.selected != null) { onClose() }
     BackHandler(enabled = browsingChannel != null && state.selected == null) { onCloseStream() }
+    BackHandler(enabled = browsingCategory && state.selected == null && !navOpen && overlaysClear && !selectionMode) {
+        onSelectCategory(null)
+    }
     BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) { navOpen = false }
     BackHandler(enabled = state.pendingSnoozeItem != null) { onCancelPendingSnooze() }
     BackHandler(enabled = state.editingChannel != null) { onCloseEditChannel() }
@@ -311,12 +331,14 @@ fun FeedScreen(
             loading = state.loading,
             syncing = state.syncing,
             status = state.status,
+            snoozeExitVideoId = state.snoozeExitVideoId,
             onBack = onCloseStream,
             onCatchUp = onCatchUp,
             onEdit = { onOpenEditChannel(browsingChannel) },
             onOpen = onOpen,
             onArchiveItem = onArchiveItem,
             onRequestSnooze = onRequestSnooze,
+            onCompleteSnoozeExit = onCompleteSnoozeExit,
         )
         EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
         PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
@@ -337,7 +359,11 @@ fun FeedScreen(
                         Text("${selectedVideoIds.size} selected")
                     } else {
                         Column {
-                            Text("VortiQuest")
+                            Text(
+                                "VortiQuest",
+                                fontFamily = BrandFont,
+                                fontWeight = FontWeight.Bold,
+                            )
                             Text(
                                 state.user?.displayName ?: "",
                                 style = MaterialTheme.typography.labelMedium,
@@ -392,15 +418,35 @@ fun FeedScreen(
                                 .padding(horizontal = 12.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                state.view.label,
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            if (state.view == FeedView.Watchlist) {
-                                IconButton(onClick = { createWatchlistOpen = true }) {
-                                    Icon(Icons.Default.Add, contentDescription = "Create watchlist")
+                            if (state.view == FeedView.Categories && state.categoryId != null) {
+                                IconButton(onClick = { onSelectCategory(null) }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to categories")
+                                }
+                                Text(
+                                    state.categories.firstOrNull { it.id == state.categoryId }?.name
+                                        ?: FeedView.Categories.label,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            } else {
+                                Text(
+                                    state.view.label,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                if (state.view == FeedView.Watchlist) {
+                                    IconButton(onClick = { createWatchlistOpen = true }) {
+                                        Icon(Icons.Default.Add, contentDescription = "Create watchlist")
+                                    }
+                                }
+                                if (state.view == FeedView.Categories) {
+                                    IconButton(onClick = { createCategoryOpen = true }) {
+                                        Icon(Icons.Default.Add, contentDescription = "Create category")
+                                    }
                                 }
                             }
                         }
@@ -422,6 +468,7 @@ fun FeedScreen(
                                             if (id in selectedVideoIds) selectedVideoIds - id else selectedVideoIds + id
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
+                                    onCompleteSnoozeExit = onCompleteSnoozeExit,
                                 )
                             }
                             FeedView.Watchlist -> {
@@ -450,9 +497,31 @@ fun FeedScreen(
                                     onOpen = onOpen,
                                     onArchiveItem = onArchiveItem,
                                     onRequestSnooze = onRequestSnooze,
+                                    onCompleteSnoozeExit = onCompleteSnoozeExit,
                                     swipe = true,
                                     detailVideoId = selected?.videoId,
                                 )
+                            }
+                            FeedView.Categories -> {
+                                if (state.categoryId == null) {
+                                    CategoriesPanel(
+                                        categories = state.categories,
+                                        channels = state.channels,
+                                        onSelect = onSelectCategory,
+                                        onRename = onRenameCategory,
+                                        onDelete = onDeleteCategory,
+                                    )
+                                } else {
+                                    VideoList(
+                                        state = state,
+                                        onOpen = onOpen,
+                                        onArchiveItem = onArchiveItem,
+                                        onRequestSnooze = onRequestSnooze,
+                                        onCompleteSnoozeExit = onCompleteSnoozeExit,
+                                        swipe = true,
+                                        detailVideoId = selected?.videoId,
+                                    )
+                                }
                             }
                             else -> {
                                 VideoList(
@@ -460,6 +529,7 @@ fun FeedScreen(
                                     onOpen = onOpen,
                                     onArchiveItem = onArchiveItem,
                                     onRequestSnooze = onRequestSnooze,
+                                    onCompleteSnoozeExit = onCompleteSnoozeExit,
                                     swipe = false,
                                     detailVideoId = selected?.videoId,
                                 )
@@ -488,7 +558,14 @@ fun FeedScreen(
                             )
                         } else {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("Select a video", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    if (state.view == FeedView.Categories && state.categoryId == null) {
+                                        "Select a category"
+                                    } else {
+                                        "Select a video"
+                                    },
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }
@@ -534,9 +611,13 @@ fun FeedScreen(
                                 syncing = state.syncing,
                                 status = state.status,
                                 detailVideoId = selected?.videoId,
+                                snoozeExitVideoId = state.snoozeExitVideoId,
                                 onCatchUp = onCatchUp,
                                 onEdit = { onOpenEditChannel(browsingChannel) },
                                 onOpen = onOpen,
+                                onArchiveItem = onArchiveItem,
+                                onRequestSnooze = onRequestSnooze,
+                                onCompleteSnoozeExit = onCompleteSnoozeExit,
                             )
                         } else {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -584,20 +665,35 @@ fun FeedScreen(
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            state.view.label,
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        if (state.view == FeedView.Watchlist) {
-                            IconButton(onClick = { createWatchlistOpen = true }) {
-                                Icon(Icons.Default.Add, contentDescription = "Create watchlist")
+                        if (state.view == FeedView.Categories && state.categoryId != null) {
+                            IconButton(onClick = { onSelectCategory(null) }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to categories")
                             }
-                        }
-                        if (state.view == FeedView.Categories) {
-                            IconButton(onClick = { createCategoryOpen = true }) {
-                                Icon(Icons.Default.Add, contentDescription = "Create category")
+                            Text(
+                                state.categories.firstOrNull { it.id == state.categoryId }?.name
+                                    ?: FeedView.Categories.label,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Text(
+                                state.view.label,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            if (state.view == FeedView.Watchlist) {
+                                IconButton(onClick = { createWatchlistOpen = true }) {
+                                    Icon(Icons.Default.Add, contentDescription = "Create watchlist")
+                                }
+                            }
+                            if (state.view == FeedView.Categories) {
+                                IconButton(onClick = { createCategoryOpen = true }) {
+                                    Icon(Icons.Default.Add, contentDescription = "Create category")
+                                }
                             }
                         }
                     }
@@ -624,15 +720,20 @@ fun FeedScreen(
                                     )
                                 }
                             }
-                            VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = true)
+                            VideoList(state, onOpen, onArchiveItem, onRequestSnooze, onCompleteSnoozeExit, swipe = true)
                         }
                         FeedView.Categories -> {
-                            CategoriesPanel(
-                                categories = state.categories,
-                                channels = state.channels,
-                                onRename = onRenameCategory,
-                                onDelete = onDeleteCategory,
-                            )
+                            if (state.categoryId == null) {
+                                CategoriesPanel(
+                                    categories = state.categories,
+                                    channels = state.channels,
+                                    onSelect = onSelectCategory,
+                                    onRename = onRenameCategory,
+                                    onDelete = onDeleteCategory,
+                                )
+                            } else {
+                                VideoList(state, onOpen, onArchiveItem, onRequestSnooze, onCompleteSnoozeExit, swipe = true)
+                            }
                         }
                         FeedView.Streams -> {
                             StreamsListPanel(
@@ -660,9 +761,10 @@ fun FeedScreen(
                                             if (id in selectedVideoIds) selectedVideoIds - id else selectedVideoIds + id
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
+                                    onCompleteSnoozeExit = onCompleteSnoozeExit,
                                 )
                             } else {
-                                VideoList(state, onOpen, onArchiveItem, onRequestSnooze, swipe = false)
+                                VideoList(state, onOpen, onArchiveItem, onRequestSnooze, onCompleteSnoozeExit, swipe = false)
                             }
                         }
                     }
@@ -757,6 +859,7 @@ private fun InboxListPane(
     detailVideoId: String?,
     onToggleSelect: (String) -> Unit,
     onEnterSelection: (String) -> Unit,
+    onCompleteSnoozeExit: () -> Unit = {},
 ) {
     val uncategorizedId = "__uncategorized__"
     val selectedCategoryName = when (state.categoryId) {
@@ -799,6 +902,7 @@ private fun InboxListPane(
         onOpen = onOpen,
         onArchiveItem = onArchiveItem,
         onRequestSnooze = onRequestSnooze,
+        onCompleteSnoozeExit = onCompleteSnoozeExit,
         swipe = !selectionMode,
         selectionMode = selectionMode,
         selectedIds = selectedVideoIds,
@@ -814,6 +918,7 @@ private fun VideoList(
     onOpen: (InboxItem) -> Unit,
     onArchiveItem: (InboxItem) -> Unit,
     onRequestSnooze: (InboxItem) -> Unit,
+    onCompleteSnoozeExit: () -> Unit = {},
     swipe: Boolean,
     selectionMode: Boolean = false,
     selectedIds: Set<String> = emptySet(),
@@ -845,6 +950,7 @@ private fun VideoList(
                 items(state.items, key = { it.videoId }) { item ->
                     val multiSelected = item.videoId in selectedIds
                     val detailSelected = !selectionMode && detailVideoId == item.videoId
+                    val exiting = state.snoozeExitVideoId == item.videoId
                     if (swipe && !selectionMode) {
                         SwipeFeedRow(
                             item = item,
@@ -853,6 +959,8 @@ private fun VideoList(
                             onSnooze = { onRequestSnooze(item) },
                             onLongPress = { onEnterSelection(item.videoId) },
                             highlighted = detailSelected,
+                            exiting = exiting,
+                            onExitFinished = onCompleteSnoozeExit,
                         )
                     } else {
                         FeedRow(
@@ -864,6 +972,8 @@ private fun VideoList(
                                 if (selectionMode) onToggleSelect(item.videoId) else onOpen(item)
                             },
                             onLongPress = { onEnterSelection(item.videoId) },
+                            exiting = exiting,
+                            onExitFinished = onCompleteSnoozeExit,
                         )
                     }
                 }
@@ -925,6 +1035,7 @@ private fun BulkWatchlistDialog(
 private fun CategoriesPanel(
     categories: List<CategoryRecord>,
     channels: List<ChannelRecord>,
+    onSelect: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
 ) {
@@ -945,13 +1056,12 @@ private fun CategoriesPanel(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onSelect(cat.id) }
                     .padding(vertical = 8.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                IconButton(onClick = { editing = cat }) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit category")
-                }
                 Text(
                     buildAnnotatedString {
                         append(cat.name)
@@ -969,6 +1079,17 @@ private fun CategoriesPanel(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(
+                    onClick = { editing = cat },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Edit category",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                    )
+                }
             }
         }
     }
@@ -1146,9 +1267,13 @@ private fun StreamVideosPane(
     syncing: Boolean,
     status: String?,
     detailVideoId: String?,
+    snoozeExitVideoId: String?,
     onCatchUp: () -> Unit,
     onEdit: () -> Unit,
     onOpen: (InboxItem) -> Unit,
+    onArchiveItem: (InboxItem) -> Unit,
+    onRequestSnooze: (InboxItem) -> Unit,
+    onCompleteSnoozeExit: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -1208,6 +1333,8 @@ private fun StreamVideosPane(
                             onClick = { onOpen(item) },
                             showChannelInMeta = false,
                             highlighted = detailVideoId == item.videoId,
+                            exiting = snoozeExitVideoId == item.videoId,
+                            onExitFinished = onCompleteSnoozeExit,
                         )
                     }
                 }
@@ -1225,12 +1352,14 @@ private fun StreamDetailScreen(
     loading: Boolean,
     syncing: Boolean,
     status: String?,
+    snoozeExitVideoId: String?,
     onBack: () -> Unit,
     onCatchUp: () -> Unit,
     onEdit: () -> Unit,
     onOpen: (InboxItem) -> Unit,
     onArchiveItem: (InboxItem) -> Unit,
     onRequestSnooze: (InboxItem) -> Unit,
+    onCompleteSnoozeExit: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -1311,6 +1440,8 @@ private fun StreamDetailScreen(
                                 onArchive = { onArchiveItem(item) },
                                 onSnooze = { onRequestSnooze(item) },
                                 showChannelInMeta = false,
+                                exiting = snoozeExitVideoId == item.videoId,
+                                onExitFinished = onCompleteSnoozeExit,
                             )
                         }
                     }
@@ -1490,9 +1621,10 @@ private fun SnoozeDurationDialog(onPick: (Long) -> Unit, onDismiss: () -> Unit) 
                 title = { Text("Snooze") },
                 text = {
                     Column {
-                        TextButton(onClick = { onPick(snoozeHoursFromNow(1)) }) { Text("1 hour") }
+                        TextButton(onClick = { onPick(snoozeHoursFromNow(3)) }) { Text("3 hours") }
+                        TextButton(onClick = { onPick(snoozeThisEvening()) }) { Text("This Evening") }
                         TextButton(onClick = { onPick(snoozeHoursFromNow(24)) }) { Text("Tomorrow") }
-                        TextButton(onClick = { onPick(snoozeHoursFromNow(168)) }) { Text("1 week") }
+                        TextButton(onClick = { onPick(snoozeNextWeekMondayMorning()) }) { Text("Next Week") }
                         TextButton(onClick = { step = SnoozePickerStep.Date }) { Text("Choose date & time") }
                     }
                 },
@@ -1554,6 +1686,32 @@ private enum class SnoozePickerStep { Presets, Date, Time }
 
 private fun snoozeHoursFromNow(hours: Long): Long =
     java.time.Instant.now().plus(hours, java.time.temporal.ChronoUnit.HOURS).toEpochMilli()
+
+/** Today at 6 PM local, or tomorrow 6 PM if already past 6 PM. */
+private fun snoozeThisEvening(): Long {
+    val zone = java.time.ZoneId.systemDefault()
+    val now = java.time.ZonedDateTime.now(zone)
+    var target = now.toLocalDate().atTime(18, 0).atZone(zone)
+    if (!target.isAfter(now)) {
+        target = target.plusDays(1)
+    }
+    return target.toInstant().toEpochMilli()
+}
+
+/** Next Monday at 7 AM local (today if Monday and still before 7 AM). */
+private fun snoozeNextWeekMondayMorning(): Long {
+    val zone = java.time.ZoneId.systemDefault()
+    val now = java.time.ZonedDateTime.now(zone)
+    var day = now.toLocalDate()
+    while (day.dayOfWeek != java.time.DayOfWeek.MONDAY) {
+        day = day.plusDays(1)
+    }
+    var target = day.atTime(7, 0).atZone(zone)
+    if (!target.isAfter(now)) {
+        target = day.plusWeeks(1).atTime(7, 0).atZone(zone)
+    }
+    return target.toInstant().toEpochMilli()
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1620,6 +1778,11 @@ private fun FullScreenNav(
             onClick = { onSelect(FeedView.Categories) },
         )
         NavSubItem(
+            label = FeedView.Streams.label,
+            selected = current == FeedView.Streams,
+            onClick = { onSelect(FeedView.Streams) },
+        )
+        NavSubItem(
             label = FeedView.Snoozed.label,
             selected = current == FeedView.Snoozed,
             onClick = { onSelect(FeedView.Snoozed) },
@@ -1628,11 +1791,6 @@ private fun FullScreenNav(
             label = FeedView.Deleted.label,
             selected = current == FeedView.Deleted,
             onClick = { onSelect(FeedView.Deleted) },
-        )
-        NavSubItem(
-            label = FeedView.Streams.label,
-            selected = current == FeedView.Streams,
-            onClick = { onSelect(FeedView.Streams) },
         )
         NavTopItem(
             label = FeedView.Watchlist.label,
@@ -1718,7 +1876,10 @@ private fun SwipeFeedRow(
     showChannelInMeta: Boolean = true,
     onLongPress: (() -> Unit)? = null,
     highlighted: Boolean = false,
+    exiting: Boolean = false,
+    onExitFinished: () -> Unit = {},
 ) {
+    val exitModifier = rememberSnoozeExitModifier(exiting, onExitFinished)
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             when (value) {
@@ -1736,6 +1897,7 @@ private fun SwipeFeedRow(
     )
     SwipeToDismissBox(
         state = dismissState,
+        modifier = exitModifier,
         backgroundContent = {
             val direction = dismissState.dismissDirection
             val color = when (direction) {
@@ -1774,6 +1936,33 @@ private fun SwipeFeedRow(
     }
 }
 
+@Composable
+private fun rememberSnoozeExitModifier(
+    exiting: Boolean,
+    onExitFinished: () -> Unit,
+): Modifier {
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val slidePx = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val offsetX = remember { Animatable(0f) }
+    var finished by remember { mutableStateOf(false) }
+    LaunchedEffect(exiting) {
+        if (exiting && !finished) {
+            delay(180)
+            offsetX.animateTo(
+                targetValue = -slidePx,
+                animationSpec = tween(durationMillis = 320, easing = FastOutLinearInEasing),
+            )
+            finished = true
+            onExitFinished()
+        } else if (!exiting) {
+            finished = false
+            if (offsetX.value != 0f) offsetX.snapTo(0f)
+        }
+    }
+    return Modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FeedRow(
@@ -1784,9 +1973,13 @@ private fun FeedRow(
     selected: Boolean = false,
     highlighted: Boolean = false,
     onLongPress: (() -> Unit)? = null,
+    exiting: Boolean = false,
+    onExitFinished: () -> Unit = {},
 ) {
+    val exitModifier = rememberSnoozeExitModifier(exiting, onExitFinished)
     Row(
         modifier = Modifier
+            .then(exitModifier)
             .fillMaxWidth()
             .background(
                 when {
@@ -1797,6 +1990,7 @@ private fun FeedRow(
             )
             .clip(RoundedCornerShape(8.dp))
             .combinedClickable(
+                enabled = !exiting,
                 onClick = onClick,
                 onLongClick = onLongPress,
             )

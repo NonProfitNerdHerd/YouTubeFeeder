@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { ANDROID_DOWNLOAD_PATH, STABLE_APK_URL, STREAMFEEDER_DISPLAY_NAME, STREAMFEEDER_PACKAGE_ID, TEST_APK_PATH } from '../../src/lib/androidRelease';
 import { digitalAssetLinks, normalizeSha256Fingerprint } from '../../worker/android/assetlinks';
 import { ANDROID_OAUTH_REDIRECT, oauthClientFromState } from '../../worker/auth/session';
@@ -33,9 +34,18 @@ describe('VortiQuest Android phase 1', () => {
 		expect(digitalAssetLinks(STREAMFEEDER_PACKAGE_ID, [])).toEqual([]);
 	});
 
+	it('loads Merriweather for the VortiQuest wordmark and Roboto for UI', () => {
+		const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+		expect(html).toContain('family=Merriweather');
+		expect(html).toContain('family=Roboto');
+		const css = readFileSync(new URL('../../src/styles/global.css', import.meta.url), 'utf8');
+		expect(css).toContain('--font-brand: "Merriweather"');
+		expect(css).toContain('--font-system: "Roboto"');
+	});
+
 	it('shares one version source', () => {
-		expect(version.versionName).toBe('1.0.19');
-		expect(version.versionCode).toBe(20);
+		expect(version.versionName).toBe('1.0.20');
+		expect(version.versionCode).toBe(21);
 	});
 
 	it('supports native Android OAuth return and Bearer sessions', async () => {

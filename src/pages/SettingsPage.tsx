@@ -9,7 +9,7 @@ export function SettingsPage({ user, onLogout }: { user: CurrentUser; onLogout: 
 		<div className="shell settings-shell">
 			<header className="topbar">
 				<div className="topbar-left">
-					<h1>{STREAMFEEDER_DISPLAY_NAME}</h1>
+					<h1 className="brand">{STREAMFEEDER_DISPLAY_NAME}</h1>
 					<span className="tab active" aria-current="page">
 						Settings
 					</span>

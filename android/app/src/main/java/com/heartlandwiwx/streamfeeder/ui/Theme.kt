@@ -7,8 +7,19 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.heartlandwiwx.streamfeeder.R
+
+/** App system font: Roboto (Android default) at normal weight for readable titles. */
+private val SystemFont = FontFamily.Default
+
+/** Product wordmark. */
+val BrandFont = FontFamily(
+    Font(R.font.merriweather_regular, FontWeight.Normal),
+    Font(R.font.merriweather_bold, FontWeight.Bold),
+)
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFF8AB4F8),
@@ -24,9 +35,6 @@ private val LightColors = lightColorScheme(
     background = Color(0xFFF8F9FA),
     surface = Color(0xFFFFFFFF),
 )
-
-/** App system font: Roboto (Android default) at normal weight for readable titles. */
-private val SystemFont = FontFamily.Default
 
 private val BaseTypography = Typography()
 private val AppTypography = BaseTypography.copy(
