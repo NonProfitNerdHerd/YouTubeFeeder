@@ -16,7 +16,7 @@ import {
 	readOauthState,
 	readSessionUserId,
 } from './auth/session';
-import { lastSyncAt, listInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
+import { lastSyncAt, listInbox, countInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
 import {
 	applyLiveLayout,
 	assignLiveSlot,
@@ -354,7 +354,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			viewParam === 'snoozed' || viewParam === 'deleted' || viewParam === 'watchlist' ? viewParam : 'inbox';
 		const watchlistId = url.searchParams.get('watchlistId');
 		const items = await listInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
-		return json({ items });
+		const count = await countInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
+		return json({ items, count });
 	}
 
 	if (path.startsWith('/api/inbox/') && request.method === 'PATCH') {

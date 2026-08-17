@@ -214,15 +214,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				throw new Error('Could not load subscriptions.');
 			}
 			setChannels(((await chRes.json()) as { channels: ChannelRecord[] }).channels);
-			const nextItems = ((await inRes.json()) as { items: InboxItem[] }).items;
-			setItems(nextItems);
+			const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number };
+			setItems(inboxBody.items);
 			setCategories(((await catRes.json()) as { categories: CategoryRecord[] }).categories);
 			const nextLists = ((await wlRes.json()) as { watchlists: WatchlistRecord[] }).watchlists;
 			setWatchlists(nextLists);
 			if (inboxCountRes) {
-				setInboxCount(((await inboxCountRes.json()) as { items: InboxItem[] }).items.length);
+				const countBody = (await inboxCountRes.json()) as { count?: number; items: InboxItem[] };
+				setInboxCount(typeof countBody.count === 'number' ? countBody.count : countBody.items.length);
 			} else {
-				setInboxCount(nextItems.length);
+				setInboxCount(typeof inboxBody.count === 'number' ? inboxBody.count : inboxBody.items.length);
 			}
 		},
 		[channelId, categoryId, leftTab, watchlistId],
@@ -1038,13 +1039,28 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					{androidClient ? null : (
 					<div className="app-tabs" role="tablist" aria-label="Main">
 						<button
-							className={mainSection === 'feed' ? 'tab active' : 'tab'}
+							className={mainSection === 'feed' && leftTab !== 'watchlist' ? 'tab active' : 'tab'}
 							type="button"
 							role="tab"
-							aria-selected={mainSection === 'feed'}
-							onClick={() => setMainSection('feed')}
+							aria-selected={mainSection === 'feed' && leftTab !== 'watchlist'}
+							onClick={() => {
+								setMainSection('feed');
+								if (leftTab === 'watchlist') setLeftTab('inbox');
+							}}
 						>
 							Feed
+						</button>
+						<button
+							className={mainSection === 'feed' && leftTab === 'watchlist' ? 'tab active' : 'tab'}
+							type="button"
+							role="tab"
+							aria-selected={mainSection === 'feed' && leftTab === 'watchlist'}
+							onClick={() => {
+								setMainSection('feed');
+								setLeftTab('watchlist');
+							}}
+						>
+							WatchList
 						</button>
 						<button
 							className={mainSection === 'live' ? 'tab active' : 'tab'}
@@ -1113,12 +1129,50 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					)}
 				</div>
 			</header>
-			{mainSection === 'feed' ? (
+			{mainSection === 'feed' && leftTab !== 'watchlist' ? (
 				<nav className="feed-toolbar" aria-label="Feed views">
 					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
 						Inbox{inboxCount === null ? '' : ` (${inboxCount})`}
 					</button>
-					{leftTab !== 'watchlist' && leftTab !== 'categories' ? (
+					<button
+						className={leftTab === 'streams' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('streams')}
+					>
+						Streams
+					</button>
+					{!androidClient && leftTab === 'streams' ? (
+						<button
+							className="feed-toolbar-sync"
+							type="button"
+							disabled={syncing}
+							onClick={() => void syncSubscriptionsOnly()}
+						>
+							{syncing ? 'Syncing…' : 'Sync subscriptions'}
+						</button>
+					) : null}
+					<button
+						className={leftTab === 'categories' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('categories')}
+					>
+						By Category
+					</button>
+					<button
+						className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('snoozed')}
+					>
+						Snoozed
+					</button>
+					<button
+						className={leftTab === 'deleted' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('deleted')}
+					>
+						Deleted
+					</button>
+					{leftTab !== 'categories' ? (
 						<label className="feed-toolbar-filter">
 							<select
 								value={categoryId ?? ''}
@@ -1146,51 +1200,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							</select>
 						</label>
 					) : null}
-					{!androidClient && leftTab === 'streams' ? (
-						<button
-							className="feed-toolbar-sync"
-							type="button"
-							disabled={syncing}
-							onClick={() => void syncSubscriptionsOnly()}
-						>
-							{syncing ? 'Syncing…' : 'Sync subscriptions'}
-						</button>
-					) : null}
-					<button
-						className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
-						type="button"
-						onClick={() => setLeftTab('snoozed')}
-					>
-						Snoozed
-					</button>
-					<button
-						className={leftTab === 'deleted' ? 'tab active' : 'tab'}
-						type="button"
-						onClick={() => setLeftTab('deleted')}
-					>
-						Deleted
-					</button>
-					<button
-						className={leftTab === 'watchlist' ? 'tab active' : 'tab'}
-						type="button"
-						onClick={() => setLeftTab('watchlist')}
-					>
-						WatchList
-					</button>
-					<button
-						className={leftTab === 'streams' ? 'tab active' : 'tab'}
-						type="button"
-						onClick={() => setLeftTab('streams')}
-					>
-						Streams
-					</button>
-					<button
-						className={leftTab === 'categories' ? 'tab active' : 'tab'}
-						type="button"
-						onClick={() => setLeftTab('categories')}
-					>
-						By Category
-					</button>
 				</nav>
 			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}

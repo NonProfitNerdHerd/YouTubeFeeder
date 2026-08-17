@@ -50,15 +50,11 @@ export async function listSubscribedChannels(db: D1Database, userId: string): Pr
 	}));
 }
 
-export async function listInbox(
-	db: D1Database,
-	userId: string,
+function inboxWhere(
 	channelId: string | null,
 	categoryId: string | null,
 	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
-	watchlistId: string | null = null,
-): Promise<InboxItem[]> {
-	if (view === 'watchlist' && !watchlistId) return [];
+) {
 	const nowExpr = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
 	const hiddenFilter = view === 'deleted' ? 'AND i.hidden = 1' : 'AND i.hidden = 0';
 	const snoozeFilter =
@@ -73,13 +69,7 @@ export async function listInbox(
 			: view === 'deleted'
 				? ''
 				: 'AND NOT EXISTS (SELECT 1 FROM watchlist_items wi WHERE wi.user_id = i.user_id AND wi.video_id = i.video_id)';
-	const sql = `
-		SELECT
-			v.video_id, v.channel_id, c.title AS channel_title, c.thumbnail_url AS channel_thumbnail,
-			v.title, v.description_excerpt, v.thumbnail_medium, v.thumbnail_high, v.published_at,
-			v.scheduled_start_at, v.actual_start_at, v.actual_end_at, v.duration_seconds,
-			v.content_type, v.livestream_status, v.embeddable,
-			i.unread, i.starred, i.archived, i.hidden, i.first_seen_at, i.snoozed_until, COALESCE(i.notes, '') AS notes
+	return `
 		FROM inbox_state i
 		JOIN videos v ON v.video_id = i.video_id
 		JOIN channels c ON c.channel_id = v.channel_id
@@ -89,13 +79,60 @@ export async function listInbox(
 		${watchFilter}
 		${channelId ? 'AND v.channel_id = ?' : ''}
 		${categoryId ? 'AND v.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)' : ''}
-		ORDER BY COALESCE(v.published_at, v.scheduled_start_at, i.first_seen_at) DESC
-		LIMIT 200
 	`;
+}
+
+function inboxBinds(
+	userId: string,
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watchlistId: string | null = null,
+): string[] {
 	const binds: string[] = [userId];
 	if (view === 'watchlist' && watchlistId) binds.push(userId, watchlistId);
 	if (channelId) binds.push(channelId);
 	if (categoryId) binds.push(userId, categoryId);
+	return binds;
+}
+
+export async function countInbox(
+	db: D1Database,
+	userId: string,
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watchlistId: string | null = null,
+): Promise<number> {
+	if (view === 'watchlist' && !watchlistId) return 0;
+	const row = await db
+		.prepare(`SELECT COUNT(*) AS n ${inboxWhere(channelId, categoryId, view)}`)
+		.bind(...inboxBinds(userId, channelId, categoryId, view, watchlistId))
+		.first<{ n: number }>();
+	return Number(row?.n ?? 0);
+}
+
+export async function listInbox(
+	db: D1Database,
+	userId: string,
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watchlistId: string | null = null,
+): Promise<InboxItem[]> {
+	if (view === 'watchlist' && !watchlistId) return [];
+	const sql = `
+		SELECT
+			v.video_id, v.channel_id, c.title AS channel_title, c.thumbnail_url AS channel_thumbnail,
+			v.title, v.description_excerpt, v.thumbnail_medium, v.thumbnail_high, v.published_at,
+			v.scheduled_start_at, v.actual_start_at, v.actual_end_at, v.duration_seconds,
+			v.content_type, v.livestream_status, v.embeddable,
+			i.unread, i.starred, i.archived, i.hidden, i.first_seen_at, i.snoozed_until, COALESCE(i.notes, '') AS notes
+		${inboxWhere(channelId, categoryId, view)}
+		ORDER BY COALESCE(v.published_at, v.scheduled_start_at, i.first_seen_at) DESC
+		LIMIT 200
+	`;
+	const binds = inboxBinds(userId, channelId, categoryId, view, watchlistId);
 	const rows = await db
 		.prepare(sql)
 		.bind(...binds)
