@@ -1003,6 +1003,25 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
 						Inbox
 					</button>
+					<label className="feed-toolbar-filter">
+						<select
+							value={categoryId ?? ''}
+							aria-label="Category"
+							onChange={(event) => {
+								setCategoryId(event.target.value || null);
+								setSelectedVideoId(null);
+								setInboxSelectedIds([]);
+								leftScrollRef.current?.scrollTo({ top: 0 });
+							}}
+						>
+							<option value="">All categories</option>
+							{categories.map((cat) => (
+								<option key={cat.id} value={cat.id}>
+									{cat.name}
+								</option>
+							))}
+						</select>
+					</label>
 					<button
 						className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
 						type="button"
@@ -1036,7 +1055,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						type="button"
 						onClick={() => setLeftTab('categories')}
 					>
-						Categories
+						Categories Setup
 					</button>
 				</nav>
 			) : null}
@@ -1084,25 +1103,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				<aside className="subs">
 					{leftTab === 'inbox' ? (
 						<>
-							<label className="inbox-filter">
-								<span className="muted">Category</span>
-								<select
-									value={categoryId ?? ''}
-									onChange={(event) => {
-										setCategoryId(event.target.value || null);
-										setSelectedVideoId(null);
-										setInboxSelectedIds([]);
-										leftScrollRef.current?.scrollTo({ top: 0 });
-									}}
-								>
-									<option value="">All categories</option>
-									{categories.map((cat) => (
-										<option key={cat.id} value={cat.id}>
-											{cat.name}
-										</option>
-									))}
-								</select>
-							</label>
 							{listMultiSelectEnabled && leftTab === 'inbox' && inboxSelectedIds.length > 0 ? (
 								<div className="inbox-bulk-bar" role="toolbar" aria-label="Bulk inbox actions">
 									<span className="muted inbox-bulk-count">{inboxSelectedIds.length} selected</span>
@@ -1150,25 +1150,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					) : null}
 					{leftTab === 'snoozed' ? (
 						<>
-							<label className="inbox-filter">
-								<span className="muted">Category</span>
-								<select
-									value={categoryId ?? ''}
-									onChange={(event) => {
-										setCategoryId(event.target.value || null);
-										setSelectedVideoId(null);
-										setInboxSelectedIds([]);
-										leftScrollRef.current?.scrollTo({ top: 0 });
-									}}
-								>
-									<option value="">All categories</option>
-									{categories.map((cat) => (
-										<option key={cat.id} value={cat.id}>
-											{cat.name}
-										</option>
-									))}
-								</select>
-							</label>
 							{listMultiSelectEnabled && inboxSelectedIds.length > 0 ? (
 								<div className="inbox-bulk-bar" role="toolbar" aria-label="Bulk snoozed actions">
 									<span className="muted inbox-bulk-count">{inboxSelectedIds.length} selected</span>
@@ -1212,25 +1193,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					) : null}
 					{leftTab === 'deleted' ? (
 						<>
-							<label className="inbox-filter">
-								<span className="muted">Category</span>
-								<select
-									value={categoryId ?? ''}
-									onChange={(event) => {
-										setCategoryId(event.target.value || null);
-										setSelectedVideoId(null);
-										setInboxSelectedIds([]);
-										leftScrollRef.current?.scrollTo({ top: 0 });
-									}}
-								>
-									<option value="">All categories</option>
-									{categories.map((cat) => (
-										<option key={cat.id} value={cat.id}>
-											{cat.name}
-										</option>
-									))}
-								</select>
-							</label>
 							{listMultiSelectEnabled && inboxSelectedIds.length > 0 ? (
 								<div className="inbox-bulk-bar" role="toolbar" aria-label="Bulk deleted actions">
 									<span className="muted inbox-bulk-count">{inboxSelectedIds.length} selected</span>
@@ -1636,7 +1598,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						</label>
 						<fieldset className="modal-cats">
 							<legend>Categories</legend>
-							{categories.length === 0 ? <p className="muted">Add a category in the Categories tab first.</p> : null}
+							{categories.length === 0 ? <p className="muted">Add a category in Categories Setup first.</p> : null}
 							{categories.map((cat) => (
 								<label key={cat.id} className="check">
 									<input type="checkbox" name="categoryIds" value={cat.id} defaultChecked={editing.categoryIds.includes(cat.id)} />
