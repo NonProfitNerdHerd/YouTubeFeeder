@@ -128,7 +128,7 @@ fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("StreamFeeder", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text("VortiQuest", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
             "Sign in with the same Google account as the website to see your feed.",
@@ -333,7 +333,7 @@ fun FeedScreen(
                         Text("${selectedVideoIds.size} selected")
                     } else {
                         Column {
-                            Text("StreamFeeder")
+                            Text("VortiQuest")
                             Text(
                                 state.user?.displayName ?: "",
                                 style = MaterialTheme.typography.labelMedium,

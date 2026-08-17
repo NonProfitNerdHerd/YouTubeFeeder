@@ -72,7 +72,7 @@ export function DownloadAndroidPage() {
 					<a href={STABLE_APK_URL}>{STABLE_APK_URL}</a>
 				</p>
 			) : (
-				<p className="download-warn">This is a debug test build for sideloading. It is not the signed Play/GitHub StreamFeeder.apk.</p>
+				<p className="download-warn">This is a debug test build for sideloading. It is not the signed Play/GitHub VortiQuest APK (file name StreamFeeder.apk).</p>
 			)}
 			<h2>Install</h2>
 			<ol>

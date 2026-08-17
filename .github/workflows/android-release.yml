@@ -97,7 +97,7 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
           mkdir -p dist-apk
           cp "$APK" dist-apk/StreamFeeder.apk
-          gh release create "${GITHUB_REF_NAME}" dist-apk/StreamFeeder.apk --title "${GITHUB_REF_NAME}" --notes "StreamFeeder ${GITHUB_REF_NAME} (Feeder + Watchlists)."
+          gh release create "${GITHUB_REF_NAME}" dist-apk/StreamFeeder.apk --title "${GITHUB_REF_NAME}" --notes "VortiQuest ${GITHUB_REF_NAME} (Feeder + Watchlists)."
       - name: Remove signing material
         if: always()
         run: rm -rf "$RUNNER_TEMP/android-signing"

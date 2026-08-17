@@ -1,4 +1,4 @@
-# StreamFeeder GitHub Release
+# VortiQuest GitHub Release
 
 Stable APK URL (do not change the filename):
 

@@ -1,6 +1,6 @@
-# StreamFeeder
+# VortiQuest
 
-Personal YouTube inbox, live-stream grid, and Android client. The GitHub repo is still named YouTubeFeeder; the product is **StreamFeeder**.
+Personal YouTube inbox, live-stream grid, and Android client. The GitHub repo (`YouTubeFeeder`) and Worker (`youtube-feeder-worker`) names are historical; the product is **VortiQuest**.
 
 Production: [https://youtube-feeder-worker.ike-j-rebout.workers.dev](https://youtube-feeder-worker.ike-j-rebout.workers.dev)
 

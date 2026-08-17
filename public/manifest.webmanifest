@@ -1,6 +1,6 @@
 {
-	"name": "StreamFeeder",
-	"short_name": "StreamFeeder",
+	"name": "VortiQuest",
+	"short_name": "VortiQuest",
 	"description": "Personal subscription inbox and watchlists.",
 	"start_url": "/?source=android",
 	"scope": "/",

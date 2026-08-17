@@ -1,11 +1,11 @@
-# StreamFeeder Android Phase 1 (Native Feed client)
+# VortiQuest Android Phase 1 (Native Feed client)
 
 ## Architecture
 
 Phase 1 ships a **native Android app** (Jetpack Compose) that talks to the same Cloudflare Worker Feed APIs as the website. It is not a Trusted Web Activity wrapper and does not include Live/Quad.
 
 - Application ID: `com.heartlandwiwx.streamfeeder`
-- Launcher name: StreamFeeder
+- Launcher name: VortiQuest
 - API base: `https://youtube-feeder-worker.ike-j-rebout.workers.dev`
 - Auth: Custom Tab → `/api/auth/google?client=android` → deep link `streamfeeder://oauth/callback?token=…`
 - API auth: `Authorization: Bearer <session token>` (same signed value as `yf_session`)

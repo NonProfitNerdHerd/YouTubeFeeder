@@ -8,7 +8,7 @@ Default project buckets (same Google Cloud project for Feed and Quad):
 |---|---|---|
 | General units | 10,000 | 1 unit per `subscriptions.list`, `channels.list`, `playlistItems.list`, `videos.list`, and other non-search methods |
 | `search.list` | 100 calls | 1 unit per call in a **separate** bucket — do **not** bill as 100 general units |
-| `videos.insert` | separate | unused by StreamFeeder |
+| `videos.insert` | separate | unused by VortiQuest |
 
 WebSub hub GET/POST to `https://pubsubhubbub.appspot.com` is **not** YouTube Data API quota (`general_units = 0`). Counts are stored in `api_quota_daily` under `websub.*`.
 

@@ -1,4 +1,4 @@
-# StreamFeeder Android signing
+# VortiQuest Android signing
 
 All updates must use the **same** release key. Never commit `*.jks` / release keystores or passwords.
 

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { ANDROID_DOWNLOAD_PATH, STABLE_APK_URL, STREAMFEEDER_PACKAGE_ID, TEST_APK_PATH } from '../../src/lib/androidRelease';
+import { ANDROID_DOWNLOAD_PATH, STABLE_APK_URL, STREAMFEEDER_DISPLAY_NAME, STREAMFEEDER_PACKAGE_ID, TEST_APK_PATH } from '../../src/lib/androidRelease';
 import { digitalAssetLinks, normalizeSha256Fingerprint } from '../../worker/android/assetlinks';
 import { ANDROID_OAUTH_REDIRECT, oauthClientFromState } from '../../worker/auth/session';
 import { signValue, verifySignedValue } from '../../worker/auth/crypto';
 import version from '../../public/android-version.json';
 
-describe('StreamFeeder Android phase 1', () => {
+describe('VortiQuest Android phase 1', () => {
+	it('uses the VortiQuest display name while keeping historical APK filenames', () => {
+		expect(STREAMFEEDER_DISPLAY_NAME).toBe('VortiQuest');
+	});
+
 	it('uses the stable GitHub APK URL', () => {
 		expect(STABLE_APK_URL).toBe(
 			'https://github.com/NonProfitNerdHerd/YouTubeFeeder/releases/latest/download/StreamFeeder.apk',
@@ -30,8 +34,8 @@ describe('StreamFeeder Android phase 1', () => {
 	});
 
 	it('shares one version source', () => {
-		expect(version.versionName).toBe('1.0.17');
-		expect(version.versionCode).toBe(18);
+		expect(version.versionName).toBe('1.0.18');
+		expect(version.versionCode).toBe(19);
 	});
 
 	it('supports native Android OAuth return and Bearer sessions', async () => {

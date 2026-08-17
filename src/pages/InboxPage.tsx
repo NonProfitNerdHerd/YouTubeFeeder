@@ -1742,8 +1742,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			{androidQrOpen ? (
 				<div className="modal-backdrop" onClick={() => setAndroidQrOpen(false)}>
 					<div className="modal" onClick={(e) => e.stopPropagation()}>
-						<h2>Get StreamFeeder</h2>
-						<p className="muted">Scan this code on your Android phone to download the StreamFeeder test APK, then allow install from your browser if Android asks.</p>
+						<h2>Get VortiQuest</h2>
+						<p className="muted">Scan this code on your Android phone to download the VortiQuest test APK, then allow install from your browser if Android asks.</p>
 						{androidQrSvg ? <div className="download-qr" dangerouslySetInnerHTML={{ __html: androidQrSvg }} /> : <p className="muted">Preparing QR…</p>}
 						{androidAppVersion ? (
 							<p>

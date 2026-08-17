@@ -92,5 +92,5 @@ export function isSecureRequest(url: URL): boolean {
 	return url.protocol === 'https:';
 }
 
-/** Custom-scheme return for the native StreamFeeder app after Google OAuth. */
+/** Custom-scheme return for the native VortiQuest app after Google OAuth. */
 export const ANDROID_OAUTH_REDIRECT = 'streamfeeder://oauth/callback';
