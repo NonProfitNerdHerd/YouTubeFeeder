@@ -1,6 +1,7 @@
 import type { LiveSourceMode, QuadVideoStatus } from '../services/quadClassify';
 import { modeFlags, resolveSourceMode } from '../services/quadClassify';
 import { utcDay } from '../services/quadClassify';
+import { selectInChunks } from '../services/youtube';
 
 export interface QuadSourceRow {
 	id: string;
@@ -160,21 +161,21 @@ export function d1QuadStore(db: D1Database): QuadStore {
 		},
 		async listCandidates(sourceIds) {
 			if (!sourceIds.length) return [];
-			const rows = await db
-				.prepare(
+			const rows = await selectInChunks<{
+				source_id: string;
+				video_id: string;
+				title: string;
+				status: string;
+				embeddable: number;
+				last_checked_at: string | null;
+			}>(
+				db,
+				(placeholders) =>
 					`SELECT source_id, video_id, title, status, embeddable, last_checked_at
-					 FROM live_source_videos WHERE source_id IN (${sourceIds.map(() => '?').join(',')})`,
-				)
-				.bind(...sourceIds)
-				.all<{
-					source_id: string;
-					video_id: string;
-					title: string;
-					status: string;
-					embeddable: number;
-					last_checked_at: string | null;
-				}>();
-			return (rows.results ?? []).map((row) => ({
+					 FROM live_source_videos WHERE source_id IN (${placeholders})`,
+				sourceIds,
+			);
+			return rows.map((row) => ({
 				sourceId: row.source_id,
 				videoId: row.video_id,
 				title: row.title,

@@ -1,5 +1,5 @@
 import { classifyYouTubeVideo } from '../../src/lib/classifyVideo';
-import { chunk, createYoutubeApiKeyClient, fetchUploadsPlaylistIds, parseIsoDuration, type YoutubeClient } from './youtube';
+import { chunk, createYoutubeApiKeyClient, fetchUploadsPlaylistIds, parseIsoDuration, selectInChunks, type YoutubeClient } from './youtube';
 import { recordYoutubeCalls, VIDEO_ID_RE } from './websub';
 
 const VIDEO_UPSERT = `INSERT INTO videos (
@@ -204,12 +204,14 @@ export async function runGlobalBootstrap(
 			items?: Array<{ contentDetails?: { videoId?: string } }>;
 		}>('playlistItems', params);
 		const ids = [...new Set((page.items ?? []).map((item) => item.contentDetails?.videoId).filter((id): id is string => Boolean(id && VIDEO_ID_RE.test(id))))];
-		const existing = ids.length
-			? await env.DB.prepare(`SELECT video_id FROM videos WHERE video_id IN (${ids.map(() => '?').join(',')})`)
-					.bind(...ids)
-					.all<{ video_id: string }>()
-			: { results: [] as Array<{ video_id: string }> };
-		const known = new Set((existing.results ?? []).map((item) => item.video_id));
+		const existingRows = ids.length
+			? await selectInChunks<{ video_id: string }>(
+					env.DB,
+					(placeholders) => `SELECT video_id FROM videos WHERE video_id IN (${placeholders})`,
+					ids,
+				)
+			: [];
+		const known = new Set(existingRows.map((item) => item.video_id));
 		const missing = ids.filter((id) => !known.has(id));
 		if (missing.length && yt.quotaUsed < budget) {
 			for (const group of chunk(missing, 50)) {

@@ -26,6 +26,9 @@ export class MemorySyncDb {
 			_sql: sql,
 			_bound: [] as unknown[],
 			bind: (...args: unknown[]) => {
+				if (args.length > 100) {
+					throw new Error(`D1_ERROR: too many SQL variables at offset 285: SQLITE_ERROR`);
+				}
 				statement._bound = args;
 				return statement;
 			},

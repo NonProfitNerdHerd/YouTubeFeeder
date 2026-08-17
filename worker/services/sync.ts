@@ -6,6 +6,7 @@ import {
 	fetchUploadsPlaylistIds,
 	mapPool,
 	parseIsoDuration,
+	selectInChunks,
 	type YoutubeClient,
 	YoutubeApiError,
 } from './youtube';
@@ -233,12 +234,13 @@ export async function syncSubscriptions(
 		await enqueueHubSubscriptions(env, ids);
 
 		if (ids.length) {
-			const missing = await env.DB.prepare(
-				`SELECT channel_id FROM channels WHERE uploads_playlist_id IS NULL AND channel_id IN (${ids.map(() => '?').join(',')})`,
-			)
-				.bind(...ids)
-				.all<{ channel_id: string }>();
-			const needPlaylist = (missing.results ?? []).map((row) => row.channel_id);
+			const missing = await selectInChunks<{ channel_id: string }>(
+				env.DB,
+				(placeholders) =>
+					`SELECT channel_id FROM channels WHERE uploads_playlist_id IS NULL AND channel_id IN (${placeholders})`,
+				ids,
+			);
+			const needPlaylist = missing.map((row) => row.channel_id);
 			if (needPlaylist.length) {
 				try {
 					const found = await fetchUploadsPlaylistIds(yt, needPlaylist);
@@ -488,12 +490,12 @@ async function ingestChannelVideos(
 	const ids = usable.map((video) => video.id!);
 	const existing = new Set<string>();
 	if (ids.length) {
-		const found = await env.DB.prepare(
-			`SELECT video_id FROM videos WHERE video_id IN (${ids.map(() => '?').join(',')})`,
-		)
-			.bind(...ids)
-			.all<{ video_id: string }>();
-		for (const row of found.results ?? []) existing.add(row.video_id);
+		const found = await selectInChunks<{ video_id: string }>(
+			env.DB,
+			(placeholders) => `SELECT video_id FROM videos WHERE video_id IN (${placeholders})`,
+			ids,
+		);
+		for (const row of found) existing.add(row.video_id);
 	}
 
 	let videosAdded = 0;

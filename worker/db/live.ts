@@ -2,6 +2,7 @@ import type { CategoryRecord, LiveGridSize, LiveLayoutRecord, LiveSessionRecord,
 import { isLiveGridSize, MAX_LIVE_SLOTS } from '../../src/types';
 import { randomToken } from '../auth/crypto';
 import { resolveSourceMode } from '../services/quadClassify';
+import { selectInChunks } from '../services/youtube';
 
 const SOURCE_SELECT = `SELECT id, display_name, channel_id, youtube_url, notes, enabled, skip_discovery,
 	source_mode, is_live, live_video_id, live_title, live_checked_at,
@@ -113,16 +114,22 @@ export async function ensureLiveSession(db: D1Database, userId: string): Promise
 async function videosBySource(db: D1Database, sourceIds: string[]): Promise<Map<string, LiveVideoRecord[]>> {
 	const map = new Map<string, LiveVideoRecord[]>();
 	if (!sourceIds.length) return map;
-	const found = await db
-		.prepare(
+	const found = await selectInChunks<{
+		source_id: string;
+		video_id: string;
+		title: string;
+		status: string;
+		embeddable: number;
+	}>(
+		db,
+		(placeholders) =>
 			`SELECT source_id, video_id, title, status, embeddable FROM live_source_videos
-			 WHERE source_id IN (${sourceIds.map(() => '?').join(',')})
+			 WHERE source_id IN (${placeholders})
 			   AND status IN ('live', 'non_embeddable', 'upcoming')
 			 ORDER BY title COLLATE NOCASE`,
-		)
-		.bind(...sourceIds)
-		.all<{ source_id: string; video_id: string; title: string; status: string; embeddable: number }>();
-	for (const row of found.results ?? []) {
+		sourceIds,
+	);
+	for (const row of found) {
 		const list = map.get(row.source_id) ?? [];
 		list.push({
 			videoId: row.video_id,

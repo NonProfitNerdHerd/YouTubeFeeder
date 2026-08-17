@@ -171,6 +171,26 @@ export function chunk<T>(items: T[], size: number): T[][] {
 	return groups;
 }
 
+/** D1/SQLite rejects more than 100 bound parameters in one statement. */
+export const D1_IN_CHUNK = 50;
+
+export async function selectInChunks<T>(
+	db: D1Database,
+	sqlForPlaceholders: (placeholders: string) => string,
+	ids: string[],
+): Promise<T[]> {
+	const rows: T[] = [];
+	for (const group of chunk(ids, D1_IN_CHUNK)) {
+		if (!group.length) continue;
+		const page = await db
+			.prepare(sqlForPlaceholders(group.map(() => '?').join(',')))
+			.bind(...group)
+			.all<T>();
+		rows.push(...(page.results ?? []));
+	}
+	return rows;
+}
+
 export interface ChannelLiveStatus {
 	isLive: boolean;
 	videoId: string | null;
