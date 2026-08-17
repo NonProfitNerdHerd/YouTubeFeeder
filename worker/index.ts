@@ -37,7 +37,10 @@ import { accessTokenForUser } from './services/googleToken';
 import { addLiveSourceFromInput, discoverLiveSources, getLiveJobs, getLiveMonitor, patchLiveSourceFromInput, putLiveSession, refreshLiveSources, refreshOneLiveSource, reportLivePlayerError } from './services/live';
 import { getQuadSettings, putQuadSettings } from './db/quadSettings';
 import { runScheduledQuadRefresh } from './services/quadSchedule';
-import { catchUpChannel, syncAllDueContent, syncContent, syncSubscriptions } from './services/sync';
+import { catchUpChannel, syncSubscriptions } from './services/sync';
+import { runFeedMaintenance, syncFeedNow } from './services/feedSchedule';
+import { handleWebSubNotification, handleWebSubVerification, WEBSUB_CALLBACK_PATH } from './services/websub';
+import { processPendingWebSubEvents } from './services/websubProcess';
 import { YoutubeApiError } from './services/youtube';
 import { isLiveGridSize } from '../src/types';
 import { STREAMFEEDER_PACKAGE_ID } from '../src/lib/androidRelease';
@@ -70,6 +73,17 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 	const url = new URL(request.url);
 	const path = url.pathname;
 	const secure = isSecureRequest(url);
+
+	if (path === WEBSUB_CALLBACK_PATH && request.method === 'GET') {
+		return handleWebSubVerification(env, url);
+	}
+	if (path === WEBSUB_CALLBACK_PATH && request.method === 'POST') {
+		const result = await handleWebSubNotification(env, request);
+		if (result.response.ok) {
+			ctx.waitUntil(processPendingWebSubEvents(env));
+		}
+		return result.response;
+	}
 
 	if (path === '/api/auth/google' && request.method === 'GET') {
 		const intent = url.searchParams.get('intent') === 'signup' ? 'signup' : 'login';
@@ -408,14 +422,10 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		} catch {
 			return apiError(401, 'token_refresh_failed', 'Google access expired. Sign out and use Create account with Google.');
 		}
-		const categoryId = url.searchParams.get('categoryId');
 		const result =
 			path === '/api/sync/subscriptions'
 				? await syncSubscriptions(env, user.id, token)
-				: await syncContent(env, user.id, token, offset, undefined, {
-						categoryId,
-						allSubscribed: url.searchParams.get('scope') === 'all',
-					});
+				: await syncFeedNow(env, user.id);
 		const status = result.status === 'ok' ? 200 : result.status === 'quota' ? 429 : 502;
 		return json(result, { status });
 	}
@@ -452,19 +462,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const token = request.headers.get('x-cron-sync') ?? '';
 		const payload = await verifySignedValue(secret, token);
 		if (!payload?.startsWith('cron-content:')) return apiError(401, 'unauthorized', 'Invalid cron token.');
-		const parts = payload.split(':');
-		const userId = parts[1];
-		if (!userId) return apiError(401, 'unauthorized', 'Invalid cron token.');
-		const user = await getUserById(env.DB, userId);
-		if (!user?.encrypted_refresh_token) return json({ ok: true, skipped: true });
-		let access: string;
-		try {
-			access = await accessTokenForUser(env, user);
-		} catch {
-			return apiError(401, 'token_refresh_failed', 'Google access expired.');
-		}
-		const result = await syncAllDueContent(env, user.id, access);
-		return json(result);
+		const summary = await runFeedMaintenance(env);
+		return json({ ok: true, ...summary });
 	}
 
 	async function requireYoutubeUser() {
@@ -773,28 +772,7 @@ export default {
 		}
 	},
 	async scheduled(_controller, env, ctx): Promise<void> {
-		ctx.waitUntil(
-			(async () => {
-				const users = await env.DB.prepare(
-					`SELECT id, google_account_id, display_name, encrypted_refresh_token FROM users WHERE encrypted_refresh_token IS NOT NULL`,
-				).all<{ id: string; google_account_id: string; display_name: string; encrypted_refresh_token: string | null }>();
-				for (const user of users.results ?? []) {
-					try {
-						const token = await accessTokenForUser(env, user);
-						await syncAllDueContent(env, user.id, token);
-					} catch (error) {
-						console.warn(
-							JSON.stringify({
-								operation: 'cron_content_sync',
-								userId: user.id,
-								status: 'error',
-								error: error instanceof Error ? error.message : 'sync_failed',
-							}),
-						);
-					}
-				}
-			})(),
-		);
+		ctx.waitUntil(runFeedMaintenance(env));
 		ctx.waitUntil(
 			(async () => {
 				const users = await env.DB.prepare(
