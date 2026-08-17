@@ -101,6 +101,17 @@ function IconClock() {
 	);
 }
 
+function IconReload() {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<path
+				fill="currentColor"
+				d="M12 6V3L8 7l4 4V8a4 4 0 1 1-4 4H6a6 6 0 1 0 6-6z"
+			/>
+		</svg>
+	);
+}
+
 function IconRestore() {
 	return (
 		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
@@ -303,24 +314,24 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		setError(null);
 		setSyncWarnings([]);
 		setShowSkipDetails(false);
-		setStatus('Syncing subscriptions…');
+		const targetCount = streamsList.length;
+		setStatus(`Fetching videos… 0 / ${targetCount} channels`);
 		try {
-			const sub = await fetch('/api/sync/subscriptions?force=1', { method: 'POST', credentials: 'same-origin' });
-			const subBody = (await sub.json()) as SyncApiBody;
-			if (!sub.ok) throw new Error(syncMessage(subBody, 'Subscription sync failed.'));
-			setStatus(`Found ${subBody.channelsChecked ?? 0} channels. Fetching videos…`);
-			await load();
 			let offset = 0;
 			let added = 0;
 			const accumulatedWarnings: SyncWarning[] = [];
+			const params = new URLSearchParams({ force: '1', offset: '0' });
+			if (categoryId) params.set('categoryId', categoryId);
+			else params.set('scope', 'all');
 			for (;;) {
-				const content = await fetch(`/api/sync/content?force=1&offset=${offset}`, { method: 'POST', credentials: 'same-origin' });
+				params.set('offset', String(offset));
+				const content = await fetch(`/api/sync/content?${params.toString()}`, { method: 'POST', credentials: 'same-origin' });
 				const contentBody = (await content.json()) as SyncApiBody;
 				if (!content.ok) throw new Error(syncMessage(contentBody, 'Video sync failed.'));
 				added += contentBody.videosAdded ?? 0;
 				if (contentBody.warnings?.length) accumulatedWarnings.push(...contentBody.warnings);
 				const next = contentBody.nextOffset ?? offset;
-				setStatus(`Fetching videos… ${next} / ${contentBody.totalChannels ?? next} channels`);
+				setStatus(`Fetching videos… ${next} / ${contentBody.totalChannels ?? targetCount} channels`);
 				await load();
 				if (contentBody.done) break;
 				if (next === offset) throw new Error('Video sync stalled without progressing.');
@@ -1096,11 +1107,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				</div>
 				<div className="topbar-actions">
 					<span className="muted">{user.displayName}</span>
-					{mainSection === 'feed' && !androidClient ? (
-						<button className="ghost" type="button" disabled={syncing} onClick={() => void syncNow()}>
-							{syncing ? 'Syncing…' : 'Sync now'}
-						</button>
-					) : null}
 					<button className="ghost" type="button" onClick={onLogout}>
 						Sign out
 					</button>
@@ -1163,42 +1169,56 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						Streams
 					</button>
 					{leftTab !== 'categories' ? (
-						<label className="feed-toolbar-filter">
-							<select
-								value={categoryId ?? ''}
-								aria-label="Category"
-								onChange={(event) => {
-									const next = event.target.value || null;
-									setCategoryId(next);
-									setSelectedVideoId(null);
-									setInboxSelectedIds([]);
-									if (leftTab === 'streams' && channelId) {
-										const selected = channels.find((ch) => ch.channelId === channelId);
-										if (next && selected && !selected.categoryIds.includes(next)) {
-											setChannelId(null);
+						<>
+							{!androidClient ? (
+								<button
+									className="icon-btn"
+									type="button"
+									title="Sync subscriptions"
+									aria-label="Sync subscriptions"
+									disabled={syncing}
+									onClick={() => void syncSubscriptionsOnly()}
+								>
+									<IconReload />
+								</button>
+							) : null}
+							<label className="feed-toolbar-filter">
+								<select
+									value={categoryId ?? ''}
+									aria-label="Category"
+									onChange={(event) => {
+										const next = event.target.value || null;
+										setCategoryId(next);
+										setSelectedVideoId(null);
+										setInboxSelectedIds([]);
+										if (leftTab === 'streams' && channelId) {
+											const selected = channels.find((ch) => ch.channelId === channelId);
+											if (next && selected && !selected.categoryIds.includes(next)) {
+												setChannelId(null);
+											}
 										}
-									}
-									leftScrollRef.current?.scrollTo({ top: 0 });
-								}}
-							>
-								<option value="">All categories</option>
-								{categories.map((cat) => (
-									<option key={cat.id} value={cat.id}>
-										{cat.name}
-									</option>
-								))}
-							</select>
-						</label>
-					) : null}
-					{!androidClient && leftTab === 'streams' ? (
-						<button
-							className="feed-toolbar-sync"
-							type="button"
-							disabled={syncing}
-							onClick={() => void syncSubscriptionsOnly()}
-						>
-							{syncing ? 'Syncing…' : `Sync subscriptions (${streamsList.length})`}
-						</button>
+										leftScrollRef.current?.scrollTo({ top: 0 });
+									}}
+								>
+									<option value="">All categories</option>
+									{categories.map((cat) => (
+										<option key={cat.id} value={cat.id}>
+											{cat.name}
+										</option>
+									))}
+								</select>
+							</label>
+							{!androidClient ? (
+								<button
+									className="feed-toolbar-sync"
+									type="button"
+									disabled={syncing || streamsList.length === 0}
+									onClick={() => void syncNow()}
+								>
+									{syncing ? 'Syncing…' : `Sync now (${streamsList.length})`}
+								</button>
+							) : null}
+						</>
 					) : null}
 				</nav>
 			) : null}

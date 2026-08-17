@@ -419,10 +419,14 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		} catch {
 			return apiError(401, 'token_refresh_failed', 'Google access expired. Sign out and use Create account with Google.');
 		}
+		const categoryId = url.searchParams.get('categoryId');
 		const result =
 			path === '/api/sync/subscriptions'
 				? await syncSubscriptions(env, user.id, token)
-				: await syncContent(env, user.id, token, offset);
+				: await syncContent(env, user.id, token, offset, undefined, {
+						categoryId,
+						allSubscribed: url.searchParams.get('scope') === 'all',
+					});
 		const status = result.status === 'ok' ? 200 : result.status === 'quota' ? 429 : 502;
 		return json(result, { status });
 	}

@@ -545,24 +545,31 @@ export async function syncContent(
 	accessToken: string,
 	offset = 0,
 	ytClient?: YoutubeClient,
+	opts?: { categoryId?: string | null; allSubscribed?: boolean },
 ): Promise<SyncResult> {
 	const startedAt = new Date().toISOString();
 	const yt = ytClient ?? createYoutubeClient(accessToken);
 	let videosAdded = 0;
 	let videosUpdated = 0;
 	try {
-		const channels = await env.DB.prepare(
-			`SELECT c.channel_id, c.title, c.uploads_playlist_id,
+		const categoryId = opts?.categoryId?.trim() || null;
+		const allSubscribed = opts?.allSubscribed === true;
+		let sql = `SELECT c.channel_id, c.title, c.uploads_playlist_id,
 				COALESCE(p.follow_in_inbox, 1) AS follow_in_inbox,
 				COALESCE(p.max_videos_to_pull, 0) AS max_videos_to_pull,
 				p.newest_seen_published_at
 			 FROM channels c
 			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
-			 WHERE c.subscribed = 1 AND c.uploads_playlist_id IS NOT NULL`,
-		)
-			.bind(userId)
-			.all<ChannelSyncRow>();
-		const list = (channels.results ?? []).filter((ch) => ch.follow_in_inbox === 1 || ch.max_videos_to_pull > 0);
+			 WHERE c.subscribed = 1 AND c.uploads_playlist_id IS NOT NULL`;
+		const binds: string[] = [userId];
+		if (categoryId) {
+			sql += ` AND c.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)`;
+			binds.push(userId, categoryId);
+		}
+		const channels = await env.DB.prepare(sql).bind(...binds).all<ChannelSyncRow>();
+		const list = (channels.results ?? []).filter((ch) =>
+			categoryId || allSubscribed ? true : ch.follow_in_inbox === 1 || ch.max_videos_to_pull > 0,
+		);
 		const batch = list.slice(offset, offset + CONTENT_BATCH);
 		const outcomes = await mapPool(batch, 3, (ch) => syncChannelUploads(env, yt, ch));
 
