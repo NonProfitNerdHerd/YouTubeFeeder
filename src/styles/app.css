@@ -212,6 +212,75 @@
 	padding: 8px;
 }
 
+.inbox-item:has(.inbox-avatar-select) {
+	grid-template-columns: auto 1fr auto;
+	align-items: center;
+}
+
+.inbox-avatar-select {
+	position: relative;
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--text);
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.inbox-avatar-select .channel-avatar {
+	display: block;
+	width: 40px;
+	height: 40px;
+	object-fit: cover;
+	border-radius: 50%;
+	transition: opacity 0.12s ease;
+}
+
+.inbox-check {
+	position: absolute;
+	inset: 0;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	background: var(--accent);
+	color: #fff;
+}
+
+.inbox-avatar-select:hover .channel-avatar,
+.inbox-avatar-select:focus-visible .channel-avatar,
+.inbox-avatar-select.is-selected .channel-avatar,
+.inbox-item.selecting .inbox-avatar-select .channel-avatar {
+	opacity: 0;
+}
+
+.inbox-avatar-select:hover .inbox-check,
+.inbox-avatar-select:focus-visible .inbox-check,
+.inbox-avatar-select.is-selected .inbox-check,
+.inbox-item.selecting .inbox-avatar-select .inbox-check {
+	display: flex;
+}
+
+.inbox-bulk-bar {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 6px;
+	margin: 0 0 8px;
+	padding: 8px 10px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: #1e2430;
+}
+
+.inbox-bulk-count {
+	margin-right: 4px;
+	font-size: 0.85rem;
+}
+
 .topbar-left {
 	display: flex;
 	align-items: center;
@@ -242,6 +311,10 @@
 	padding: 0;
 	font: inherit;
 	cursor: pointer;
+}
+
+.inbox-item:has(.inbox-avatar-select) .inbox-item-main {
+	grid-template-columns: 1fr;
 }
 
 .inbox-item-actions {
@@ -783,6 +856,20 @@
 
 	.inbox-item-main {
 		grid-template-columns: 36px 72px 1fr;
+	}
+
+	.inbox-item:has(.inbox-avatar-select) .inbox-item-main {
+		grid-template-columns: 72px 1fr;
+	}
+
+	.inbox-avatar-select {
+		width: 36px;
+		height: 36px;
+	}
+
+	.inbox-avatar-select .channel-avatar {
+		width: 36px;
+		height: 36px;
 	}
 
 	.video-thumb {

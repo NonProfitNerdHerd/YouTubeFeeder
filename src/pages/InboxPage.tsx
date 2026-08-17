@@ -174,6 +174,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [androidQrOpen, setAndroidQrOpen] = useState(false);
 	const [androidQrSvg, setAndroidQrSvg] = useState('');
 	const [androidAppVersion, setAndroidAppVersion] = useState<{ versionName: string; versionCode: number } | null>(null);
+	const [inboxSelectedIds, setInboxSelectedIds] = useState<string[]>([]);
+	const [bulkSnoozeIds, setBulkSnoozeIds] = useState<string[] | null>(null);
+	const [bulkWatchlistIds, setBulkWatchlistIds] = useState<string[] | null>(null);
 
 	const load = useCallback(
 		async (signal?: AbortSignal) => {
@@ -249,6 +252,14 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	useEffect(() => {
 		leftScrollRef.current?.scrollTo({ top: 0 });
 	}, [categoryId, leftTab, watchlistId, channelId]);
+
+	useEffect(() => {
+		if (leftTab !== 'inbox') {
+			setInboxSelectedIds([]);
+			setBulkSnoozeIds(null);
+			setBulkWatchlistIds(null);
+		}
+	}, [leftTab]);
 
 	function nextVideoIdAfterRemoval(list: InboxItem[], removedId: string): string | null {
 		const index = list.findIndex((item) => item.videoId === removedId);
@@ -480,6 +491,29 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		await load();
 	}
 
+	async function saveBulkToWatchlist(listId: string) {
+		if (!bulkWatchlistIds?.length) return;
+		if (!listId) {
+			setError('Create a watchlist first.');
+			return;
+		}
+		const ids = [...bulkWatchlistIds];
+		setBulkWatchlistIds(null);
+		setInboxSelectedIds([]);
+		let failed = false;
+		for (const videoId of ids) {
+			const res = await fetch(`/api/watchlists/${encodeURIComponent(listId)}/items`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({ videoId }),
+			});
+			if (!res.ok) failed = true;
+		}
+		if (failed) setError('Could not add some videos to the watchlist.');
+		await load();
+	}
+
 	async function takeOffWatchlist(videoId: string) {
 		if (!watchlistId) return;
 		const previous = items;
@@ -523,14 +557,74 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 
 	async function confirmSnooze(event: FormEvent) {
 		event.preventDefault();
-		if (!snoozing) return;
 		const until = new Date(snoozeUntil);
 		if (!Number.isFinite(until.getTime()) || until.getTime() <= Date.now()) {
 			setError('Pick a future date and time.');
 			return;
 		}
+		if (bulkSnoozeIds?.length) {
+			const ids = [...bulkSnoozeIds];
+			const previous = items;
+			if (previous) setItems(previous.filter((item) => !ids.includes(item.videoId)));
+			setBulkSnoozeIds(null);
+			setInboxSelectedIds([]);
+			if (selectedVideoId && ids.includes(selectedVideoId) && previous) {
+				const remaining = previous.filter((item) => !ids.includes(item.videoId));
+				setSelectedVideoId(remaining[0]?.videoId ?? null);
+			}
+			let failed = false;
+			for (const videoId of ids) {
+				const res = await fetch(`/api/inbox/${encodeURIComponent(videoId)}`, {
+					method: 'PATCH',
+					headers: { 'content-type': 'application/json' },
+					credentials: 'same-origin',
+					body: JSON.stringify({ action: 'snooze', until: until.toISOString() }),
+				});
+				if (!res.ok) failed = true;
+			}
+			if (failed) {
+				if (previous) setItems(previous);
+				setError('Could not snooze some videos.');
+			}
+			await load();
+			return;
+		}
+		if (!snoozing) return;
 		const ok = await patchInbox(snoozing.videoId, { action: 'snooze', until: until.toISOString() });
 		if (ok) setSnoozing(null);
+	}
+
+	async function bulkDeleteSelected() {
+		const ids = [...inboxSelectedIds];
+		if (!ids.length) return;
+		const previous = items;
+		if (previous) setItems(previous.filter((item) => !ids.includes(item.videoId)));
+		setInboxSelectedIds([]);
+		if (selectedVideoId && ids.includes(selectedVideoId) && previous) {
+			const remaining = previous.filter((item) => !ids.includes(item.videoId));
+			setSelectedVideoId(remaining[0]?.videoId ?? null);
+		}
+		let failed = false;
+		for (const videoId of ids) {
+			const res = await fetch(`/api/inbox/${encodeURIComponent(videoId)}`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({ action: 'delete' }),
+			});
+			if (!res.ok) failed = true;
+		}
+		if (failed) {
+			if (previous) setItems(previous);
+			setError('Could not delete some videos.');
+		}
+		await load();
+	}
+
+	function toggleInboxSelect(videoId: string) {
+		setInboxSelectedIds((current) =>
+			current.includes(videoId) ? current.filter((id) => id !== videoId) : [...current, videoId],
+		);
 	}
 
 	const phoneLayout = androidClient || narrow;
@@ -671,9 +765,34 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		if (list?.length === 0) return <p className="muted">No videos in this view.</p>;
 		return list?.map((item) =>
 			compact ? (
-				<div key={item.videoId} className={`${selectedVideo?.videoId === item.videoId ? 'inbox-item active' : 'inbox-item'}${item.unread ? ' unread' : ''}`}>
+				<div
+					key={item.videoId}
+					className={`${selectedVideo?.videoId === item.videoId ? 'inbox-item active' : 'inbox-item'}${item.unread ? ' unread' : ''}${inboxSelectedIds.includes(item.videoId) ? ' is-checked' : ''}${inboxSelectedIds.length > 0 && actions === 'inbox' && !androidClient ? ' selecting' : ''}`}
+				>
+					{actions === 'inbox' && !androidClient ? (
+						<button
+							className={`inbox-avatar-select${inboxSelectedIds.includes(item.videoId) ? ' is-selected' : ''}`}
+							type="button"
+							title={inboxSelectedIds.includes(item.videoId) ? 'Deselect' : 'Select'}
+							aria-label={inboxSelectedIds.includes(item.videoId) ? 'Deselect video' : 'Select video'}
+							aria-pressed={inboxSelectedIds.includes(item.videoId)}
+							onClick={() => toggleInboxSelect(item.videoId)}
+						>
+							<img className="channel-avatar" src={item.channelThumbnailUrl || item.thumbnailUrl} alt="" />
+							<span className="inbox-check" aria-hidden="true">
+								<svg viewBox="0 0 24 24" width="18" height="18">
+									<path
+										fill="currentColor"
+										d="M9.2 16.6 4.8 12.2l1.4-1.4 3 3 8-8 1.4 1.4-9.4 9.4z"
+									/>
+								</svg>
+							</span>
+						</button>
+					) : null}
 					<button className="inbox-item-main" type="button" onClick={() => openVideo(item.videoId)}>
-						<img className="channel-avatar" src={item.channelThumbnailUrl || item.thumbnailUrl} alt="" />
+						{actions === 'inbox' && !androidClient ? null : (
+							<img className="channel-avatar" src={item.channelThumbnailUrl || item.thumbnailUrl} alt="" />
+						)}
 						<img className="video-thumb" src={item.thumbnailUrl} alt="" />
 						<span>
 							<strong className="video-title">{item.title}</strong>
@@ -952,6 +1071,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									onChange={(event) => {
 										setCategoryId(event.target.value || null);
 										setSelectedVideoId(null);
+										setInboxSelectedIds([]);
 										leftScrollRef.current?.scrollTo({ top: 0 });
 									}}
 								>
@@ -963,6 +1083,48 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									))}
 								</select>
 							</label>
+							{!androidClient && inboxSelectedIds.length > 0 ? (
+								<div className="inbox-bulk-bar" role="toolbar" aria-label="Bulk inbox actions">
+									<span className="muted inbox-bulk-count">{inboxSelectedIds.length} selected</span>
+									<button
+										className="icon-btn"
+										type="button"
+										title="Snooze selected"
+										aria-label="Snooze selected"
+										onClick={() => {
+											setSnoozeUntil(toLocalInputValue(tomorrowMorning()));
+											setSnoozing(null);
+											setBulkSnoozeIds([...inboxSelectedIds]);
+										}}
+									>
+										<IconClock />
+									</button>
+									<button
+										className="icon-btn"
+										type="button"
+										title="Add selected to watchlist"
+										aria-label="Add selected to watchlist"
+										onClick={() => {
+											setWatchlisting(null);
+											setBulkWatchlistIds([...inboxSelectedIds]);
+										}}
+									>
+										<IconList />
+									</button>
+									<button
+										className="icon-btn"
+										type="button"
+										title="Delete selected"
+										aria-label="Delete selected"
+										onClick={() => void bulkDeleteSelected()}
+									>
+										<IconTrash />
+									</button>
+									<button className="ghost tiny" type="button" onClick={() => setInboxSelectedIds([])}>
+										Clear
+									</button>
+								</div>
+							) : null}
 							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'inbox')}</div>
 						</>
 					) : null}
@@ -1257,11 +1419,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					</div>
 				</div>
 			) : null}
-			{watchlisting ? (
-				<div className="modal-backdrop" onClick={() => setWatchlisting(null)}>
+			{watchlisting || bulkWatchlistIds ? (
+				<div
+					className="modal-backdrop"
+					onClick={() => {
+						setWatchlisting(null);
+						setBulkWatchlistIds(null);
+					}}
+				>
 					<div className="modal" onClick={(e) => e.stopPropagation()}>
 						<h2>Add to WatchList</h2>
-						<p className="muted">{watchlisting.title}</p>
+						<p className="muted">
+							{bulkWatchlistIds
+								? `${bulkWatchlistIds.length} selected video${bulkWatchlistIds.length === 1 ? '' : 's'}`
+								: watchlisting?.title}
+						</p>
 						{watchlists.length === 0 ? <p className="muted">Create a watchlist on the WatchList tab first.</p> : null}
 						<div className="modal-list">
 							{watchlists.map((list) => (
@@ -1269,25 +1441,48 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									key={list.id}
 									className="ghost"
 									type="button"
-									onClick={() => void saveToWatchlist(watchlisting.videoId, list.id)}
+									onClick={() =>
+										bulkWatchlistIds
+											? void saveBulkToWatchlist(list.id)
+											: watchlisting
+												? void saveToWatchlist(watchlisting.videoId, list.id)
+												: undefined
+									}
 								>
 									{list.name} ({list.videoCount})
 								</button>
 							))}
 						</div>
 						<div className="modal-actions">
-							<button className="ghost" type="button" onClick={() => setWatchlisting(null)}>
+							<button
+								className="ghost"
+								type="button"
+								onClick={() => {
+									setWatchlisting(null);
+									setBulkWatchlistIds(null);
+								}}
+							>
 								Cancel
 							</button>
 						</div>
 					</div>
 				</div>
 			) : null}
-			{snoozing ? (
-				<div className="modal-backdrop" onClick={() => setSnoozing(null)}>
+			{snoozing || bulkSnoozeIds ? (
+				<div
+					className="modal-backdrop"
+					onClick={() => {
+						setSnoozing(null);
+						setBulkSnoozeIds(null);
+					}}
+				>
 					<form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={(e) => void confirmSnooze(e)}>
 						<h2>Snooze</h2>
-						<p className="muted">{snoozing.title}</p>
+						<p className="muted">
+							{bulkSnoozeIds
+								? `${bulkSnoozeIds.length} selected video${bulkSnoozeIds.length === 1 ? '' : 's'}`
+								: snoozing?.title}
+						</p>
 						<div className="snooze-presets">
 							<button
 								className="ghost tiny"
@@ -1321,7 +1516,14 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							/>
 						</label>
 						<div className="modal-actions">
-							<button className="ghost" type="button" onClick={() => setSnoozing(null)}>
+							<button
+								className="ghost"
+								type="button"
+								onClick={() => {
+									setSnoozing(null);
+									setBulkSnoozeIds(null);
+								}}
+							>
 								Cancel
 							</button>
 							<button className="ghost" type="submit">
