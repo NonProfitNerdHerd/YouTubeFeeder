@@ -859,6 +859,48 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					)}
 				</div>
 			</header>
+			{mainSection === 'feed' ? (
+				<nav className="feed-toolbar" aria-label="Feed views">
+					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
+						Inbox
+					</button>
+					<button
+						className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('snoozed')}
+					>
+						Snoozed
+					</button>
+					<button
+						className={leftTab === 'deleted' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('deleted')}
+					>
+						Deleted
+					</button>
+					<button
+						className={leftTab === 'watchlist' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('watchlist')}
+					>
+						WatchList
+					</button>
+					<button
+						className={leftTab === 'streams' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('streams')}
+					>
+						Streams
+					</button>
+					<button
+						className={leftTab === 'categories' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('categories')}
+					>
+						Categories
+					</button>
+				</nav>
+			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
 			{status || error ? (
 				<div
@@ -901,46 +943,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			) : (
 			<div className={phoneLayout && selectedVideo ? 'home mobile-detail' : 'home'}>
 				<aside className="subs">
-					<div className="tabs">
-						<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
-							Inbox
-						</button>
-						<button
-							className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
-							type="button"
-							onClick={() => setLeftTab('snoozed')}
-						>
-							Snoozed
-						</button>
-						<button
-							className={leftTab === 'deleted' ? 'tab active' : 'tab'}
-							type="button"
-							onClick={() => setLeftTab('deleted')}
-						>
-							Deleted
-						</button>
-						<button
-							className={leftTab === 'watchlist' ? 'tab active' : 'tab'}
-							type="button"
-							onClick={() => setLeftTab('watchlist')}
-						>
-							WatchList
-						</button>
-						<button
-							className={leftTab === 'streams' ? 'tab active' : 'tab'}
-							type="button"
-							onClick={() => setLeftTab('streams')}
-						>
-							Streams
-						</button>
-						<button
-							className={leftTab === 'categories' ? 'tab active' : 'tab'}
-							type="button"
-							onClick={() => setLeftTab('categories')}
-						>
-							Categories
-						</button>
-					</div>
 					{leftTab === 'inbox' ? (
 						<>
 							<label className="inbox-filter">
