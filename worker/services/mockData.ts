@@ -54,8 +54,34 @@ export const MOCK_CHANNELS: ChannelRecord[] = [
 ];
 
 function item(
-	partial: Omit<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt' | 'snoozedUntil' | 'notes'> &
-		Partial<Pick<InboxItem, 'descriptionExcerpt' | 'embeddable' | 'hidden' | 'firstSeenAt' | 'snoozedUntil' | 'notes'>>,
+	partial: Omit<
+		InboxItem,
+		| 'descriptionExcerpt'
+		| 'embeddable'
+		| 'hidden'
+		| 'firstSeenAt'
+		| 'snoozedUntil'
+		| 'notes'
+		| 'watchedAt'
+		| 'playbackSeconds'
+		| 'lastPositionSeconds'
+		| 'watchUpdatedAt'
+	> &
+		Partial<
+			Pick<
+				InboxItem,
+				| 'descriptionExcerpt'
+				| 'embeddable'
+				| 'hidden'
+				| 'firstSeenAt'
+				| 'snoozedUntil'
+				| 'notes'
+				| 'watchedAt'
+				| 'playbackSeconds'
+				| 'lastPositionSeconds'
+				| 'watchUpdatedAt'
+			>
+		>,
 ): InboxItem {
 	return {
 		descriptionExcerpt: 'Mock description excerpt for local development without YouTube credentials.',
@@ -64,6 +90,10 @@ function item(
 		firstSeenAt: new Date().toISOString(),
 		snoozedUntil: null,
 		notes: '',
+		watchedAt: null,
+		playbackSeconds: 0,
+		lastPositionSeconds: 0,
+		watchUpdatedAt: null,
 		...partial,
 	};
 }

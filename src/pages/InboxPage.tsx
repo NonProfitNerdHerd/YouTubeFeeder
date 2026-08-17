@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import type { CategoryRecord, ChannelRecord, CurrentUser, InboxItem, LiveGridSize, WatchlistRecord } from '../types';
+import type { CategoryRecord, ChannelRecord, CurrentUser, InboxItem, InboxWatchFields, LiveGridSize, WatchedFilter, WatchlistRecord } from '../types';
 import { LIVE_GRID_SIZES } from '../types';
-import { youtubeEmbedUrl, youtubeWatchUrl } from '../lib/youtubeUrl';
+import { youtubeWatchUrl } from '../lib/youtubeUrl';
+import { FeedYouTubePlayer, type WatchPersistPayload } from '../components/FeedYouTubePlayer';
+import { matchesWatchedFilter } from '../lib/watchProgress';
 import { isAndroidClient, isNarrowFeeder } from '../lib/androidClient';
 import { TEST_APK_PATH, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease';
 import { UNCATEGORIZED_CATEGORY_ID, isUncategorizedFilter } from '../lib/categories';
@@ -70,6 +72,14 @@ function relativeRelease(iso: string | null): string {
 	const months = Math.round(days / 30);
 	if (months < 18) return phrase('month', months);
 	return phrase('year', Math.round(days / 365));
+}
+
+function IconWatchMark() {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<path fill="currentColor" d="M9.2 16.6 4.8 12.2l1.4-1.4 3 3 8-8 1.4 1.4-9.4 9.4z" />
+		</svg>
+	);
 }
 
 function IconPencil() {
@@ -177,6 +187,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [categories, setCategories] = useState<CategoryRecord[]>([]);
 	const [items, setItems] = useState<InboxItem[] | null>(null);
 	const [inboxCount, setInboxCount] = useState<number | null>(null);
+	const [unwatchedCount, setUnwatchedCount] = useState<number | null>(null);
+	const [watchedFilter, setWatchedFilter] = useState<WatchedFilter>('all');
 	const [channelId, setChannelId] = useState<string | null>(null);
 	const [categoryId, setCategoryId] = useState<string | null>(null);
 	const [leftTab, setLeftTab] = useState<'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams' | 'categories'>('inbox');
@@ -231,6 +243,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				inboxQuery.set('view', 'watchlist');
 				if (watchlistId) inboxQuery.set('watchlistId', watchlistId);
 			}
+			if (watchedFilter !== 'all') inboxQuery.set('watched', watchedFilter);
 			const qs = inboxQuery.toString();
 			const inboxCountQuery = new URLSearchParams();
 			if (categoryId && leftTab !== 'watchlist' && leftTab !== 'categories') {
@@ -251,19 +264,24 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				throw new Error('Could not load subscriptions.');
 			}
 			setChannels(((await chRes.json()) as { channels: ChannelRecord[] }).channels);
-			const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number };
+			const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number; unwatchedCount?: number };
 			setItems(inboxBody.items);
 			setCategories(((await catRes.json()) as { categories: CategoryRecord[] }).categories);
 			const nextLists = ((await wlRes.json()) as { watchlists: WatchlistRecord[] }).watchlists;
 			setWatchlists(nextLists);
 			if (inboxCountRes) {
-				const countBody = (await inboxCountRes.json()) as { count?: number; items: InboxItem[] };
+				const countBody = (await inboxCountRes.json()) as { count?: number; items: InboxItem[]; unwatchedCount?: number };
 				setInboxCount(typeof countBody.count === 'number' ? countBody.count : countBody.items.length);
 			} else {
 				setInboxCount(typeof inboxBody.count === 'number' ? inboxBody.count : inboxBody.items.length);
 			}
+			setUnwatchedCount(
+				typeof inboxBody.unwatchedCount === 'number'
+					? inboxBody.unwatchedCount
+					: inboxBody.items.filter((item) => !item.watchedAt).length,
+			);
 		},
-		[channelId, categoryId, leftTab, watchlistId],
+		[channelId, categoryId, leftTab, watchlistId, watchedFilter],
 	);
 
 	useEffect(() => {
@@ -702,6 +720,138 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		return true;
 	}
 
+	function applyWatchFields(videoId: string, fields: InboxWatchFields) {
+		setItems((prev) => {
+			if (!prev) return prev;
+			const next = prev.map((item) => (item.videoId === videoId ? { ...item, ...fields } : item));
+			return next.filter((item) => matchesWatchedFilter(item.watchedAt, watchedFilter));
+		});
+		const previous = items?.find((item) => item.videoId === videoId);
+		if (previous && !previous.watchedAt && fields.watchedAt) {
+			setUnwatchedCount((count) => Math.max(0, (count ?? 1) - 1));
+		} else if (previous?.watchedAt && !fields.watchedAt) {
+			setUnwatchedCount((count) => (count ?? 0) + 1);
+		}
+	}
+
+	async function persistWatchProgress(
+		videoId: string,
+		payload: WatchPersistPayload,
+		options?: { keepalive?: boolean },
+	) {
+		const body = JSON.stringify({
+			action: 'progress',
+			playbackSeconds: payload.playbackSeconds,
+			lastPositionSeconds: payload.lastPositionSeconds,
+			ended: payload.ended || undefined,
+		});
+		try {
+			if (options?.keepalive) {
+				void fetch(`/api/inbox/${encodeURIComponent(videoId)}`, {
+					method: 'PATCH',
+					headers: { 'content-type': 'application/json' },
+					credentials: 'same-origin',
+					keepalive: true,
+					body,
+				});
+				return;
+			}
+			const res = await fetch(`/api/inbox/${encodeURIComponent(videoId)}`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body,
+			});
+			if (!res.ok) return;
+			const data = (await res.json()) as InboxWatchFields;
+			applyWatchFields(videoId, data);
+		} catch {
+			/* unload keepalive may not expose a body */
+		}
+	}
+
+	async function toggleWatched(item: InboxItem) {
+		const res = await fetch(`/api/inbox/${encodeURIComponent(item.videoId)}`, {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify({ action: item.watchedAt ? 'unwatch' : 'watch' }),
+		});
+		if (!res.ok) {
+			setError('Could not update watched status.');
+			return;
+		}
+		const data = (await res.json()) as InboxWatchFields;
+		applyWatchFields(item.videoId, data);
+	}
+
+	async function markAllWatched() {
+		const pending = unwatchedCount ?? 0;
+		if (pending >= 20 && !window.confirm(`Mark ${pending} videos as watched?`)) return;
+		const query = new URLSearchParams();
+		if (leftTab === 'streams' && channelId) query.set('channelId', channelId);
+		if ((leftTab === 'inbox' || leftTab === 'snoozed' || leftTab === 'deleted' || leftTab === 'categories') && categoryId) {
+			query.set('categoryId', categoryId);
+		}
+		if (leftTab === 'snoozed') query.set('view', 'snoozed');
+		if (leftTab === 'deleted') query.set('view', 'deleted');
+		if (leftTab === 'watchlist') {
+			query.set('view', 'watchlist');
+			if (watchlistId) query.set('watchlistId', watchlistId);
+		}
+		if (watchedFilter !== 'all') query.set('watched', watchedFilter);
+		const qs = query.toString();
+		const res = await fetch(qs ? `/api/inbox/watch-all?${qs}` : '/api/inbox/watch-all', {
+			method: 'POST',
+			credentials: 'same-origin',
+		});
+		if (!res.ok) {
+			setError('Could not mark videos as watched.');
+			return;
+		}
+		const now = new Date().toISOString();
+		setItems((prev) => {
+			if (!prev) return prev;
+			const next = prev.map((item) =>
+				item.watchedAt ? item : { ...item, watchedAt: now, watchUpdatedAt: now },
+			);
+			return next.filter((item) => matchesWatchedFilter(item.watchedAt, watchedFilter));
+		});
+		setUnwatchedCount(0);
+	}
+
+	function watchFilterBar() {
+		return (
+			<div className="watch-filter" role="group" aria-label="Watched filter">
+				<button
+					className={watchedFilter === 'all' ? 'tab active' : 'tab'}
+					type="button"
+					onClick={() => setWatchedFilter('all')}
+				>
+					All
+				</button>
+				<button
+					className={watchedFilter === 'unwatched' ? 'tab active' : 'tab'}
+					type="button"
+					onClick={() => setWatchedFilter('unwatched')}
+				>
+					Unwatched
+				</button>
+				<button
+					className={watchedFilter === 'watched' ? 'tab active' : 'tab'}
+					type="button"
+					onClick={() => setWatchedFilter('watched')}
+				>
+					Watched
+				</button>
+				{unwatchedCount == null ? null : <span className="muted">{unwatchedCount} unwatched</span>}
+				<button className="ghost tiny" type="button" onClick={() => void markAllWatched()}>
+					Mark all watched
+				</button>
+			</div>
+		);
+	}
+
 	async function confirmSnooze(event: FormEvent) {
 		event.preventDefault();
 		const until = new Date(snoozeUntil);
@@ -792,8 +942,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const categoryThreeCol = !androidClient && !phoneLayout && leftTab === 'categories';
 	const feedThreeCol = streamsThreeCol || watchlistThreeCol || categoryThreeCol;
 	const streamsList = categoryId ? channels.filter((ch) => channelMatchesCategory(ch, categoryId)) : channels;
+	const visibleItems = items?.filter((item) => matchesWatchedFilter(item.watchedAt, watchedFilter)) ?? null;
 	const selectedVideo =
-		items?.find((item) => item.videoId === selectedVideoId) ?? (phoneLayout ? null : (items?.[0] ?? null));
+		visibleItems?.find((item) => item.videoId === selectedVideoId) ?? (phoneLayout ? null : (visibleItems?.[0] ?? null));
 
 	function openVideo(videoId: string) {
 		setSelectedVideoId(videoId);
@@ -829,6 +980,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		);
 	}
 
+	function watchToggleButton(item: InboxItem) {
+		return (
+			<button
+				className="icon-btn"
+				type="button"
+				title={item.watchedAt ? 'Mark as unwatched' : 'Mark as watched'}
+				aria-label={item.watchedAt ? 'Mark as unwatched' : 'Mark as watched'}
+				aria-pressed={Boolean(item.watchedAt)}
+				onClick={() => void toggleWatched(item)}
+			>
+				<IconWatchMark />
+			</button>
+		);
+	}
+
 	function renderPreview(item: InboxItem, mode: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams') {
 		return (
 			<div className="preview">
@@ -852,6 +1018,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									<IconRestore />
 								</button>
 								{youtubeOpenButton(item)}
+								{watchToggleButton(item)}
 								{watchlistButton(item)}
 							</>
 						) : mode === 'streams' ? (
@@ -866,6 +1033,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									<IconTrash />
 								</button>
 								{youtubeOpenButton(item)}
+								{watchToggleButton(item)}
 								{watchlistButton(item)}
 							</>
 						) : (
@@ -914,6 +1082,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									</button>
 								)}
 								{youtubeOpenButton(item)}
+								{watchToggleButton(item)}
 								{mode === 'inbox' || mode === 'snoozed' ? watchlistButton(item) : null}
 							</>
 						)}
@@ -921,16 +1090,25 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				</header>
 				<div className="preview-player">
 					{item.embeddable ? (
-						<iframe
+						<FeedYouTubePlayer
+							videoId={item.videoId}
 							title={item.title}
-							src={youtubeEmbedUrl(item.videoId)}
-							allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-							allowFullScreen
+							durationSeconds={item.durationSeconds}
+							initialPlaybackSeconds={item.playbackSeconds ?? 0}
+							onPersist={persistWatchProgress}
 						/>
 					) : (
 						<img src={item.thumbnailUrl} alt="" />
 					)}
 				</div>
+				{item.embeddable ? null : (
+					<div className="preview-unavailable">
+						<p className="muted">This video can’t be embedded. Opening it on YouTube does not mark it watched.</p>
+						<button className="ghost tiny" type="button" onClick={() => void toggleWatched(item)}>
+							{item.watchedAt ? 'Mark as unwatched' : 'Mark as watched'}
+						</button>
+					</div>
+				)}
 				<div className="preview-meta">
 					{mode === 'snoozed' && item.snoozedUntil ? (
 						<p className="muted">Snoozed until {new Date(item.snoozedUntil).toLocaleString()}</p>
@@ -967,7 +1145,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			compact ? (
 				<div
 					key={item.videoId}
-					className={`${selectedVideo?.videoId === item.videoId ? 'inbox-item active' : 'inbox-item'}${item.unread ? ' unread' : ''}${inboxSelectedIds.includes(item.videoId) ? ' is-checked' : ''}`}
+					className={`${selectedVideo?.videoId === item.videoId ? 'inbox-item active' : 'inbox-item'}${item.watchedAt ? ' watched' : ''}${inboxSelectedIds.includes(item.videoId) ? ' is-checked' : ''}`}
 				>
 					{allowMultiSelect ? (
 						<button
@@ -989,13 +1167,26 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							</span>
 						</button>
 					) : null}
-					<button className="inbox-item-main" type="button" onClick={() => openVideo(item.videoId)}>
+					<button
+						className="inbox-item-main"
+						type="button"
+						onClick={() => openVideo(item.videoId)}
+						title={item.watchedAt ? 'Watched' : 'Unwatched'}
+						aria-label={`${item.title}, ${item.watchedAt ? 'Watched' : 'Unwatched'}`}
+					>
 						{allowMultiSelect ? null : (
 							<img className="channel-avatar" src={item.channelThumbnailUrl || item.thumbnailUrl} alt="" />
 						)}
 						<img className="video-thumb" src={item.thumbnailUrl} alt="" />
 						<span>
-							<strong className="video-title">{item.title}</strong>
+							<strong className="video-title">
+								{item.title}
+								{item.watchedAt ? (
+									<span className="watch-mark" aria-hidden="true">
+										<IconWatchMark />
+									</span>
+								) : null}
+							</strong>
 							<small className="muted">{item.channelTitle}</small>
 							<small className="muted">{relativeRelease(item.publishedAt)}</small>
 							{actions === 'snoozed' && item.snoozedUntil ? (
@@ -1281,6 +1472,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									))}
 								</select>
 							</label>
+							{watchFilterBar()}
 							{!androidClient ? (
 								<button
 									className="feed-toolbar-sync"
@@ -1293,6 +1485,11 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							) : null}
 						</>
 					) : null}
+				</nav>
+			) : null}
+			{mainSection === 'feed' && leftTab === 'watchlist' ? (
+				<nav className="feed-toolbar" aria-label="Watchlist filters">
+					{watchFilterBar()}
 				</nav>
 			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
@@ -1388,7 +1585,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									</button>
 								</div>
 							) : null}
-							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'inbox')}</div>
+							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(visibleItems, true, 'inbox')}</div>
 						</>
 					) : null}
 					{leftTab === 'snoozed' ? (
@@ -1431,7 +1628,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									</button>
 								</div>
 							) : null}
-							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'snoozed')}</div>
+							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(visibleItems, true, 'snoozed')}</div>
 						</>
 					) : null}
 					{leftTab === 'deleted' ? (
@@ -1465,7 +1662,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									</button>
 								</div>
 							) : null}
-							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'deleted')}</div>
+							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(visibleItems, true, 'deleted')}</div>
 						</>
 					) : null}
 					{leftTab === 'watchlist' ? (
@@ -1671,7 +1868,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<aside className="subs streams-video-list" aria-label="Stream videos">
 						<div className="left-scroll">
 							{channelId
-								? renderFeed(items, true, 'streams')
+								? renderFeed(visibleItems, true, 'streams')
 								: (
 									<p className="muted pad">
 										Choose a stream on the left to see its videos, or use Edit to change follow settings.
@@ -1684,7 +1881,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<aside className="subs streams-video-list" aria-label="Watchlist videos">
 						<div className="left-scroll">
 							{watchlistId
-								? renderFeed(items, true, 'watchlist')
+								? renderFeed(visibleItems, true, 'watchlist')
 								: <p className="muted pad">Select a watchlist to see saved videos.</p>}
 						</div>
 					</aside>
@@ -1693,7 +1890,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<aside className="subs streams-video-list" aria-label="Category videos">
 						<div className="left-scroll">
 							{categoryId
-								? renderFeed(items, true, 'inbox')
+								? renderFeed(visibleItems, true, 'inbox')
 								: (
 									<p className="muted pad">
 										Select a category to see tagged videos. Tag streams from the Subscriptions tab using Edit.
@@ -1734,7 +1931,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						? renderPreview(selectedVideo, 'watchlist')
 						: null}
 					{leftTab === 'watchlist' && !watchlistThreeCol && watchlistId && !selectedVideo
-						? renderFeed(items, true, 'watchlist')
+						? renderFeed(visibleItems, true, 'watchlist')
 						: null}
 					{leftTab === 'watchlist' && !watchlistThreeCol && !watchlistId ? (
 						<p className="muted">Select a watchlist to see saved videos.</p>
@@ -1753,7 +1950,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							<h2 className="pane-title video-title">
 								{channelId ? channels.find((c) => c.channelId === channelId)?.title ?? 'Stream' : 'Select a stream'}
 							</h2>
-							{channelId ? renderFeed(items, false) : <p className="muted">Choose a stream on the left to see its videos, or use Edit to change follow settings.</p>}
+							{channelId ? renderFeed(visibleItems, false) : <p className="muted">Choose a stream on the left to see its videos, or use Edit to change follow settings.</p>}
 						</>
 					) : null}
 					{leftTab === 'categories' && categoryThreeCol ? (
@@ -1768,7 +1965,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					{leftTab === 'categories' && !categoryThreeCol ? (
 						<>
 							<h2 className="pane-title">{categoryId ? categories.find((c) => c.id === categoryId)?.name ?? 'Category' : 'By Category'}</h2>
-							{categoryId ? renderFeed(items, false) : <p className="muted">Select a category to see tagged videos. Tag streams from the Subscriptions tab using Edit.</p>}
+							{categoryId ? renderFeed(visibleItems, false) : <p className="muted">Select a category to see tagged videos. Tag streams from the Subscriptions tab using Edit.</p>}
 						</>
 					) : null}
 				</section>

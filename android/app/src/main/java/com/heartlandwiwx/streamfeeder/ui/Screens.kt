@@ -9,7 +9,11 @@ import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.os.Handler
+import android.os.Looper
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebChromeClient.CustomViewCallback
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -39,6 +43,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -63,6 +68,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -71,6 +77,8 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -84,6 +92,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
@@ -92,6 +101,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -122,15 +132,22 @@ import com.heartlandwiwx.streamfeeder.FeedView
 import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.InboxItem
+import com.heartlandwiwx.streamfeeder.data.AppTheme
+import com.heartlandwiwx.streamfeeder.data.WatchedFilter
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
 import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.ChromecastYouTubePlayerContext
 import com.pierfrancescosoffritti.androidyoutubeplayer.chromecast.chromecastsender.io.infrastructure.ChromecastConnectionListener
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener
+import org.json.JSONObject
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
+
+private fun FeedView.pageTitle(): String =
+    if (isLiveSection) "Live · $label" else label
 
 private fun openOnYouTube(context: android.content.Context, videoId: String) {
     val app = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:$videoId"))
@@ -148,21 +165,17 @@ fun LoginScreen(loginUrl: String, error: String?, onClearError: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            "Sign in with the same Google account as the website to see your feed.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(24.dp))
-        Text(
             "VortiQuest",
             style = MaterialTheme.typography.headlineLarge,
             fontFamily = BrandFont,
             fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
         )
         Spacer(Modifier.height(24.dp))
         Button(onClick = {
@@ -221,8 +234,16 @@ fun FeedScreen(
     onCloseEditChannel: () -> Unit,
     onSaveChannelEdit: (Boolean, Int, List<String>) -> Unit,
     onClearMessage: () -> Unit,
+    onSelectWatchedFilter: (WatchedFilter) -> Unit,
+    onMarkAllWatched: () -> Unit,
+    onToggleWatched: () -> Unit,
+    onSelectTheme: (AppTheme) -> Unit,
+    onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
+    onFlushPlayback: () -> Unit,
 ) {
-    var navOpen by remember { mutableStateOf(false) }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val navOpen = drawerState.isOpen
     val browsingChannel = state.channels.firstOrNull { it.channelId == state.browsingChannelId }
     val configuration = LocalConfiguration.current
     val useMasterDetail = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE &&
@@ -272,7 +293,9 @@ fun FeedScreen(
     BackHandler(enabled = browsingCategory && state.selected == null && !navOpen && overlaysClear && !selectionMode) {
         onSelectCategory(null)
     }
-    BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) { navOpen = false }
+    BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) {
+        scope.launch { drawerState.close() }
+    }
     BackHandler(enabled = state.pendingSnoozeItem != null) { onCancelPendingSnooze() }
     BackHandler(enabled = state.editingChannel != null) { onCloseEditChannel() }
     BackHandler(enabled = bulkSnoozeOpen) { bulkSnoozeOpen = false }
@@ -295,31 +318,11 @@ fun FeedScreen(
             onUnsnooze = onUnsnooze,
             onAddWatchlist = onAddWatchlist,
             onSaveNotes = onSaveNotes,
+            onToggleWatched = onToggleWatched,
+            onPlayerEvent = onPlayerEvent,
+            onFlushPlayback = onFlushPlayback,
         )
         MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
-        return
-    }
-
-    if (navOpen) {
-        FullScreenNav(
-            current = state.view,
-            currentWatchlistId = state.watchlistId,
-            watchlists = state.watchlists,
-            onClose = { navOpen = false },
-            onSelect = { view ->
-                navOpen = false
-                onSelectView(view)
-            },
-            onSelectWatchlist = { id ->
-                navOpen = false
-                onSelectView(FeedView.Watchlist)
-                onSelectWatchlist(id)
-            },
-            onSignOut = {
-                navOpen = false
-                onSignOut()
-            },
-        )
         return
     }
 
@@ -363,6 +366,7 @@ fun FeedScreen(
                                 "VortiQuest",
                                 fontFamily = BrandFont,
                                 fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                             Text(
                                 state.user?.displayName ?: "",
@@ -378,7 +382,11 @@ fun FeedScreen(
                             Icon(Icons.Default.Close, contentDescription = "Cancel selection")
                         }
                     } else {
-                        IconButton(onClick = { navOpen = true }) {
+                        IconButton(onClick = {
+                            scope.launch {
+                                if (drawerState.isClosed) drawerState.open() else drawerState.close()
+                            }
+                        }) {
                             Icon(Icons.Default.Menu, contentDescription = "Open menu")
                         }
                     }
@@ -396,16 +404,46 @@ fun FeedScreen(
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                ),
             )
         },
     ) { padding ->
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            modifier = Modifier.padding(padding),
+            drawerContent = {
+                ModalDrawerSheet(
+                    windowInsets = WindowInsets(0.dp),
+                    drawerContainerColor = MaterialTheme.colorScheme.surface,
+                ) {
+                    AppDrawer(
+                        current = state.view,
+                        currentWatchlistId = state.watchlistId,
+                        watchlists = state.watchlists,
+                        onSelect = { view ->
+                            scope.launch { drawerState.close() }
+                            onSelectView(view)
+                        },
+                        onSelectWatchlist = { id ->
+                            scope.launch { drawerState.close() }
+                            onSelectView(FeedView.Watchlist)
+                            onSelectWatchlist(id)
+                        },
+                        onSignOut = {
+                            scope.launch { drawerState.close() }
+                            onSignOut()
+                        },
+                    )
+                }
+            },
+        ) {
         when {
             useListMasterDetail -> {
                 Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     Column(
                         modifier = Modifier
@@ -433,7 +471,7 @@ fun FeedScreen(
                                 )
                             } else {
                                 Text(
-                                    state.view.label,
+                                    state.view.pageTitle(),
                                     modifier = Modifier.weight(1f),
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
@@ -468,7 +506,6 @@ fun FeedScreen(
                                             if (id in selectedVideoIds) selectedVideoIds - id else selectedVideoIds + id
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
-                                    onCompleteSnoozeExit = onCompleteSnoozeExit,
                                 )
                             }
                             FeedView.Watchlist -> {
@@ -554,6 +591,9 @@ fun FeedScreen(
                                 onUnsnooze = onUnsnooze,
                                 onAddWatchlist = onAddWatchlist,
                                 onSaveNotes = onSaveNotes,
+                                onToggleWatched = onToggleWatched,
+                                onPlayerEvent = onPlayerEvent,
+                                onFlushPlayback = onFlushPlayback,
                                 embedded = true,
                             )
                         } else {
@@ -573,9 +613,7 @@ fun FeedScreen(
             }
             useStreamsMasterDetail -> {
                 Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     Column(
                         modifier = Modifier
@@ -643,6 +681,9 @@ fun FeedScreen(
                                 onUnsnooze = onUnsnooze,
                                 onAddWatchlist = onAddWatchlist,
                                 onSaveNotes = onSaveNotes,
+                                onToggleWatched = onToggleWatched,
+                                onPlayerEvent = onPlayerEvent,
+                                onFlushPlayback = onFlushPlayback,
                                 embedded = true,
                             )
                         } else {
@@ -655,9 +696,7 @@ fun FeedScreen(
             }
             else -> {
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     Row(
                         modifier = Modifier
@@ -680,7 +719,7 @@ fun FeedScreen(
                             )
                         } else {
                             Text(
-                                state.view.label,
+                                state.view.pageTitle(),
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
@@ -720,7 +759,14 @@ fun FeedScreen(
                                     )
                                 }
                             }
-                            VideoList(state, onOpen, onArchiveItem, onRequestSnooze, onCompleteSnoozeExit, swipe = true)
+                            VideoList(
+                                state,
+                                onOpen,
+                                onArchiveItem,
+                                onRequestSnooze,
+                                onCompleteSnoozeExit,
+                                swipe = true,
+                            )
                         }
                         FeedView.Categories -> {
                             if (state.categoryId == null) {
@@ -732,7 +778,14 @@ fun FeedScreen(
                                     onDelete = onDeleteCategory,
                                 )
                             } else {
-                                VideoList(state, onOpen, onArchiveItem, onRequestSnooze, onCompleteSnoozeExit, swipe = true)
+                                VideoList(
+                                state,
+                                onOpen,
+                                onArchiveItem,
+                                onRequestSnooze,
+                                onCompleteSnoozeExit,
+                                swipe = true,
+                            )
                             }
                         }
                         FeedView.Streams -> {
@@ -743,6 +796,16 @@ fun FeedScreen(
                                 onOpen = onOpenStream,
                             )
                         }
+                        FeedView.Settings -> {
+                            SettingsPane(
+                                theme = state.theme,
+                                displayName = state.user?.displayName,
+                                onSelectTheme = onSelectTheme,
+                            )
+                        }
+                        FeedView.LiveGrid -> LiveGridMockPane(Modifier.weight(1f))
+                        FeedView.LiveStreams -> LiveStreamsMockPane()
+                        FeedView.LiveCategories -> LiveCategoriesMockPane()
                         else -> {
                             if (state.view == FeedView.Inbox) {
                                 InboxListPane(
@@ -761,15 +824,22 @@ fun FeedScreen(
                                             if (id in selectedVideoIds) selectedVideoIds - id else selectedVideoIds + id
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
-                                    onCompleteSnoozeExit = onCompleteSnoozeExit,
                                 )
                             } else {
-                                VideoList(state, onOpen, onArchiveItem, onRequestSnooze, onCompleteSnoozeExit, swipe = false)
+                                VideoList(
+                                    state,
+                                    onOpen,
+                                    onArchiveItem,
+                                    onRequestSnooze,
+                                    onCompleteSnoozeExit,
+                                    swipe = false,
+                                )
                             }
                         }
                     }
                 }
             }
+        }
         }
     }
 
@@ -926,7 +996,8 @@ private fun VideoList(
     onToggleSelect: (String) -> Unit = {},
     onEnterSelection: (String) -> Unit = {},
 ) {
-    when {
+    Column(modifier = Modifier.fillMaxSize()) {
+        when {
         state.loading && state.items.isEmpty() -> {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -978,6 +1049,7 @@ private fun VideoList(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1746,28 +1818,26 @@ private fun FilterDropdown(
 }
 
 @Composable
-private fun FullScreenNav(
+private fun AppDrawer(
     current: FeedView,
     currentWatchlistId: String?,
     watchlists: List<WatchlistRecord>,
-    onClose: () -> Unit,
     onSelect: (FeedView) -> Unit,
     onSelectWatchlist: (String) -> Unit,
     onSignOut: () -> Unit,
 ) {
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 20.dp, vertical = 16.dp)
+            .fillMaxHeight()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        IconButton(onClick = onClose) {
-            Icon(Icons.Default.Menu, contentDescription = "Close menu")
-        }
-        Spacer(Modifier.height(8.dp))
-
         NavTopItem(
+            label = "Feeds",
+            selected = current.isFeedSection,
+            onClick = null,
+        )
+        NavSubItem(
             label = FeedView.Inbox.label,
             selected = current == FeedView.Inbox,
             onClick = { onSelect(FeedView.Inbox) },
@@ -1805,15 +1875,225 @@ private fun FullScreenNav(
             )
         }
         NavTopItem(
-            label = "Settings",
-            selected = false,
+            label = "Live",
+            selected = current.isLiveSection,
             onClick = null,
+        )
+        NavSubItem(
+            label = FeedView.LiveGrid.label,
+            selected = current == FeedView.LiveGrid,
+            onClick = { onSelect(FeedView.LiveGrid) },
+        )
+        NavSubItem(
+            label = FeedView.LiveStreams.label,
+            selected = current == FeedView.LiveStreams,
+            onClick = { onSelect(FeedView.LiveStreams) },
+        )
+        NavSubItem(
+            label = FeedView.LiveCategories.label,
+            selected = current == FeedView.LiveCategories,
+            onClick = { onSelect(FeedView.LiveCategories) },
+        )
+        NavTopItem(
+            label = FeedView.Settings.label,
+            selected = current == FeedView.Settings,
+            onClick = { onSelect(FeedView.Settings) },
         )
         NavSubItem(
             label = "Sign Out",
             selected = false,
             onClick = onSignOut,
         )
+    }
+}
+
+@Composable
+private fun SettingsPane(
+    theme: AppTheme,
+    displayName: String?,
+    onSelectTheme: (AppTheme) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (!displayName.isNullOrBlank()) {
+            Text(
+                "Signed in as $displayName",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        Text(
+            "Appearance",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Choose a background. Sepia is a warm reading theme that reduces blue light.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AppTheme.entries.forEach { option ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onSelectTheme(option) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = theme == option,
+                    onClick = { onSelectTheme(option) },
+                )
+                Column(modifier = Modifier.padding(start = 4.dp)) {
+                    Text(option.label, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        option.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "v${BuildConfig.VERSION_NAME}",
+            modifier = Modifier.padding(top = 16.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun LiveGridMockPane(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "Mock quad grid. Live streams are not connected yet.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LiveSlotCard(number = 1, modifier = Modifier.weight(1f))
+            LiveSlotCard(number = 2, modifier = Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LiveSlotCard(number = 3, modifier = Modifier.weight(1f))
+            LiveSlotCard(number = 4, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun LiveSlotCard(number: Int, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Slot $number", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Empty",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LiveStreamsMockPane() {
+    val samples = listOf("WeatherNation", "NASA TV", "NOAA Weather Radio", "EarthCam — Times Square")
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "Live Streams",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Placeholder list. Sources will load from the Live API later.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        samples.forEach { name ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+            ) {
+                Text(name, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Offline · mock",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveCategoriesMockPane() {
+    val samples = listOf("Storms", "Traffic", "Space", "News")
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "Live Categories",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Placeholder list. Live categories will load from the Live API later.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        samples.forEach { name ->
+            Text(
+                name,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
     }
 }
 
@@ -2022,15 +2302,19 @@ private fun FeedRow(
             )
         }
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                item.title,
-                maxLines = 4,
-                minLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Normal,
-                fontFamily = FontFamily.Default,
-                style = MaterialTheme.typography.titleMedium.copy(lineHeight = 24.sp),
-            )
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    item.title,
+                    maxLines = 4,
+                    minLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = if (item.watchedAt == null) FontWeight.SemiBold else FontWeight.Normal,
+                    fontFamily = FontFamily.Default,
+                    color = if (item.watchedAt != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.titleMedium.copy(lineHeight = 24.sp),
+                    modifier = Modifier.weight(1f),
+                )
+            }
             val date = item.publishedAt?.take(10).orEmpty()
             val meta = if (showChannelInMeta) {
                 listOf(item.channelTitle, date).filter { it.isNotBlank() }.joinToString(" · ")
@@ -2064,6 +2348,9 @@ private fun DetailScreen(
     onUnsnooze: () -> Unit,
     onAddWatchlist: (String) -> Unit,
     onSaveNotes: (String) -> Unit,
+    onToggleWatched: () -> Unit = {},
+    onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit = { _, _, _, _, _ -> },
+    onFlushPlayback: () -> Unit = {},
     embedded: Boolean = false,
 ) {
     var snoozeOpen by remember { mutableStateOf(false) }
@@ -2152,7 +2439,23 @@ private fun DetailScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            YoutubePlayer(videoId = item.videoId, embeddable = item.embeddable, thumbnailUrl = item.thumbnailUrl)
+            YoutubePlayer(
+                videoId = item.videoId,
+                embeddable = item.embeddable,
+                thumbnailUrl = item.thumbnailUrl,
+                onPlayerEvent = onPlayerEvent,
+                onFlushPlayback = onFlushPlayback,
+            )
+            if (!item.embeddable) {
+                Text(
+                    "This video can’t be embedded. Opening it on YouTube does not mark it watched.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onToggleWatched) {
+                Text(if (item.watchedAt != null) "Mark as unwatched" else "Mark as watched")
+            }
             CastRow()
             Text(
                 item.title,
@@ -2296,7 +2599,13 @@ private fun CastRow() {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: String) {
+private fun YoutubePlayer(
+    videoId: String,
+    embeddable: Boolean,
+    thumbnailUrl: String,
+    onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit = { _, _, _, _, _ -> },
+    onFlushPlayback: () -> Unit = {},
+) {
     if (!embeddable) {
         AsyncImage(
             model = thumbnailUrl,
@@ -2307,24 +2616,54 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
                 .clip(RoundedCornerShape(12.dp)),
             contentScale = ContentScale.Crop,
         )
-        Text(
-            "This video can’t be embedded.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         return
     }
     val activity = LocalContext.current as? Activity
+    val eventHandler = remember { arrayOf(onPlayerEvent) }
+    eventHandler[0] = onPlayerEvent
+    DisposableEffect(videoId) {
+        onDispose { onFlushPlayback() }
+    }
     val html = remember(videoId) {
         """
         <!DOCTYPE html><html><head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
           <meta name="referrer" content="strict-origin-when-cross-origin"/>
-          <style>html,body{margin:0;padding:0;background:#000;height:100%;}iframe{border:0;width:100%;height:100%;}</style>
+          <style>html,body,#player{margin:0;padding:0;background:#000;height:100%;width:100%;}iframe{border:0;width:100%;height:100%;}</style>
         </head><body>
-          <iframe src="https://www.youtube.com/embed/$videoId?playsinline=1&rel=0&modestbranding=1"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+          <div id="player"></div>
+          <script>
+            var tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            document.head.appendChild(tag);
+            var player;
+            function post(type) {
+              try {
+                var t = player && player.getCurrentTime ? player.getCurrentTime() : 0;
+                var r = player && player.getPlaybackRate ? player.getPlaybackRate() : 1;
+                var d = player && player.getDuration ? player.getDuration() : 0;
+                AndroidWatch.postEvent(JSON.stringify({type:type, currentTime:t, rate:r, duration:d}));
+              } catch (e) {}
+            }
+            function onYouTubeIframeAPIReady() {
+              player = new YT.Player('player', {
+                videoId: '$videoId',
+                host: 'https://www.youtube-nocookie.com',
+                playerVars: { playsinline: 1, rel: 0, modestbranding: 1, enablejsapi: 1 },
+                events: {
+                  onStateChange: function (e) {
+                    if (e.data === 1) post('playing');
+                    else if (e.data === 2) post('paused');
+                    else if (e.data === 3) post('buffering');
+                    else if (e.data === 0) post('ended');
+                  }
+                }
+              });
+              setInterval(function () {
+                if (player && player.getPlayerState && player.getPlayerState() === 1) post('time');
+              }, 400);
+            }
+          </script>
         </body></html>
         """.trimIndent()
     }
@@ -2395,6 +2734,15 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
+                addJavascriptInterface(
+                    WatchJsBridge(
+                        videoId = { (tag as? String) ?: videoId },
+                        onEvent = { id, type, currentTime, rate, duration ->
+                            eventHandler[0](id, type, currentTime, rate, duration)
+                        },
+                    ),
+                    "AndroidWatch",
+                )
                 tag = videoId
                 loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
             }
@@ -2414,4 +2762,26 @@ private fun YoutubePlayer(videoId: String, embeddable: Boolean, thumbnailUrl: St
             .aspectRatio(16f / 9f)
             .clip(RoundedCornerShape(12.dp)),
     )
+}
+
+private class WatchJsBridge(
+    private val videoId: () -> String,
+    private val onEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
+) {
+    private val main = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun postEvent(json: String) {
+        main.post {
+            val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@post
+            val duration = obj.optDouble("duration", Double.NaN)
+            onEvent(
+                videoId(),
+                obj.optString("type"),
+                obj.optDouble("currentTime", 0.0),
+                obj.optDouble("rate", 1.0),
+                if (duration.isFinite() && duration > 0) duration else null,
+            )
+        }
+    }
 }

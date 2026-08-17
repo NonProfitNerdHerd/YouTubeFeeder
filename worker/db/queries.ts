@@ -1,5 +1,6 @@
-import type { CategoryRecord, ChannelRecord, InboxItem, WatchlistRecord } from '../../src/types';
+import type { CategoryRecord, ChannelRecord, InboxItem, InboxWatchFields, WatchlistRecord, WatchedFilter } from '../../src/types';
 import { isUncategorizedFilter } from '../../src/lib/categories';
+import { meetsWatchThreshold, mergeStoredPlayback } from '../../src/lib/watchProgress';
 import { randomToken } from '../auth/crypto';
 
 export async function listSubscribedChannels(db: D1Database, userId: string): Promise<ChannelRecord[]> {
@@ -75,10 +76,17 @@ export async function listSubscribedChannels(db: D1Database, userId: string): Pr
 	}));
 }
 
+function watchedClause(filter: WatchedFilter): string {
+	if (filter === 'watched') return 'AND i.watched_at IS NOT NULL';
+	if (filter === 'unwatched') return 'AND i.watched_at IS NULL';
+	return '';
+}
+
 function inboxWhere(
 	channelId: string | null,
 	categoryId: string | null,
 	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watched: WatchedFilter = 'all',
 ) {
 	const nowExpr = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
 	const hiddenFilter = view === 'deleted' ? 'AND i.hidden = 1' : 'AND i.hidden = 0';
@@ -103,6 +111,7 @@ function inboxWhere(
 		${hiddenFilter}
 		${snoozeFilter}
 		${watchFilter}
+		${watchedClause(watched)}
 		${channelId ? 'AND v.channel_id = ?' : ''}
 		${
 			isUncategorizedFilter(categoryId)
@@ -139,7 +148,23 @@ export async function countInbox(
 ): Promise<number> {
 	if (view === 'watchlist' && !watchlistId) return 0;
 	const row = await db
-		.prepare(`SELECT COUNT(*) AS n ${inboxWhere(channelId, categoryId, view)}`)
+		.prepare(`SELECT COUNT(*) AS n ${inboxWhere(channelId, categoryId, view, 'all')}`)
+		.bind(...inboxBinds(userId, channelId, categoryId, view, watchlistId))
+		.first<{ n: number }>();
+	return Number(row?.n ?? 0);
+}
+
+export async function countUnwatchedInbox(
+	db: D1Database,
+	userId: string,
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watchlistId: string | null = null,
+): Promise<number> {
+	if (view === 'watchlist' && !watchlistId) return 0;
+	const row = await db
+		.prepare(`SELECT COUNT(*) AS n ${inboxWhere(channelId, categoryId, view, 'unwatched')}`)
 		.bind(...inboxBinds(userId, channelId, categoryId, view, watchlistId))
 		.first<{ n: number }>();
 	return Number(row?.n ?? 0);
@@ -152,6 +177,7 @@ export async function listInbox(
 	categoryId: string | null,
 	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
 	watchlistId: string | null = null,
+	watched: WatchedFilter = 'all',
 ): Promise<InboxItem[]> {
 	if (view === 'watchlist' && !watchlistId) return [];
 	const sql = `
@@ -160,8 +186,10 @@ export async function listInbox(
 			v.title, v.description_excerpt, v.thumbnail_medium, v.thumbnail_high, v.published_at,
 			v.scheduled_start_at, v.actual_start_at, v.actual_end_at, v.duration_seconds,
 			v.content_type, v.livestream_status, v.embeddable,
-			i.unread, i.starred, i.archived, i.hidden, i.first_seen_at, i.snoozed_until, COALESCE(i.notes, '') AS notes
-		${inboxWhere(channelId, categoryId, view)}
+			i.unread, i.starred, i.archived, i.hidden, i.first_seen_at, i.snoozed_until, COALESCE(i.notes, '') AS notes,
+			i.watched_at, COALESCE(i.playback_seconds, 0) AS playback_seconds,
+			COALESCE(i.last_position_seconds, 0) AS last_position_seconds, i.watch_updated_at
+		${inboxWhere(channelId, categoryId, view, watched)}
 		ORDER BY COALESCE(v.published_at, v.scheduled_start_at, i.first_seen_at) DESC
 		LIMIT 200
 	`;
@@ -193,6 +221,10 @@ export async function listInbox(
 			first_seen_at: string;
 			snoozed_until: string | null;
 			notes: string;
+			watched_at: string | null;
+			playback_seconds: number;
+			last_position_seconds: number;
+			watch_updated_at: string | null;
 		}>();
 	return (rows.results ?? []).map((row) => ({
 		videoId: row.video_id,
@@ -217,6 +249,10 @@ export async function listInbox(
 		firstSeenAt: row.first_seen_at,
 		snoozedUntil: row.snoozed_until,
 		notes: row.notes ?? '',
+		watchedAt: row.watched_at,
+		playbackSeconds: Number(row.playback_seconds ?? 0),
+		lastPositionSeconds: Number(row.last_position_seconds ?? 0),
+		watchUpdatedAt: row.watch_updated_at,
 	}));
 }
 
@@ -269,6 +305,136 @@ export async function updateInboxNotes(db: D1Database, userId: string, videoId: 
 		.bind(notes.slice(0, 4000), userId, videoId)
 		.run();
 	return (result.meta.changes ?? 0) > 0;
+}
+
+const nowSql = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+
+function clampPlayback(value: number): number {
+	if (!Number.isFinite(value) || value < 0) return 0;
+	return Math.min(value, 86_400);
+}
+
+async function readInboxWatch(
+	db: D1Database,
+	userId: string,
+	videoId: string,
+): Promise<(InboxWatchFields & { durationSeconds: number | null }) | null> {
+	const row = await db
+		.prepare(
+			`SELECT i.watched_at, COALESCE(i.playback_seconds, 0) AS playback_seconds,
+				COALESCE(i.last_position_seconds, 0) AS last_position_seconds, i.watch_updated_at,
+				v.duration_seconds
+			 FROM inbox_state i
+			 LEFT JOIN videos v ON v.video_id = i.video_id
+			 WHERE i.user_id = ? AND i.video_id = ?`,
+		)
+		.bind(userId, videoId)
+		.first<{
+			watched_at: string | null;
+			playback_seconds: number;
+			last_position_seconds: number;
+			watch_updated_at: string | null;
+			duration_seconds: number | null;
+		}>();
+	if (!row) return null;
+	return {
+		watchedAt: row.watched_at,
+		playbackSeconds: Number(row.playback_seconds ?? 0),
+		lastPositionSeconds: Number(row.last_position_seconds ?? 0),
+		watchUpdatedAt: row.watch_updated_at,
+		durationSeconds: row.duration_seconds,
+	};
+}
+
+async function writeInboxWatch(
+	db: D1Database,
+	userId: string,
+	videoId: string,
+	fields: { playbackSeconds: number; lastPositionSeconds: number; watchedAt: string | null },
+): Promise<InboxWatchFields | null> {
+	await db
+		.prepare(
+			`UPDATE inbox_state
+			 SET playback_seconds = ?,
+			     last_position_seconds = ?,
+			     watched_at = ?,
+			     watch_updated_at = ${nowSql}
+			 WHERE user_id = ? AND video_id = ?`,
+		)
+		.bind(fields.playbackSeconds, fields.lastPositionSeconds, fields.watchedAt, userId, videoId)
+		.run();
+	const next = await readInboxWatch(db, userId, videoId);
+	if (!next) return null;
+	return {
+		watchedAt: next.watchedAt,
+		playbackSeconds: next.playbackSeconds,
+		lastPositionSeconds: next.lastPositionSeconds,
+		watchUpdatedAt: next.watchUpdatedAt,
+	};
+}
+
+export async function applyInboxProgress(
+	db: D1Database,
+	userId: string,
+	videoId: string,
+	input: { playbackSeconds: number; lastPositionSeconds?: number; ended?: boolean },
+): Promise<InboxWatchFields | null> {
+	if (!VIDEO_ID.test(videoId)) return null;
+	const current = await readInboxWatch(db, userId, videoId);
+	if (!current) return null;
+	const playbackSeconds = mergeStoredPlayback(current.playbackSeconds, clampPlayback(input.playbackSeconds));
+	const lastPositionSeconds =
+		input.lastPositionSeconds != null && Number.isFinite(input.lastPositionSeconds)
+			? clampPlayback(input.lastPositionSeconds)
+			: current.lastPositionSeconds;
+	const ended = Boolean(input.ended);
+	const watchedAt =
+		current.watchedAt ??
+		(meetsWatchThreshold(playbackSeconds, current.durationSeconds, ended) ? new Date().toISOString() : null);
+	return writeInboxWatch(db, userId, videoId, { playbackSeconds, lastPositionSeconds, watchedAt });
+}
+
+export async function markInboxWatched(db: D1Database, userId: string, videoId: string): Promise<InboxWatchFields | null> {
+	if (!VIDEO_ID.test(videoId)) return null;
+	const current = await readInboxWatch(db, userId, videoId);
+	if (!current) return null;
+	const watchedAt = current.watchedAt ?? new Date().toISOString();
+	return writeInboxWatch(db, userId, videoId, {
+		playbackSeconds: current.playbackSeconds,
+		lastPositionSeconds: current.lastPositionSeconds,
+		watchedAt,
+	});
+}
+
+export async function unwatchInboxItem(db: D1Database, userId: string, videoId: string): Promise<InboxWatchFields | null> {
+	if (!VIDEO_ID.test(videoId)) return null;
+	const current = await readInboxWatch(db, userId, videoId);
+	if (!current) return null;
+	return writeInboxWatch(db, userId, videoId, { playbackSeconds: 0, lastPositionSeconds: 0, watchedAt: null });
+}
+
+export async function watchAllInbox(
+	db: D1Database,
+	userId: string,
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watchlistId: string | null = null,
+	watched: WatchedFilter = 'all',
+): Promise<number> {
+	if (view === 'watchlist' && !watchlistId) return 0;
+	const result = await db
+		.prepare(
+			`UPDATE inbox_state
+			 SET watched_at = COALESCE(watched_at, ${nowSql}),
+			     watch_updated_at = ${nowSql}
+			 WHERE rowid IN (
+				SELECT i.rowid ${inboxWhere(channelId, categoryId, view, watched)}
+			 )`,
+		)
+		.bind(...inboxBinds(userId, channelId, categoryId, view, watchlistId))
+		.run();
+	return Number(result.meta.changes ?? 0);
 }
 
 export async function lastSyncAt(db: D1Database, userId: string): Promise<string | null> {

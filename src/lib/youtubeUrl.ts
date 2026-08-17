@@ -76,9 +76,14 @@ export function youtubeWatchUrl(videoId: string): string {
 	return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
 }
 
-export function youtubeEmbedUrl(videoId: string, options?: { mute?: boolean; autoplay?: boolean }): string {
+export function youtubeEmbedUrl(
+	videoId: string,
+	options?: { mute?: boolean; autoplay?: boolean; enablejsapi?: boolean; origin?: string },
+): string {
 	const params = new URLSearchParams({ rel: '0' });
 	if (options?.mute) params.set('mute', '1');
 	if (options?.autoplay) params.set('autoplay', '1');
+	if (options?.enablejsapi) params.set('enablejsapi', '1');
+	if (options?.origin) params.set('origin', options.origin);
 	return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?${params.toString()}`;
 }

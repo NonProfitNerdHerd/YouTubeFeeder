@@ -25,8 +25,8 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         handleAuthIntent(intent)
         setContent {
-            StreamFeederTheme {
-                val state by viewModel.state.collectAsState()
+            val state by viewModel.state.collectAsState()
+            StreamFeederTheme(theme = state.theme) {
                 when {
                     state.booting -> {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -76,6 +76,12 @@ class MainActivity : AppCompatActivity() {
                             onCloseEditChannel = viewModel::closeEditChannel,
                             onSaveChannelEdit = viewModel::saveChannelEdit,
                             onClearMessage = viewModel::clearMessage,
+                            onSelectWatchedFilter = viewModel::selectWatchedFilter,
+                            onMarkAllWatched = viewModel::markAllWatched,
+                            onToggleWatched = viewModel::toggleWatched,
+                            onSelectTheme = viewModel::setTheme,
+                            onPlayerEvent = viewModel::onPlayerEvent,
+                            onFlushPlayback = viewModel::flushPlayback,
                         )
                     }
                 }

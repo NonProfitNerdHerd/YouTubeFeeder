@@ -1,6 +1,5 @@
 package com.heartlandwiwx.streamfeeder.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -11,6 +10,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import com.heartlandwiwx.streamfeeder.R
+import com.heartlandwiwx.streamfeeder.data.AppTheme
 
 /** App system font: Roboto (Android default) at normal weight for readable titles. */
 private val SystemFont = FontFamily.Default
@@ -34,6 +34,19 @@ private val LightColors = lightColorScheme(
     primary = Color(0xFF1A73E8),
     background = Color(0xFFF8F9FA),
     surface = Color(0xFFFFFFFF),
+    onBackground = Color(0xFF1F1F1F),
+    onSurface = Color(0xFF1F1F1F),
+)
+
+/** Warm paper tones that cut blue light, similar to night-shift / sepia reading mode. */
+private val SepiaColors = lightColorScheme(
+    primary = Color(0xFF9A6B3F),
+    onPrimary = Color(0xFFFFF6E8),
+    background = Color(0xFFF3E6C9),
+    surface = Color(0xFFF8EDD8),
+    onBackground = Color(0xFF3B2A1A),
+    onSurface = Color(0xFF3B2A1A),
+    onSurfaceVariant = Color(0xFF6B5340),
 )
 
 private val BaseTypography = Typography()
@@ -56,9 +69,14 @@ private val AppTypography = BaseTypography.copy(
 )
 
 @Composable
-fun StreamFeederTheme(content: @Composable () -> Unit) {
+fun StreamFeederTheme(theme: AppTheme, content: @Composable () -> Unit) {
+    val colors = when (theme) {
+        AppTheme.Light -> LightColors
+        AppTheme.Dark -> DarkColors
+        AppTheme.Sepia -> SepiaColors
+    }
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+        colorScheme = colors,
         typography = AppTypography,
         content = content,
     )

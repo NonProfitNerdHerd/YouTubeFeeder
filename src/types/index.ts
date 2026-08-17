@@ -39,6 +39,19 @@ export interface InboxItem {
 	firstSeenAt: string;
 	snoozedUntil: string | null;
 	notes: string;
+	watchedAt: string | null;
+	playbackSeconds: number;
+	lastPositionSeconds: number;
+	watchUpdatedAt: string | null;
+}
+
+export type WatchedFilter = 'all' | 'watched' | 'unwatched';
+
+export interface InboxWatchFields {
+	watchedAt: string | null;
+	playbackSeconds: number;
+	lastPositionSeconds: number;
+	watchUpdatedAt: string | null;
 }
 
 export interface InboxCounts {

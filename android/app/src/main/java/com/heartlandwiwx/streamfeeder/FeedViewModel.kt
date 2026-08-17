@@ -1,16 +1,27 @@
 package com.heartlandwiwx.streamfeeder
 
 import android.app.Application
+import android.content.res.Configuration
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.heartlandwiwx.streamfeeder.data.ApiClient
 import com.heartlandwiwx.streamfeeder.data.ApiException
+import com.heartlandwiwx.streamfeeder.data.AppTheme
 import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.CurrentUser
 import com.heartlandwiwx.streamfeeder.data.InboxItem
+import com.heartlandwiwx.streamfeeder.data.InboxWatchFields
 import com.heartlandwiwx.streamfeeder.data.SessionStore
+import com.heartlandwiwx.streamfeeder.data.WatchedFilter
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
+import com.heartlandwiwx.streamfeeder.data.PROGRESS_PERSIST_MS
+import com.heartlandwiwx.streamfeeder.data.createPlaybackSampler
+import com.heartlandwiwx.streamfeeder.data.meetsWatchThreshold
+import com.heartlandwiwx.streamfeeder.data.samplePlayback
+import com.heartlandwiwx.streamfeeder.data.setSamplerPlaying
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +38,19 @@ enum class FeedView(val api: String, val label: String) {
     Streams("inbox", "Subscriptions"),
     Categories("inbox", "By Category"),
     Deleted("deleted", "Deleted"),
+    Settings("settings", "Settings"),
+    LiveGrid("live", "Grid"),
+    LiveStreams("live", "Streams"),
+    LiveCategories("live", "Categories");
+
+    val isLocal: Boolean
+        get() = this == Settings || this == LiveGrid || this == LiveStreams || this == LiveCategories
+
+    val isFeedSection: Boolean
+        get() = this == Inbox || this == Categories || this == Streams || this == Snoozed || this == Deleted
+
+    val isLiveSection: Boolean
+        get() = this == LiveGrid || this == LiveStreams || this == LiveCategories
 }
 
 data class FeedUiState(
@@ -55,6 +79,9 @@ data class FeedUiState(
     val loading: Boolean = false,
     val error: String? = null,
     val message: String? = null,
+    val watchedFilter: WatchedFilter = WatchedFilter.All,
+    val unwatchedCount: Int = 0,
+    val theme: AppTheme = AppTheme.Dark,
 )
 
 class FeedViewModel(app: Application) : AndroidViewModel(app) {
@@ -64,19 +91,41 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(FeedUiState())
     val state: StateFlow<FeedUiState> = _state.asStateFlow()
+    private var sampler = createPlaybackSampler()
+    private var samplerVideoId: String? = null
+    private var lastPosition = 0.0
+    private var lastSentSeconds = 0.0
+    private var playbackEnded = false
+    private var persistJob: Job? = null
 
     init {
         viewModelScope.launch {
+            val storedTheme = sessions.themeFlow.first()
+            val theme = storedTheme ?: defaultTheme()
             token = sessions.tokenFlow.first()
             if (token.isNullOrBlank()) {
-                _state.update { it.copy(booting = false, signedIn = false) }
+                _state.update { it.copy(booting = false, signedIn = false, theme = theme) }
             } else {
+                _state.update { it.copy(theme = theme) }
                 refreshAll(showBoot = true)
             }
         }
     }
 
     fun loginUrl(): String = api.loginUrl()
+
+    fun setTheme(theme: AppTheme) {
+        viewModelScope.launch {
+            sessions.saveTheme(theme)
+            _state.update { it.copy(theme = theme) }
+        }
+    }
+
+    private fun defaultTheme(): AppTheme {
+        val night = getApplication<Application>().resources.configuration.uiMode and
+            Configuration.UI_MODE_NIGHT_MASK
+        return if (night == Configuration.UI_MODE_NIGHT_YES) AppTheme.Dark else AppTheme.Light
+    }
 
     fun onOAuthToken(tokenValue: String) {
         viewModelScope.launch {
@@ -100,20 +149,15 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 snoozeExitVideoId = null,
                 snoozeExitUntilMillis = null,
                 editingChannel = null,
-                categoryId = if (
-                    view == FeedView.Inbox ||
-                    view == FeedView.Snoozed ||
-                    view == FeedView.Deleted ||
-                    view == FeedView.Streams ||
-                    view == FeedView.Categories
-                ) {
-                    null
+                categoryId = if (view.isFeedSection || view.isLocal) null else it.categoryId,
+                items = if (view == FeedView.Streams || view == FeedView.Categories || view.isLocal) {
+                    emptyList()
                 } else {
-                    it.categoryId
+                    it.items
                 },
-                items = if (view == FeedView.Streams || view == FeedView.Categories) emptyList() else it.items,
             )
         }
+        if (view.isLocal) return
         if (view != FeedView.Streams && view != FeedView.Categories) {
             refreshFeed()
         } else {
@@ -171,7 +215,14 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeItem() {
+        flushPlayback()
         _state.update { it.copy(selected = null) }
+    }
+
+    fun selectWatchedFilter(filter: WatchedFilter) {
+        if (filter == _state.value.watchedFilter) return
+        _state.update { it.copy(watchedFilter = filter) }
+        refreshFeed()
     }
 
     fun clearMessage() {
@@ -436,6 +487,181 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun toggleWatched() {
+        val item = _state.value.selected ?: return
+        viewModelScope.launch {
+            try {
+                val body = JSONObject().put("action", if (item.watchedAt == null) "watch" else "unwatch")
+                applyWatch(item.videoId, watchFieldsFrom(api.patchInbox(item.videoId, body)))
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not update watched status") }
+            }
+        }
+    }
+
+    fun markAllWatched() {
+        viewModelScope.launch {
+            try {
+                val s = _state.value
+                api.watchAllInbox(
+                    view = inboxApiView(s),
+                    categoryId = s.categoryId,
+                    watchlistId = s.watchlistId,
+                    channelId = s.browsingChannelId,
+                    watched = s.watchedFilter.api,
+                )
+                val now = Instant.now().toString()
+                _state.update { state ->
+                    val mapped = state.items.map { item ->
+                        if (item.watchedAt != null) item else item.copy(watchedAt = now)
+                    }
+                    state.copy(
+                        items = mapped.filter { matchesFilter(it.watchedAt, state.watchedFilter) },
+                        unwatchedCount = 0,
+                        selected = state.selected?.let { sel ->
+                            if (sel.watchedAt != null) sel else sel.copy(watchedAt = now)
+                        },
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not mark videos watched") }
+            }
+        }
+    }
+
+    fun onPlayerEvent(videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) {
+        if (samplerVideoId != videoId) {
+            flushPlayback()
+            val seed = _state.value.selected?.takeIf { it.videoId == videoId }?.playbackSeconds ?: 0.0
+            samplerVideoId = videoId
+            sampler = createPlaybackSampler(seed)
+            lastSentSeconds = seed
+            lastPosition = currentTime
+            playbackEnded = false
+        }
+        lastPosition = currentTime
+        when (type) {
+            "playing" -> {
+                playbackEnded = false
+                sampler = setSamplerPlaying(sampler, true)
+                sampler = samplePlayback(sampler, currentTime, System.currentTimeMillis(), rate)
+            }
+            "time" -> {
+                sampler = samplePlayback(sampler, currentTime, System.currentTimeMillis(), rate)
+                val itemDuration = _state.value.selected?.durationSeconds ?: duration
+                if (meetsWatchThreshold(sampler.playbackSeconds, itemDuration, false)) {
+                    persistProgress(videoId, sampler.playbackSeconds, currentTime, ended = false)
+                } else {
+                    schedulePersist(videoId)
+                }
+            }
+            "paused", "buffering" -> {
+                sampler = setSamplerPlaying(sampler, false)
+                persistProgress(videoId, sampler.playbackSeconds, currentTime, ended = false)
+            }
+            "ended" -> {
+                playbackEnded = true
+                sampler = setSamplerPlaying(sampler, false)
+                persistProgress(videoId, sampler.playbackSeconds, currentTime, ended = true)
+            }
+        }
+    }
+
+    fun flushPlayback() {
+        val id = samplerVideoId ?: return
+        persistProgress(id, sampler.playbackSeconds, lastPosition, playbackEnded)
+    }
+
+    private fun schedulePersist(videoId: String) {
+        persistJob?.cancel()
+        persistJob = viewModelScope.launch {
+            delay(PROGRESS_PERSIST_MS)
+            persistProgress(videoId, sampler.playbackSeconds, lastPosition, playbackEnded)
+        }
+    }
+
+    private fun persistProgress(
+        videoId: String,
+        playbackSeconds: Double,
+        lastPositionSeconds: Double,
+        ended: Boolean,
+    ) {
+        if (playbackSeconds <= 0.0 && !ended) return
+        if (!ended && playbackSeconds <= lastSentSeconds + 0.05) return
+        lastSentSeconds = playbackSeconds
+        persistJob?.cancel()
+        viewModelScope.launch {
+            try {
+                val body = JSONObject()
+                    .put("action", "progress")
+                    .put("playbackSeconds", playbackSeconds)
+                    .put("lastPositionSeconds", lastPositionSeconds)
+                    .put("ended", ended)
+                applyWatch(videoId, watchFieldsFrom(api.patchInbox(videoId, body)))
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun applyWatch(videoId: String, fields: InboxWatchFields) {
+        _state.update { state ->
+            val previous = state.items.find { it.videoId == videoId } ?: state.selected?.takeIf { it.videoId == videoId }
+            val mapped = state.items.map { item ->
+                if (item.videoId != videoId) item
+                else item.copy(
+                    watchedAt = fields.watchedAt,
+                    playbackSeconds = fields.playbackSeconds,
+                    lastPositionSeconds = fields.lastPositionSeconds,
+                )
+            }
+            val unwatched = when {
+                previous?.watchedAt == null && fields.watchedAt != null -> (state.unwatchedCount - 1).coerceAtLeast(0)
+                previous?.watchedAt != null && fields.watchedAt == null -> state.unwatchedCount + 1
+                else -> state.unwatchedCount
+            }
+            state.copy(
+                items = mapped.filter { matchesFilter(it.watchedAt, state.watchedFilter) },
+                unwatchedCount = unwatched,
+                selected = state.selected?.let { sel ->
+                    if (sel.videoId != videoId) sel
+                    else sel.copy(
+                        watchedAt = fields.watchedAt,
+                        playbackSeconds = fields.playbackSeconds,
+                        lastPositionSeconds = fields.lastPositionSeconds,
+                    )
+                },
+            )
+        }
+    }
+
+    private fun watchFieldsFrom(obj: JSONObject) = InboxWatchFields(
+        watchedAt = if (obj.has("watchedAt") && !obj.isNull("watchedAt")) {
+            obj.optString("watchedAt").ifBlank { null }
+        } else {
+            null
+        },
+        playbackSeconds = obj.optDouble("playbackSeconds", 0.0),
+        lastPositionSeconds = obj.optDouble("lastPositionSeconds", 0.0),
+        watchUpdatedAt = if (obj.has("watchUpdatedAt") && !obj.isNull("watchUpdatedAt")) {
+            obj.optString("watchUpdatedAt").ifBlank { null }
+        } else {
+            null
+        },
+    )
+
+    private fun matchesFilter(watchedAt: String?, filter: WatchedFilter): Boolean = when (filter) {
+        WatchedFilter.All -> true
+        WatchedFilter.Watched -> watchedAt != null
+        WatchedFilter.Unwatched -> watchedAt == null
+    }
+
+    private fun inboxApiView(state: FeedUiState): String = when (state.view) {
+        FeedView.Watchlist -> "watchlist"
+        FeedView.Snoozed -> "snoozed"
+        FeedView.Deleted -> "deleted"
+        else -> "inbox"
+    }
+
     fun saveNotes(notes: String) {
         val item = _state.value.selected ?: return
         viewModelScope.launch {
@@ -558,7 +784,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             api.logout()
             token = null
             sessions.clear()
-            _state.value = FeedUiState(booting = false, signedIn = false)
+            _state.value = FeedUiState(booting = false, signedIn = false, theme = _state.value.theme)
         }
     }
 
@@ -658,6 +884,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 val items = if (
+                    _state.value.view.isLocal ||
                     (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null) ||
                     (_state.value.view == FeedView.Categories && _state.value.categoryId == null)
                 ) {
@@ -672,7 +899,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 if (e.code == 401) {
                     token = null
                     sessions.clear()
-                    _state.update { FeedUiState(booting = false, signedIn = false, error = "Sign in required") }
+                    _state.update { FeedUiState(booting = false, signedIn = false, error = "Sign in required", theme = it.theme) }
                 } else {
                     _state.update { it.copy(booting = false, loading = false, error = e.message) }
                 }
@@ -685,6 +912,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     private fun refreshFeed() {
         viewModelScope.launch {
             if (
+                _state.value.view.isLocal ||
                 (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null) ||
                 (_state.value.view == FeedView.Categories && _state.value.categoryId == null)
             ) {
@@ -717,19 +945,22 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadInbox(): List<InboxItem> {
         val s = _state.value
-        return when (s.view) {
-            FeedView.Watchlist -> api.inbox(view = "watchlist", watchlistId = s.watchlistId)
+        val watched = s.watchedFilter.api
+        val page = when (s.view) {
+            FeedView.Watchlist -> api.inbox(view = "watchlist", watchlistId = s.watchlistId, watched = watched)
             FeedView.Streams -> {
                 val channelId = s.browsingChannelId ?: return emptyList()
-                api.inbox(view = "inbox", channelId = channelId)
+                api.inbox(view = "inbox", channelId = channelId, watched = watched)
             }
             FeedView.Categories -> {
                 val categoryId = s.categoryId ?: return emptyList()
-                api.inbox(view = "inbox", categoryId = categoryId)
+                api.inbox(view = "inbox", categoryId = categoryId, watched = watched)
             }
-            FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId)
-            FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId)
-            else -> api.inbox(view = s.view.api)
+            FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId, watched = watched)
+            FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId, watched = watched)
+            FeedView.Settings, FeedView.LiveGrid, FeedView.LiveStreams, FeedView.LiveCategories -> return emptyList()
         }
+        _state.update { it.copy(unwatchedCount = page.unwatchedCount) }
+        return page.items
     }
 }

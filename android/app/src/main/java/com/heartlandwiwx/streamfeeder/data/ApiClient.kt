@@ -36,15 +36,22 @@ class ApiClient(
         categoryId: String? = null,
         watchlistId: String? = null,
         channelId: String? = null,
-    ): List<InboxItem> = withContext(Dispatchers.IO) {
+        watched: String = "all",
+    ): InboxPage = withContext(Dispatchers.IO) {
         val q = buildString {
             append("view=").append(view)
             if (!categoryId.isNullOrBlank()) append("&categoryId=").append(categoryId)
             if (!watchlistId.isNullOrBlank()) append("&watchlistId=").append(watchlistId)
             if (!channelId.isNullOrBlank()) append("&channelId=").append(channelId)
+            if (watched != "all") append("&watched=").append(watched)
         }
-        val arr = getJson("/api/inbox?$q").optJSONArray("items") ?: JSONArray()
-        (0 until arr.length()).map { parseInboxItem(arr.getJSONObject(it)) }
+        val obj = getJson("/api/inbox?$q")
+        val arr = obj.optJSONArray("items") ?: JSONArray()
+        InboxPage(
+            items = (0 until arr.length()).map { parseInboxItem(arr.getJSONObject(it)) },
+            count = obj.optInt("count", arr.length()),
+            unwatchedCount = obj.optInt("unwatchedCount", 0),
+        )
     }
 
     suspend fun channels(): List<ChannelRecord> = withContext(Dispatchers.IO) {
@@ -108,9 +115,25 @@ class ApiClient(
         Unit
     }
 
-    suspend fun patchInbox(videoId: String, body: JSONObject) = withContext(Dispatchers.IO) {
+    suspend fun patchInbox(videoId: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         requestJson("PATCH", "/api/inbox/$videoId", body)
-        Unit
+    }
+
+    suspend fun watchAllInbox(
+        view: String = "inbox",
+        categoryId: String? = null,
+        watchlistId: String? = null,
+        channelId: String? = null,
+        watched: String = "all",
+    ): Int = withContext(Dispatchers.IO) {
+        val q = buildString {
+            append("view=").append(view)
+            if (!categoryId.isNullOrBlank()) append("&categoryId=").append(categoryId)
+            if (!watchlistId.isNullOrBlank()) append("&watchlistId=").append(watchlistId)
+            if (!channelId.isNullOrBlank()) append("&channelId=").append(channelId)
+            if (watched != "all") append("&watched=").append(watched)
+        }
+        requestJson("POST", "/api/inbox/watch-all?$q", JSONObject()).optInt("updated", 0)
     }
 
     suspend fun addToWatchlist(listId: String, videoId: String) = withContext(Dispatchers.IO) {
@@ -188,6 +211,10 @@ class ApiClient(
         hidden = o.optBoolean("hidden", false),
         snoozedUntil = optionalString(o, "snoozedUntil"),
         notes = o.optString("notes", ""),
+        durationSeconds = if (o.has("durationSeconds") && !o.isNull("durationSeconds")) o.optDouble("durationSeconds") else null,
+        watchedAt = optionalString(o, "watchedAt"),
+        playbackSeconds = o.optDouble("playbackSeconds", 0.0),
+        lastPositionSeconds = o.optDouble("lastPositionSeconds", 0.0),
     )
 
     private fun optionalString(o: JSONObject, key: String): String? {

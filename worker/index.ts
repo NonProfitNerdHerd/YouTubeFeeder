@@ -16,7 +16,7 @@ import {
 	readOauthState,
 	readSessionUserId,
 } from './auth/session';
-import { lastSyncAt, listInbox, countInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
+import { lastSyncAt, listInbox, countInbox, countUnwatchedInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, applyInboxProgress, markInboxWatched, unwatchInboxItem, watchAllInbox, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
 import {
 	applyLiveLayout,
 	assignLiveSlot,
@@ -44,6 +44,7 @@ import { processPendingWebSubEvents } from './services/websubProcess';
 import { YoutubeApiError } from './services/youtube';
 import { isLiveGridSize } from '../src/types';
 import { STREAMFEEDER_PACKAGE_ID } from '../src/lib/androidRelease';
+import { parseWatchedFilter } from '../src/lib/watchProgress';
 import { digitalAssetLinks, type AssetLinkFingerprint } from './android/assetlinks';
 import androidFingerprints from './android/fingerprints.json';
 
@@ -356,16 +357,39 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const view =
 			viewParam === 'snoozed' || viewParam === 'deleted' || viewParam === 'watchlist' ? viewParam : 'inbox';
 		const watchlistId = url.searchParams.get('watchlistId');
-		const items = await listInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
+		const watched = parseWatchedFilter(url.searchParams.get('watched'));
+		const items = await listInbox(env.DB, user.id, channelId, categoryId, view, watchlistId, watched);
 		const count = await countInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
-		return json({ items, count });
+		const unwatchedCount = await countUnwatchedInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
+		return json({ items, count, unwatchedCount });
+	}
+
+	if (path === '/api/inbox/watch-all' && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const channelId = url.searchParams.get('channelId');
+		const categoryId = url.searchParams.get('categoryId');
+		const viewParam = url.searchParams.get('view');
+		const view =
+			viewParam === 'snoozed' || viewParam === 'deleted' || viewParam === 'watchlist' ? viewParam : 'inbox';
+		const watchlistId = url.searchParams.get('watchlistId');
+		const watched = parseWatchedFilter(url.searchParams.get('watched'));
+		const updated = await watchAllInbox(env.DB, user.id, channelId, categoryId, view, watchlistId, watched);
+		return json({ updated });
 	}
 
 	if (path.startsWith('/api/inbox/') && request.method === 'PATCH') {
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		const videoId = decodeURIComponent(path.slice('/api/inbox/'.length));
-		const body = await readJson<{ action?: string; until?: string; notes?: string }>(request);
+		const body = await readJson<{
+			action?: string;
+			until?: string;
+			notes?: string;
+			playbackSeconds?: number;
+			lastPositionSeconds?: number;
+			ended?: boolean;
+		}>(request);
 		if (!body?.action) return apiError(400, 'invalid_json', 'Expected an action.');
 		if (body.action === 'delete') {
 			const ok = await hideInboxItem(env.DB, user.id, videoId);
@@ -395,6 +419,28 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			const ok = await updateInboxNotes(env.DB, user.id, videoId, typeof body.notes === 'string' ? body.notes : '');
 			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
 			return json({ ok: true });
+		}
+		if (body.action === 'progress') {
+			if (typeof body.playbackSeconds !== 'number' || !Number.isFinite(body.playbackSeconds)) {
+				return apiError(400, 'invalid_progress', 'Expected playbackSeconds.');
+			}
+			const watch = await applyInboxProgress(env.DB, user.id, videoId, {
+				playbackSeconds: body.playbackSeconds,
+				lastPositionSeconds: body.lastPositionSeconds,
+				ended: body.ended,
+			});
+			if (!watch) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true, ...watch });
+		}
+		if (body.action === 'watch') {
+			const watch = await markInboxWatched(env.DB, user.id, videoId);
+			if (!watch) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true, ...watch });
+		}
+		if (body.action === 'unwatch') {
+			const watch = await unwatchInboxItem(env.DB, user.id, videoId);
+			if (!watch) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true, ...watch });
 		}
 		return apiError(400, 'invalid_action', 'Unknown inbox action.');
 	}

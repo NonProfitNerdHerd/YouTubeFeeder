@@ -16,5 +16,5 @@
 		"skipLibCheck": true,
 		"types": ["./worker-configuration.d.ts", "@cloudflare/workers-types"]
 	},
-		"include": ["worker", "worker-configuration.d.ts", "src/lib/classifyVideo.ts", "src/lib/androidRelease.ts", "src/types/index.ts"]
+		"include": ["worker", "worker-configuration.d.ts", "src/lib/classifyVideo.ts", "src/lib/androidRelease.ts", "src/lib/watchProgress.ts", "src/types/index.ts"]
 }

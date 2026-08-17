@@ -11,11 +11,17 @@ private val Context.dataStore by preferencesDataStore("streamfeeder")
 
 class SessionStore(private val context: Context) {
     private val tokenKey = stringPreferencesKey("session_token")
+    private val themeKey = stringPreferencesKey("app_theme")
 
     val tokenFlow: Flow<String?> = context.dataStore.data.map { it[tokenKey] }
+    val themeFlow: Flow<AppTheme?> = context.dataStore.data.map { AppTheme.fromStorage(it[themeKey]) }
 
     suspend fun saveToken(token: String) {
         context.dataStore.edit { it[tokenKey] = token }
+    }
+
+    suspend fun saveTheme(theme: AppTheme) {
+        context.dataStore.edit { it[themeKey] = theme.storage }
     }
 
     suspend fun clear() {
