@@ -516,7 +516,7 @@
 
 .sub-row.watchlist-row {
 	display: grid;
-	grid-template-columns: 28px minmax(0, 1fr) 28px 28px;
+	grid-template-columns: minmax(0, 1fr) 28px 28px;
 	align-items: center;
 	gap: 4px;
 }

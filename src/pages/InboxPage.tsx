@@ -667,6 +667,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 
 	const phoneLayout = androidClient || narrow;
 	const streamsThreeCol = !androidClient && !phoneLayout && leftTab === 'streams';
+	const watchlistThreeCol = !androidClient && !phoneLayout && leftTab === 'watchlist';
+	const feedThreeCol = streamsThreeCol || watchlistThreeCol;
 	const streamsList = categoryId
 		? channels.filter((ch) => ch.categoryIds.includes(categoryId))
 		: channels;
@@ -1176,7 +1178,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				<LivePage sidebarOpen={liveSidebarOpen} onHeaderStatus={setLiveHeaderStatus} onGridChrome={setLiveGridChrome} />
 			) : (
 			<div
-				className={`${phoneLayout && selectedVideo ? 'home mobile-detail' : 'home'}${streamsThreeCol ? ' home-streams' : ''}`}
+				className={`${phoneLayout && selectedVideo ? 'home mobile-detail' : 'home'}${feedThreeCol ? ' home-streams' : ''}`}
 			>
 				<aside className="subs">
 					{leftTab === 'inbox' ? (
@@ -1311,83 +1313,66 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									Add
 								</button>
 							</form>
-							{watchlists.map((list) => {
-								const expanded = watchlistId === list.id;
-								return (
-									<div key={list.id} className="watchlist-group">
-										<div className={expanded ? 'sub-row active watchlist-row' : 'sub-row watchlist-row'}>
-											<button
-												className="caret-btn"
-												type="button"
-												aria-label={expanded ? 'Collapse watchlist' : 'Expand watchlist'}
-												aria-expanded={expanded}
-												onClick={() => {
-													setWatchlistId(expanded ? null : list.id);
-													setSelectedVideoId(null);
+							{watchlists.map((list) => (
+								<div key={list.id} className={watchlistId === list.id ? 'sub-row active watchlist-row' : 'sub-row watchlist-row'}>
+									{renamingId === list.id ? (
+										<form className="watchlist-rename" onSubmit={(e) => void saveWatchlistName(e)}>
+											<input
+												value={renameValue}
+												onChange={(e) => setRenameValue(e.target.value)}
+												aria-label="Watchlist name"
+												autoFocus
+												onKeyDown={(e) => {
+													if (e.key === 'Escape') {
+														e.preventDefault();
+														setRenamingId(null);
+													}
 												}}
-											>
-												<span className={expanded ? 'caret open' : 'caret'} aria-hidden="true" />
+											/>
+											<button className="ghost tiny" type="submit">
+												Save
 											</button>
-											{renamingId === list.id ? (
-												<form className="watchlist-rename" onSubmit={(e) => void saveWatchlistName(e)}>
-													<input
-														value={renameValue}
-														onChange={(e) => setRenameValue(e.target.value)}
-														aria-label="Watchlist name"
-														autoFocus
-														onKeyDown={(e) => {
-															if (e.key === 'Escape') {
-																e.preventDefault();
-																setRenamingId(null);
-															}
-														}}
-													/>
-													<button className="ghost tiny" type="submit">
-														Save
-													</button>
-												</form>
-											) : (
-												<button
-													className="sub watchlist-name"
-													type="button"
-													onClick={() => {
-														setWatchlistId(expanded ? null : list.id);
-														setSelectedVideoId(null);
-													}}
-												>
-													{list.name} ({list.videoCount})
-												</button>
-											)}
-											<button
-												className="icon-btn"
-												type="button"
-												title="Rename watchlist"
-												aria-label="Rename watchlist"
-												onClick={() => {
-													setRenamingId(list.id);
-													setRenameValue(list.name);
-												}}
-											>
-												<IconPencil />
-											</button>
-											{list.videoCount === 0 ? (
-												<button
-													className="icon-btn"
-													type="button"
-													title="Delete watchlist"
-													aria-label="Delete watchlist"
-													onClick={() => void removeWatchlist(list.id, list.videoCount)}
-												>
-													<IconTrash />
-												</button>
-											) : (
-												<span className="icon-btn-spacer" aria-hidden="true" />
-											)}
-										</div>
-										{expanded ? renderFeed(items, true, 'watchlist') : null}
-									</div>
-								);
-							})}
+										</form>
+									) : (
+										<button
+											className="sub watchlist-name"
+											type="button"
+											onClick={() => {
+												setWatchlistId(list.id);
+												setSelectedVideoId(null);
+												setRenamingId(null);
+											}}
+										>
+											{list.name} ({list.videoCount})
+										</button>
+									)}
+									<button
+										className="icon-btn"
+										type="button"
+										title="Rename watchlist"
+										aria-label="Rename watchlist"
+										onClick={() => {
+											setRenamingId(list.id);
+											setRenameValue(list.name);
+										}}
+									>
+										<IconPencil />
+									</button>
+									{list.videoCount === 0 ? (
+										<button
+											className="icon-btn"
+											type="button"
+											title="Delete watchlist"
+											aria-label="Delete watchlist"
+											onClick={() => void removeWatchlist(list.id, list.videoCount)}
+										>
+											<IconTrash />
+										</button>
+									) : (
+										<span className="icon-btn-spacer" aria-hidden="true" />
+									)}
+								</div>
+							))}
 							{watchlists.length === 0 ? <p className="muted pad">Create a watchlist, then add videos from Inbox.</p> : null}
 						</div>
 					) : null}
@@ -1470,6 +1455,15 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						</div>
 					</aside>
 				) : null}
+				{watchlistThreeCol ? (
+					<aside className="subs streams-video-list" aria-label="Watchlist videos">
+						<div className="left-scroll">
+							{watchlistId
+								? renderFeed(items, true, 'watchlist')
+								: <p className="muted pad">Select a watchlist to see saved videos.</p>}
+						</div>
+					</aside>
+				) : null}
 				<section className="feed">
 					{phoneLayout && selectedVideo ? (
 						<button
@@ -1489,9 +1483,24 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					{leftTab === 'snoozed' && !selectedVideo ? <p className="muted">No snoozed videos.</p> : null}
 					{leftTab === 'deleted' && selectedVideo ? renderPreview(selectedVideo, 'deleted') : null}
 					{leftTab === 'deleted' && !selectedVideo ? <p className="muted">No deleted videos.</p> : null}
-					{leftTab === 'watchlist' && watchlistId && selectedVideo ? renderPreview(selectedVideo, 'watchlist') : null}
-					{leftTab === 'watchlist' && watchlistId && !selectedVideo ? <p className="muted">No videos in this watchlist.</p> : null}
-					{leftTab === 'watchlist' && !watchlistId ? <p className="muted">Select a watchlist to see saved videos.</p> : null}
+					{leftTab === 'watchlist' && watchlistThreeCol ? (
+						selectedVideo ? (
+							renderPreview(selectedVideo, 'watchlist')
+						) : (
+							<p className="muted">
+								{watchlistId ? 'Select a video to preview.' : 'Select a watchlist, then a video to preview.'}
+							</p>
+						)
+					) : null}
+					{leftTab === 'watchlist' && !watchlistThreeCol && watchlistId && selectedVideo
+						? renderPreview(selectedVideo, 'watchlist')
+						: null}
+					{leftTab === 'watchlist' && !watchlistThreeCol && watchlistId && !selectedVideo
+						? renderFeed(items, true, 'watchlist')
+						: null}
+					{leftTab === 'watchlist' && !watchlistThreeCol && !watchlistId ? (
+						<p className="muted">Select a watchlist to see saved videos.</p>
+					) : null}
 					{streamsThreeCol ? (
 						selectedVideo ? (
 							renderPreview(selectedVideo, 'streams')

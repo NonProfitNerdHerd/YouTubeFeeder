@@ -286,8 +286,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 	if (path.startsWith('/api/watchlists/') && request.method === 'PATCH') {
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
+		// IDs may contain '/' (legacy base64 from randomToken); take the full remainder.
 		const id = decodeURIComponent(path.slice('/api/watchlists/'.length));
-		if (!id || id.includes('/')) return apiError(400, 'invalid_json', 'Expected a watchlist id.');
+		if (!id || id.includes('/items')) return apiError(400, 'invalid_json', 'Expected a watchlist id.');
 		const body = await readJson<{ name?: string }>(request);
 		try {
 			const watchlist = await renameWatchlist(env.DB, user.id, id, body?.name ?? '');
@@ -304,7 +305,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		const rest = decodeURIComponent(path.slice('/api/watchlists/'.length));
-		const itemMatch = rest.match(/^([^/]+)\/items\/([^/]+)$/);
+		const itemMatch = rest.match(/^(.+)\/items\/([^/]+)$/);
 		if (itemMatch) {
 			await removeFromWatchlist(env.DB, user.id, itemMatch[1], itemMatch[2]);
 			return json({ ok: true });

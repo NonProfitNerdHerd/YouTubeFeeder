@@ -60,5 +60,6 @@ export async function verifySignedValue(secret: string, token: string): Promise<
 
 export function randomToken(bytes = 32): string {
 	const arr = crypto.getRandomValues(new Uint8Array(bytes));
-	return bytesToBase64(arr);
+	// URL-safe: watchlist/category ids appear in path segments (standard base64 can include '/').
+	return bytesToBase64(arr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
