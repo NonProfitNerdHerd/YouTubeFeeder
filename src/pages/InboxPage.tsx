@@ -1016,7 +1016,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									>
 										<IconRestore />
 									</button>
-									{youtubeOpenButton(item)}
 									{watchlistButton(item)}
 								</>
 							) : actions === 'streams' ? (
@@ -1030,7 +1029,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									>
 										<IconTrash />
 									</button>
-									{youtubeOpenButton(item)}
 									{watchlistButton(item)}
 								</>
 							) : (
@@ -1078,7 +1076,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 											<IconClock />
 										</button>
 									)}
-									{youtubeOpenButton(item)}
 									{actions === 'inbox' || actions === 'snoozed' ? watchlistButton(item) : null}
 								</>
 							)}

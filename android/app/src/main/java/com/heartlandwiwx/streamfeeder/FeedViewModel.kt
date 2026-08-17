@@ -24,8 +24,8 @@ enum class FeedView(val api: String, val label: String) {
     Inbox("inbox", "Inbox"),
     Watchlist("watchlist", "Watchlist"),
     Snoozed("snoozed", "Snoozed"),
-    Streams("inbox", "Streams"),
-    Categories("inbox", "Categories"),
+    Streams("inbox", "Subscriptions"),
+    Categories("inbox", "By Category"),
     Deleted("deleted", "Deleted"),
 }
 

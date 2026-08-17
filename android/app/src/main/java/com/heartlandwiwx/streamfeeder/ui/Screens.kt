@@ -182,7 +182,6 @@ fun FeedScreen(
     onCloseStream: () -> Unit,
     onOpen: (InboxItem) -> Unit,
     onClose: () -> Unit,
-    onRefresh: () -> Unit,
     onSignOut: () -> Unit,
     onDelete: () -> Unit,
     onRestore: () -> Unit,
@@ -203,7 +202,6 @@ fun FeedScreen(
     onCreateCategory: (String) -> Unit,
     onRenameCategory: (String, String) -> Unit,
     onDeleteCategory: (String) -> Unit,
-    onSyncSubscriptions: () -> Unit,
     onCatchUp: () -> Unit,
     onOpenEditChannel: (ChannelRecord) -> Unit,
     onCloseEditChannel: () -> Unit,
@@ -287,7 +285,6 @@ fun FeedScreen(
             current = state.view,
             currentWatchlistId = state.watchlistId,
             watchlists = state.watchlists,
-            syncing = state.syncing,
             onClose = { navOpen = false },
             onSelect = { view ->
                 navOpen = false
@@ -297,15 +294,6 @@ fun FeedScreen(
                 navOpen = false
                 onSelectView(FeedView.Watchlist)
                 onSelectWatchlist(id)
-            },
-            onSyncSubscriptions = {
-                navOpen = false
-                onSelectView(FeedView.Streams)
-                onSyncSubscriptions()
-            },
-            onRefresh = {
-                navOpen = false
-                onRefresh()
             },
             onSignOut = {
                 navOpen = false
@@ -1090,7 +1078,7 @@ private fun StreamsListPanel(
         if (filteredChannels.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    if (channels.isEmpty()) "No streams yet. Sync from the menu under Streams."
+                    if (channels.isEmpty()) "No subscriptions yet."
                     else "No streams in this category.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1359,7 +1347,7 @@ private fun EditChannelDialog(
                 )
                 Text("Categories", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
                 if (state.categories.isEmpty()) {
-                    Text("Add a category in Categories first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Add a category in By Category first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 state.categories.forEach { cat ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1604,12 +1592,9 @@ private fun FullScreenNav(
     current: FeedView,
     currentWatchlistId: String?,
     watchlists: List<WatchlistRecord>,
-    syncing: Boolean,
     onClose: () -> Unit,
     onSelect: (FeedView) -> Unit,
     onSelectWatchlist: (String) -> Unit,
-    onSyncSubscriptions: () -> Unit,
-    onRefresh: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     Column(
@@ -1630,6 +1615,11 @@ private fun FullScreenNav(
             onClick = { onSelect(FeedView.Inbox) },
         )
         NavSubItem(
+            label = FeedView.Categories.label,
+            selected = current == FeedView.Categories,
+            onClick = { onSelect(FeedView.Categories) },
+        )
+        NavSubItem(
             label = FeedView.Snoozed.label,
             selected = current == FeedView.Snoozed,
             onClick = { onSelect(FeedView.Snoozed) },
@@ -1638,6 +1628,11 @@ private fun FullScreenNav(
             label = FeedView.Deleted.label,
             selected = current == FeedView.Deleted,
             onClick = { onSelect(FeedView.Deleted) },
+        )
+        NavSubItem(
+            label = FeedView.Streams.label,
+            selected = current == FeedView.Streams,
+            onClick = { onSelect(FeedView.Streams) },
         )
         NavTopItem(
             label = FeedView.Watchlist.label,
@@ -1651,27 +1646,6 @@ private fun FullScreenNav(
                 onClick = { onSelectWatchlist(list.id) },
             )
         }
-        NavTopItem(
-            label = FeedView.Streams.label,
-            selected = current == FeedView.Streams,
-            onClick = { onSelect(FeedView.Streams) },
-        )
-        NavSubItem(
-            label = FeedView.Categories.label,
-            selected = current == FeedView.Categories,
-            onClick = { onSelect(FeedView.Categories) },
-        )
-        NavSubItem(
-            label = if (syncing) "Syncing…" else "Sync Subscriptions",
-            selected = false,
-            enabled = !syncing,
-            onClick = onSyncSubscriptions,
-        )
-        NavSubItem(
-            label = "Refresh",
-            selected = false,
-            onClick = onRefresh,
-        )
         NavTopItem(
             label = "Settings",
             selected = false,
