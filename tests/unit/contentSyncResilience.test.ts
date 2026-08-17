@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { syncContent, syncSubscriptions } from '../../worker/services/sync';
+import { syncAllDueContent, syncContent, syncSubscriptions } from '../../worker/services/sync';
 import { YoutubeApiError, type YoutubeClient } from '../../worker/services/youtube';
 import { formatSyncCompletion, skippedChannelNames } from '../../src/lib/syncStatus';
 import { asEnv, MemorySyncDb } from './helpers/memorySyncDb';
@@ -358,6 +358,87 @@ describe('content sync playlist resilience', () => {
 		expect(skipped).toBe(1);
 		expect(db.videos.size).toBe(95);
 	});
+
+	it('pages past 15 uploads until the newest-seen watermark', async () => {
+		const db = new MemorySyncDb();
+		db.seedChannel({
+			channel_id: 'UCnews',
+			uploads_playlist_id: 'UUnews',
+			newest_seen_published_at: '2026-08-17T10:00:00Z',
+		});
+		const yt = mockYt(async (path, params) => {
+			if (path === 'playlistItems') {
+				return {
+					items: Array.from({ length: 21 }, (_, idx) => {
+						const hour = 20 - idx;
+						return {
+							contentDetails: { videoId: `v${hour}` },
+							snippet: { publishedAt: `2026-08-17T${String(hour).padStart(2, '0')}:00:00Z` },
+						};
+					}),
+				};
+			}
+			if (path === 'videos') {
+				const ids = (params.id ?? '').split(',').filter(Boolean);
+				return {
+					items: ids.map((id) => {
+						const hour = id.replace(/^v/, '');
+						return videoItem(id, 'UCnews', `2026-08-17T${hour.padStart(2, '0')}:00:00Z`);
+					}),
+				};
+			}
+			throw new Error(path);
+		});
+		const result = await syncContent(asEnv(db), 'user-1', 'token', 0, yt);
+		expect(result.status).toBe('ok');
+		expect(result.videosAdded).toBe(10);
+		expect(db.videos.has('v20')).toBe(true);
+		expect(db.videos.has('v11')).toBe(true);
+		expect(db.videos.has('v10')).toBe(false);
+		expect(db.inbox.has('user-1:v20')).toBe(true);
+		expect(db.inbox.has('user-1:v10')).toBe(false);
+	});
+
+	it('stale-first batches check the oldest channel before newer ones', async () => {
+		const db = new MemorySyncDb();
+		seedN(db, 11);
+		for (let i = 0; i < 11; i += 1) {
+			db.channels.get(`UC${i}`)!.last_synchronized_at = '2026-08-17T12:00:00Z';
+		}
+		db.channels.get('UC10')!.last_synchronized_at = '2026-08-16T00:00:00Z';
+		const yt = mockYt(defaultHandler());
+		const first = await syncContent(asEnv(db), 'user-1', 'token', 0, yt, { staleBefore: '2026-08-18T00:00:00Z' });
+		expect(first.channelsChecked).toBe(8);
+		expect(db.channels.get('UC10')?.last_synchronized_at).not.toBe('2026-08-16T00:00:00Z');
+	});
+
+	it('syncAllDueContent checks every due channel across batches', async () => {
+		const db = new MemorySyncDb();
+		seedN(db, 11);
+		const yt = mockYt(defaultHandler());
+		const result = await syncAllDueContent(asEnv(db), 'user-1', 'token', yt);
+		expect(result.status).toBe('ok');
+		expect(result.done).toBe(true);
+		expect(result.channelsChecked).toBe(11);
+		expect(db.videos.size).toBe(11);
+	});
+
+	it('skipped channels are stamped so they do not block later due channels', async () => {
+		const db = new MemorySyncDb();
+		seedN(db, 9, [0]);
+		db.channels.get('UC0')!.last_synchronized_at = '2026-08-01T00:00:00Z';
+		const yt = mockYt(
+			defaultHandler({
+				failPlaylists: new Set(['UU_BAD_0']),
+				missingChannels: new Set(['UC0']),
+			}),
+		);
+		const result = await syncAllDueContent(asEnv(db), 'user-1', 'token', yt);
+		expect(result.channelsSkipped).toBe(1);
+		expect(result.channelsChecked).toBe(9);
+		expect(db.channels.get('UC0')?.last_synchronized_at).not.toBe('2026-08-01T00:00:00Z');
+		expect(db.videos.has('v_UC8')).toBe(true);
+	});
 });
 
 describe('subscription uploads playlist refresh', () => {
@@ -400,6 +481,32 @@ describe('subscription uploads playlist refresh', () => {
 		expect(result.status).toBe('ok');
 		expect(db.channels.get('UCgood')?.uploads_playlist_id).toBe('UUgood');
 		expect(db.channels.get('UCstale')?.uploads_playlist_id).toBeNull();
+	});
+
+	it('does not overwrite last_synchronized_at on existing channels', async () => {
+		const db = new MemorySyncDb();
+		db.seedChannel({
+			channel_id: 'UCgood',
+			title: 'Good',
+			uploads_playlist_id: 'UUold',
+			last_synchronized_at: '2026-08-01T00:00:00Z',
+		});
+		const yt = mockYt(async (path) => {
+			if (path === 'subscriptions') {
+				return {
+					items: [{ snippet: { title: 'Good', resourceId: { channelId: 'UCgood' }, thumbnails: {} } }],
+				};
+			}
+			if (path === 'channels') {
+				return {
+					items: [{ id: 'UCgood', contentDetails: { relatedPlaylists: { uploads: 'UUgood' } } }],
+				};
+			}
+			throw new Error(path);
+		});
+		await syncSubscriptions(asEnv(db), 'user-1', 'token', yt);
+		expect(db.channels.get('UCgood')?.last_synchronized_at).toBe('2026-08-01T00:00:00Z');
+		expect(db.channels.get('UCgood')?.uploads_playlist_id).toBe('UUgood');
 	});
 });
 

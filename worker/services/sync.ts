@@ -31,7 +31,10 @@ interface ChannelPage {
 
 interface PlaylistPage {
 	nextPageToken?: string;
-	items?: Array<{ contentDetails?: { videoId?: string } }>;
+	items?: Array<{
+		contentDetails?: { videoId?: string };
+		snippet?: { publishedAt?: string };
+	}>;
 }
 
 interface VideosPage {
@@ -129,6 +132,13 @@ function rethrowIfGlobal(error: unknown): void {
 	throw error;
 }
 
+const INCREMENTAL_WANT = 15;
+const INCREMENTAL_MAX = 100;
+const PLAYLIST_PAGE = 50;
+const CONTENT_BATCH = 8;
+const CATCHUP_PAGE = 50;
+const MAX_CONTENT_BATCHES = 256;
+
 async function recordRun(db: D1Database, userId: string, result: SyncResult, startedAt: string): Promise<void> {
 	await db
 		.prepare(
@@ -189,14 +199,13 @@ export async function syncSubscriptions(
 		for (const group of chunk(rows, 20)) {
 			const statements = group.map((row) =>
 				env.DB.prepare(
-					`INSERT INTO channels (channel_id, title, description, thumbnail_url, subscribed, last_synchronized_at)
-					 VALUES (?, ?, ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+					`INSERT INTO channels (channel_id, title, description, thumbnail_url, subscribed)
+					 VALUES (?, ?, ?, ?, 1)
 					 ON CONFLICT(channel_id) DO UPDATE SET
 						title = excluded.title,
 						description = excluded.description,
 						thumbnail_url = excluded.thumbnail_url,
-						subscribed = 1,
-						last_synchronized_at = excluded.last_synchronized_at`,
+						subscribed = 1`,
 				).bind(row.channelId, row.title, row.description, row.thumbnailUrl),
 			);
 			await env.DB.batch(statements);
@@ -270,28 +279,40 @@ async function fetchPlaylistPage(
 	playlistId: string,
 	pageToken: string,
 	want: number,
-): Promise<{ ids: string[]; nextPageToken: string }> {
+): Promise<{ items: Array<{ videoId: string; publishedAt: string | null }>; nextPageToken: string }> {
 	const params: Record<string, string> = {
-		part: 'contentDetails',
+		part: 'snippet,contentDetails',
 		playlistId,
 		maxResults: String(Math.min(50, Math.max(1, want))),
 	};
 	if (pageToken) params.pageToken = pageToken;
 	const page = await yt.getJson<PlaylistPage>('playlistItems', params);
-	const ids: string[] = [];
+	const items: Array<{ videoId: string; publishedAt: string | null }> = [];
 	for (const item of page.items ?? []) {
-		if (item.contentDetails?.videoId) ids.push(item.contentDetails.videoId);
-		if (ids.length >= want) break;
+		const videoId = item.contentDetails?.videoId;
+		if (!videoId) continue;
+		items.push({ videoId, publishedAt: item.snippet?.publishedAt ?? null });
+		if (items.length >= want) break;
 	}
-	return { ids, nextPageToken: page.nextPageToken ?? '' };
+	return { items, nextPageToken: page.nextPageToken ?? '' };
 }
 
-async function fetchPlaylistIds(yt: YoutubeClient, playlistId: string, want: number): Promise<string[]> {
+async function fetchIncrementalVideoIds(
+	yt: YoutubeClient,
+	playlistId: string,
+	watermark: string | null,
+): Promise<string[]> {
 	const ids: string[] = [];
 	let pageToken = '';
+	const want = watermark ? INCREMENTAL_MAX : INCREMENTAL_WANT;
+	const pageSize = watermark ? PLAYLIST_PAGE : INCREMENTAL_WANT;
 	while (ids.length < want) {
-		const page = await fetchPlaylistPage(yt, playlistId, pageToken, want - ids.length);
-		ids.push(...page.ids);
+		const page = await fetchPlaylistPage(yt, playlistId, pageToken, Math.min(pageSize, want - ids.length));
+		for (const item of page.items) {
+			if (watermark && item.publishedAt && item.publishedAt <= watermark) return ids;
+			ids.push(item.videoId);
+			if (ids.length >= want) break;
+		}
 		if (!page.nextPageToken) break;
 		pageToken = page.nextPageToken;
 	}
@@ -323,13 +344,29 @@ type ChannelSyncRow = {
 	follow_in_inbox: number;
 	max_videos_to_pull: number;
 	newest_seen_published_at: string | null;
+	last_synchronized_at: string | null;
 };
 
 async function touchChannelSync(db: D1Database, channelId: string): Promise<void> {
 	await db
-		.prepare(`UPDATE channels SET last_synchronized_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE channel_id = ?`)
-		.bind(channelId)
+		.prepare('UPDATE channels SET last_synchronized_at = ? WHERE channel_id = ?')
+		.bind(new Date().toISOString(), channelId)
 		.run();
+}
+
+async function skipChannel(
+	env: Env,
+	params: { channelId: string; channelTitle: string; playlistId: string; reason: SyncWarningCode },
+): Promise<ChannelContentSyncOutcome> {
+	logChannelSkip(params);
+	await touchChannelSync(env.DB, params.channelId);
+	return {
+		status: 'skipped',
+		channelId: params.channelId,
+		channelTitle: params.channelTitle,
+		playlistId: params.playlistId,
+		reason: params.reason,
+	};
 }
 
 async function updateUploadsPlaylist(db: D1Database, channelId: string, playlistId: string): Promise<void> {
@@ -338,10 +375,6 @@ async function updateUploadsPlaylist(db: D1Database, channelId: string, playlist
 		.bind(playlistId, channelId)
 		.run();
 }
-
-const INCREMENTAL_WANT = 15;
-const CONTENT_BATCH = 8;
-const CATCHUP_PAGE = 50;
 
 async function syncChannelUploads(
 	env: Env,
@@ -352,7 +385,7 @@ async function syncChannelUploads(
 	const storedPlaylist = ch.uploads_playlist_id;
 
 	try {
-		const ids = await fetchPlaylistIds(yt, storedPlaylist, INCREMENTAL_WANT);
+		const ids = await fetchIncrementalVideoIds(yt, storedPlaylist, ch.newest_seen_published_at);
 		await touchChannelSync(env.DB, ch.channel_id);
 		return { status: 'ok', channelId: ch.channel_id, videoIds: ids };
 	} catch (error) {
@@ -370,63 +403,39 @@ async function syncChannelUploads(
 	}
 
 	if (!refreshed) {
-		const reason: SyncWarningCode = 'channel_unavailable';
-		logChannelSkip({
+		return skipChannel(env, {
 			channelId: ch.channel_id,
 			channelTitle,
 			playlistId: storedPlaylist,
-			reason,
+			reason: 'channel_unavailable',
 		});
-		return {
-			status: 'skipped',
-			channelId: ch.channel_id,
-			channelTitle,
-			playlistId: storedPlaylist,
-			reason,
-		};
 	}
 
 	if (refreshed === storedPlaylist) {
-		const reason: SyncWarningCode = 'uploads_playlist_not_found';
-		logChannelSkip({
+		return skipChannel(env, {
 			channelId: ch.channel_id,
 			channelTitle,
 			playlistId: storedPlaylist,
-			reason,
+			reason: 'uploads_playlist_not_found',
 		});
-		return {
-			status: 'skipped',
-			channelId: ch.channel_id,
-			channelTitle,
-			playlistId: storedPlaylist,
-			reason,
-		};
 	}
 
 	await updateUploadsPlaylist(env.DB, ch.channel_id, refreshed);
 	ch.uploads_playlist_id = refreshed;
 
 	try {
-		const ids = await fetchPlaylistIds(yt, refreshed, INCREMENTAL_WANT);
+		const ids = await fetchIncrementalVideoIds(yt, refreshed, ch.newest_seen_published_at);
 		await touchChannelSync(env.DB, ch.channel_id);
 		return { status: 'ok', channelId: ch.channel_id, videoIds: ids };
 	} catch (error) {
 		rethrowIfGlobal(error);
 		if (error instanceof YoutubeApiError && error.isPlaylistNotFound) {
-			const reason: SyncWarningCode = 'uploads_playlist_not_found';
-			logChannelSkip({
+			return skipChannel(env, {
 				channelId: ch.channel_id,
 				channelTitle,
 				playlistId: refreshed,
-				reason,
+				reason: 'uploads_playlist_not_found',
 			});
-			return {
-				status: 'skipped',
-				channelId: ch.channel_id,
-				channelTitle,
-				playlistId: refreshed,
-				reason,
-			};
 		}
 		throw error;
 	}
@@ -545,7 +554,7 @@ export async function syncContent(
 	accessToken: string,
 	offset = 0,
 	ytClient?: YoutubeClient,
-	opts?: { categoryId?: string | null; allSubscribed?: boolean },
+	opts?: { categoryId?: string | null; allSubscribed?: boolean; staleBefore?: string },
 ): Promise<SyncResult> {
 	const startedAt = new Date().toISOString();
 	const yt = ytClient ?? createYoutubeClient(accessToken);
@@ -554,10 +563,12 @@ export async function syncContent(
 	try {
 		const categoryId = opts?.categoryId?.trim() || null;
 		const allSubscribed = opts?.allSubscribed === true;
+		const staleBefore = opts?.staleBefore?.trim() || null;
 		let sql = `SELECT c.channel_id, c.title, c.uploads_playlist_id,
 				COALESCE(p.follow_in_inbox, 1) AS follow_in_inbox,
 				COALESCE(p.max_videos_to_pull, 0) AS max_videos_to_pull,
-				p.newest_seen_published_at
+				p.newest_seen_published_at,
+				c.last_synchronized_at
 			 FROM channels c
 			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
 			 WHERE c.subscribed = 1 AND c.uploads_playlist_id IS NOT NULL`;
@@ -566,11 +577,16 @@ export async function syncContent(
 			sql += ` AND c.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)`;
 			binds.push(userId, categoryId);
 		}
+		if (staleBefore) {
+			sql += ` AND (c.last_synchronized_at IS NULL OR c.last_synchronized_at < ?)
+				ORDER BY CASE WHEN c.last_synchronized_at IS NULL THEN 0 ELSE 1 END, c.last_synchronized_at ASC, c.channel_id ASC`;
+			binds.push(staleBefore);
+		}
 		const channels = await env.DB.prepare(sql).bind(...binds).all<ChannelSyncRow>();
 		const list = (channels.results ?? []).filter((ch) =>
 			categoryId || allSubscribed ? true : ch.follow_in_inbox === 1 || ch.max_videos_to_pull > 0,
 		);
-		const batch = list.slice(offset, offset + CONTENT_BATCH);
+		const batch = staleBefore ? list.slice(0, CONTENT_BATCH) : list.slice(offset, offset + CONTENT_BATCH);
 		const outcomes = await mapPool(batch, 3, (ch) => syncChannelUploads(env, yt, ch));
 
 		const idsByChannel = new Map<string, string[]>();
@@ -607,7 +623,7 @@ export async function syncContent(
 			videosUpdated += counts.updated;
 		}
 
-		const nextOffset = offset + batch.length;
+		const nextOffset = staleBefore ? batch.length : offset + batch.length;
 		const result: SyncResult = {
 			syncType: 'content',
 			status: 'ok',
@@ -618,7 +634,7 @@ export async function syncContent(
 			estimatedQuotaUnits: yt.quotaUsed,
 			errorSummary: null,
 			warnings: warnings.length ? warnings : undefined,
-			done: nextOffset >= list.length,
+			done: staleBefore ? batch.length < CONTENT_BATCH : nextOffset >= list.length,
 			nextOffset,
 			totalChannels: list.length,
 		};
@@ -640,6 +656,73 @@ export async function syncContent(
 	}
 }
 
+export async function syncAllDueContent(
+	env: Env,
+	userId: string,
+	accessToken: string,
+	ytClient?: YoutubeClient,
+): Promise<SyncResult> {
+	const yt = ytClient ?? createYoutubeClient(accessToken);
+	const staleBefore = new Date().toISOString();
+	let videosAdded = 0;
+	let videosUpdated = 0;
+	let channelsChecked = 0;
+	let channelsSkipped = 0;
+	const warnings: SyncWarning[] = [];
+	let last: SyncResult | null = null;
+	for (let guard = 0; guard < MAX_CONTENT_BATCHES; guard += 1) {
+		const result = await syncContent(env, userId, accessToken, 0, yt, { staleBefore });
+		last = result;
+		channelsChecked += result.channelsChecked;
+		channelsSkipped += result.channelsSkipped ?? 0;
+		videosAdded += result.videosAdded;
+		videosUpdated += result.videosUpdated;
+		if (result.warnings) {
+			for (const warning of result.warnings) {
+				if (warnings.length < MAX_SYNC_WARNINGS) warnings.push(warning);
+			}
+		}
+		if (result.status !== 'ok') {
+			return {
+				...result,
+				channelsChecked,
+				channelsSkipped,
+				videosAdded,
+				videosUpdated,
+				estimatedQuotaUnits: yt.quotaUsed,
+				warnings: warnings.length ? warnings : undefined,
+				done: false,
+			};
+		}
+		if (result.done || result.channelsChecked === 0) break;
+	}
+	const summary: SyncResult = {
+		syncType: 'content',
+		status: last?.status ?? 'ok',
+		channelsChecked,
+		channelsSkipped,
+		videosAdded,
+		videosUpdated,
+		estimatedQuotaUnits: yt.quotaUsed,
+		errorSummary: last?.errorSummary ?? null,
+		warnings: warnings.length ? warnings : undefined,
+		done: true,
+		totalChannels: channelsChecked,
+	};
+	console.log(
+		JSON.stringify({
+			operation: 'cron_content_sync',
+			userId,
+			status: summary.status,
+			channelsChecked,
+			channelsSkipped,
+			videosAdded,
+			estimatedQuotaUnits: yt.quotaUsed,
+		}),
+	);
+	return summary;
+}
+
 export async function catchUpChannel(
 	env: Env,
 	userId: string,
@@ -655,7 +738,8 @@ export async function catchUpChannel(
 			`SELECT c.channel_id, c.title, c.uploads_playlist_id,
 				COALESCE(p.follow_in_inbox, 1) AS follow_in_inbox,
 				COALESCE(p.max_videos_to_pull, 0) AS max_videos_to_pull,
-				p.newest_seen_published_at
+				p.newest_seen_published_at,
+				c.last_synchronized_at
 			 FROM channels c
 			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
 			 WHERE c.channel_id = ? AND c.subscribed = 1`,
@@ -702,18 +786,15 @@ export async function catchUpChannel(
 			};
 		}
 		const page = await fetchPlaylistPage(yt, ch.uploads_playlist_id, pageToken, Math.min(CATCHUP_PAGE, remaining));
-		const details = await fetchVideoDetails(yt, page.ids);
-		const videos = page.ids
+		const pageIds = page.items.map((item) => item.videoId);
+		const details = await fetchVideoDetails(yt, pageIds);
+		const videos = pageIds
 			.map((id) => details.get(id))
 			.filter((video): video is NonNullable<VideosPage['items']>[number] => Boolean(video?.id && video.snippet));
 		videos.sort((a, b) => Date.parse(b.snippet?.publishedAt ?? '') - Date.parse(a.snippet?.publishedAt ?? ''));
 		const counts = await ingestChannelVideos(env, userId, ch, videos, 'catchup');
-		await env.DB.prepare(
-			`UPDATE channels SET last_synchronized_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE channel_id = ?`,
-		)
-			.bind(ch.channel_id)
-			.run();
-		const nextPulled = pulled + page.ids.length;
+		await touchChannelSync(env.DB, ch.channel_id);
+		const nextPulled = pulled + pageIds.length;
 		const done = !page.nextPageToken || nextPulled >= want;
 		const result: SyncResult = {
 			syncType: 'content',

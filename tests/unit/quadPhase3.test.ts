@@ -83,9 +83,10 @@ describe('quad phase 3 intervals and UI copy', () => {
 
 	it('scheduled handler runs Feed and Quad in separate waitUntil blocks', () => {
 		const index = readFileSync(new URL('../../worker/index.ts', import.meta.url), 'utf8');
-		expect(index).toMatch(/syncContent/);
+		expect(index).toMatch(/syncAllDueContent/);
 		expect(index).toMatch(/runScheduledQuadRefresh/);
-		expect(index.split('ctx.waitUntil').length).toBeGreaterThan(3);
+		expect(index).not.toMatch(/continueCronContent/);
+		expect(index.split('ctx.waitUntil').length).toBe(3);
 	});
 
 	it('Quad settings live in live_quad_settings not Feed settings', () => {

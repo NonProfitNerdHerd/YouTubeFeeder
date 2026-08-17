@@ -222,10 +222,10 @@ describe('Quad simulated API-call scenarios', () => {
 	it('Scenario 9: Feed sync and Quad refresh stay isolated', () => {
 		const index = readFileSync(new URL('../../worker/index.ts', import.meta.url), 'utf8');
 		expect(index).toContain('runScheduledQuadRefresh');
-		expect(index).toContain('syncContent');
+		expect(index).toContain('syncAllDueContent');
 		const scheduled = index.slice(index.indexOf('async scheduled'));
-		expect(scheduled.indexOf('syncContent')).toBeGreaterThan(-1);
-		expect(scheduled.indexOf('runScheduledQuadRefresh')).toBeGreaterThan(scheduled.indexOf('syncContent'));
+		expect(scheduled.indexOf('syncAllDueContent')).toBeGreaterThan(-1);
+		expect(scheduled.indexOf('runScheduledQuadRefresh')).toBeGreaterThan(scheduled.indexOf('syncAllDueContent'));
 		const refresh = readFileSync(new URL('../../worker/services/quadRefresh.ts', import.meta.url), 'utf8');
 		expect(refresh).toContain("withLock(store, userId, 'confirm'");
 		expect(refresh).toContain("withLock(store, userId, 'discover'");

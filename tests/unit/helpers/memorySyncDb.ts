@@ -50,6 +50,7 @@ export class MemorySyncDb {
 		follow_in_inbox?: number;
 		max_videos_to_pull?: number;
 		newest_seen_published_at?: string | null;
+		last_synchronized_at?: string | null;
 	}) {
 		this.channels.set(row.channel_id, {
 			channel_id: row.channel_id,
@@ -58,7 +59,7 @@ export class MemorySyncDb {
 			thumbnail_url: '',
 			uploads_playlist_id: row.uploads_playlist_id,
 			subscribed: row.subscribed ?? 1,
-			last_synchronized_at: null,
+			last_synchronized_at: row.last_synchronized_at ?? null,
 		});
 		this.prefs.set(`${'user-1'}:${row.channel_id}`, {
 			user_id: 'user-1',
@@ -72,9 +73,9 @@ export class MemorySyncDb {
 	private exec(sql: string, bound: unknown[]) {
 		const normalized = sql.replace(/\s+/g, ' ').trim();
 		if (normalized.startsWith('UPDATE channels SET last_synchronized_at')) {
-			const channelId = String(bound[0]);
+			const channelId = String(bound[bound.length - 1]);
 			const row = this.channels.get(channelId);
-			if (row) row.last_synchronized_at = nowIso();
+			if (row) row.last_synchronized_at = bound.length > 1 ? String(bound[0]) : nowIso();
 			return;
 		}
 		if (normalized.startsWith('UPDATE channels SET uploads_playlist_id = NULL')) {
@@ -175,7 +176,7 @@ export class MemorySyncDb {
 				description: bound[2],
 				thumbnail_url: bound[3],
 				subscribed: 1,
-				last_synchronized_at: nowIso(),
+				last_synchronized_at: (existing as Row).last_synchronized_at ?? null,
 				uploads_playlist_id: (existing as Row).uploads_playlist_id ?? null,
 			});
 			return;
@@ -186,7 +187,7 @@ export class MemorySyncDb {
 		const normalized = sql.replace(/\s+/g, ' ').trim();
 		if (normalized.includes('FROM channels c') && normalized.includes('uploads_playlist_id IS NOT NULL')) {
 			const userId = String(bound[0]);
-			return [...this.channels.values()]
+			let rows = [...this.channels.values()]
 				.filter((ch) => ch.subscribed === 1 && ch.uploads_playlist_id)
 				.map((ch) => {
 					const pref = this.prefs.get(`${userId}:${ch.channel_id}`) ?? {
@@ -201,8 +202,24 @@ export class MemorySyncDb {
 						follow_in_inbox: pref.follow_in_inbox ?? 1,
 						max_videos_to_pull: pref.max_videos_to_pull ?? 0,
 						newest_seen_published_at: pref.newest_seen_published_at ?? null,
+						last_synchronized_at: ch.last_synchronized_at ?? null,
 					};
 				});
+			if (normalized.includes('last_synchronized_at IS NULL OR')) {
+				const staleBefore = String(bound[bound.length - 1]);
+				rows = rows
+					.filter((ch) => !ch.last_synchronized_at || String(ch.last_synchronized_at) < staleBefore)
+					.sort((a, b) => {
+						if (!a.last_synchronized_at && !b.last_synchronized_at) {
+							return String(a.channel_id).localeCompare(String(b.channel_id));
+						}
+						if (!a.last_synchronized_at) return -1;
+						if (!b.last_synchronized_at) return 1;
+						const byTime = String(a.last_synchronized_at).localeCompare(String(b.last_synchronized_at));
+						return byTime !== 0 ? byTime : String(a.channel_id).localeCompare(String(b.channel_id));
+					});
+			}
+			return rows;
 		}
 		if (normalized.includes('SELECT video_id FROM videos WHERE video_id IN')) {
 			return bound

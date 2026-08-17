@@ -1491,8 +1491,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 											<small className="muted">{ch.followInInbox ? 'Following' : 'Not following'}</small>
 											<small className="muted">
 												{ch.lastSynchronizedAt
-													? `Last synced: ${new Date(ch.lastSynchronizedAt).toLocaleString()}`
-													: 'Last synced: never'}
+													? `Last video sync: ${new Date(ch.lastSynchronizedAt).toLocaleString()}`
+													: 'Last video sync: never'}
 											</small>
 											<small className="muted cat-tags">{categoryNames(ch, categories)}</small>
 										</span>

@@ -1,4 +1,4 @@
-import { decryptSecret, encryptSecret, signValue, verifySignedValue } from './auth/crypto';
+import { decryptSecret, encryptSecret, verifySignedValue } from './auth/crypto';
 import {
 	exchangeCode,
 	fetchGoogleUser,
@@ -37,23 +37,12 @@ import { accessTokenForUser } from './services/googleToken';
 import { addLiveSourceFromInput, discoverLiveSources, getLiveJobs, getLiveMonitor, patchLiveSourceFromInput, putLiveSession, refreshLiveSources, refreshOneLiveSource, reportLivePlayerError } from './services/live';
 import { getQuadSettings, putQuadSettings } from './db/quadSettings';
 import { runScheduledQuadRefresh } from './services/quadSchedule';
-import { catchUpChannel, syncContent, syncSubscriptions } from './services/sync';
+import { catchUpChannel, syncAllDueContent, syncContent, syncSubscriptions } from './services/sync';
 import { YoutubeApiError } from './services/youtube';
 import { isLiveGridSize } from '../src/types';
 import { STREAMFEEDER_PACKAGE_ID } from '../src/lib/androidRelease';
 import { digitalAssetLinks, type AssetLinkFingerprint } from './android/assetlinks';
 import androidFingerprints from './android/fingerprints.json';
-
-async function continueCronContent(env: Env, userId: string, offset: number): Promise<void> {
-	const origin = env.PUBLIC_ORIGIN;
-	const secret = env.SESSION_SECRET;
-	if (!origin || !secret) return;
-	const token = await signValue(secret, `cron-content:${userId}:${offset}`);
-	await fetch(`${origin.replace(/\/$/, '')}/api/cron/sync-content`, {
-		method: 'POST',
-		headers: { 'x-cron-sync': token },
-	});
-}
 
 function requiredEnv(env: Env, key: keyof Env): string {
 	const value = env[key];
@@ -465,7 +454,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		if (!payload?.startsWith('cron-content:')) return apiError(401, 'unauthorized', 'Invalid cron token.');
 		const parts = payload.split(':');
 		const userId = parts[1];
-		const offset = Number(parts[2] ?? '0') || 0;
 		if (!userId) return apiError(401, 'unauthorized', 'Invalid cron token.');
 		const user = await getUserById(env.DB, userId);
 		if (!user?.encrypted_refresh_token) return json({ ok: true, skipped: true });
@@ -475,10 +463,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		} catch {
 			return apiError(401, 'token_refresh_failed', 'Google access expired.');
 		}
-		const result = await syncContent(env, user.id, access, offset);
-		if (result.status === 'ok' && !result.done && typeof result.nextOffset === 'number') {
-			ctx.waitUntil(continueCronContent(env, user.id, result.nextOffset));
-		}
+		const result = await syncAllDueContent(env, user.id, access);
 		return json(result);
 	}
 
@@ -796,12 +781,16 @@ export default {
 				for (const user of users.results ?? []) {
 					try {
 						const token = await accessTokenForUser(env, user);
-						const result = await syncContent(env, user.id, token, 0);
-						if (result.status === 'ok' && !result.done && typeof result.nextOffset === 'number') {
-							ctx.waitUntil(continueCronContent(env, user.id, result.nextOffset));
-						}
-					} catch {
-						continue;
+						await syncAllDueContent(env, user.id, token);
+					} catch (error) {
+						console.warn(
+							JSON.stringify({
+								operation: 'cron_content_sync',
+								userId: user.id,
+								status: 'error',
+								error: error instanceof Error ? error.message : 'sync_failed',
+							}),
+						);
 					}
 				}
 			})(),
