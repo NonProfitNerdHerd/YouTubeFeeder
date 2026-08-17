@@ -374,9 +374,23 @@
 }
 
 .feed-toolbar-sync {
-	margin-left: 4px;
 	flex: 0 0 auto;
 	white-space: nowrap;
+	padding: 8px 12px;
+	font-size: 0.85rem;
+	border-radius: 6px;
+	border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+	background: color-mix(in srgb, var(--accent) 28%, #0f1115);
+	color: var(--text);
+}
+
+.feed-toolbar-sync:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--accent) 42%, #0f1115);
+}
+
+.feed-toolbar-sync:disabled {
+	opacity: 0.65;
+	cursor: not-allowed;
 }
 
 .tabs {

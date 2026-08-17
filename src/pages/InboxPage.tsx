@@ -259,6 +259,15 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		setBulkWatchlistIds(null);
 	}, [leftTab]);
 
+	useEffect(() => {
+		if (leftTab !== 'streams' || !channelId || !categoryId) return;
+		const selected = channels.find((ch) => ch.channelId === channelId);
+		if (selected && !selected.categoryIds.includes(categoryId)) {
+			setChannelId(null);
+			setSelectedVideoId(null);
+		}
+	}, [leftTab, channelId, categoryId, channels]);
+
 	const listMultiSelectEnabled =
 		!androidClient && (leftTab === 'inbox' || leftTab === 'snoozed' || leftTab === 'deleted');
 
@@ -642,6 +651,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 
 	const phoneLayout = androidClient || narrow;
 	const streamsThreeCol = !androidClient && !phoneLayout && leftTab === 'streams';
+	const streamsList = categoryId
+		? channels.filter((ch) => ch.categoryIds.includes(categoryId))
+		: channels;
 	const selectedVideo =
 		items?.find((item) => item.videoId === selectedVideoId) ?? (phoneLayout ? null : (items?.[0] ?? null));
 
@@ -1039,9 +1051,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							value={categoryId ?? ''}
 							aria-label="Category"
 							onChange={(event) => {
-								setCategoryId(event.target.value || null);
+								const next = event.target.value || null;
+								setCategoryId(next);
 								setSelectedVideoId(null);
 								setInboxSelectedIds([]);
+								if (leftTab === 'streams' && channelId) {
+									const selected = channels.find((ch) => ch.channelId === channelId);
+									if (next && selected && !selected.categoryIds.includes(next)) {
+										setChannelId(null);
+									}
+								}
 								leftScrollRef.current?.scrollTo({ top: 0 });
 							}}
 						>
@@ -1053,6 +1072,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							))}
 						</select>
 					</label>
+					{!androidClient && leftTab === 'streams' ? (
+						<button
+							className="feed-toolbar-sync"
+							type="button"
+							disabled={syncing}
+							onClick={() => void syncSubscriptionsOnly()}
+						>
+							{syncing ? 'Syncing…' : 'Sync subscriptions'}
+						</button>
+					) : null}
 					<button
 						className={leftTab === 'snoozed' ? 'tab active' : 'tab'}
 						type="button"
@@ -1088,16 +1117,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					>
 						Categories Setup
 					</button>
-					{!androidClient ? (
-						<button
-							className="ghost tiny feed-toolbar-sync"
-							type="button"
-							disabled={syncing}
-							onClick={() => void syncSubscriptionsOnly()}
-						>
-							{syncing ? 'Syncing…' : 'Sync subscriptions'}
-						</button>
-					) : null}
 				</nav>
 			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
@@ -1358,7 +1377,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					) : null}
 					{leftTab === 'streams' ? (
 						<div className="left-scroll">
-							{channels.map((ch) => (
+							{streamsList.map((ch) => (
 								<div key={ch.channelId} className={channelId === ch.channelId ? 'sub-row active stream-row' : 'sub-row stream-row'}>
 									<button
 										className="sub"
@@ -1373,6 +1392,11 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 											<strong className="video-title">{ch.title}</strong>
 											<small className="muted">
 												{ch.followInInbox ? 'Following' : 'Not following'} · pull {ch.maxVideosToPull}
+											</small>
+											<small className="muted">
+												{ch.lastSynchronizedAt
+													? `Last synced: ${new Date(ch.lastSynchronizedAt).toLocaleString()}`
+													: 'Last synced: never'}
 											</small>
 											<small className="muted cat-tags">{categoryNames(ch, categories)}</small>
 										</span>
@@ -1390,7 +1414,15 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									</button>
 								</div>
 							))}
-							{channels.length === 0 && !syncing ? <p className="muted pad">No streams yet. Use Sync now.</p> : null}
+							{streamsList.length === 0 && !syncing ? (
+								<p className="muted pad">
+									{channels.length === 0
+										? 'No streams yet. Use Sync now.'
+										: categoryId
+											? 'No streams in this category.'
+											: 'No streams yet. Use Sync now.'}
+								</p>
+							) : null}
 						</div>
 					) : null}
 					{leftTab === 'categories' ? (
