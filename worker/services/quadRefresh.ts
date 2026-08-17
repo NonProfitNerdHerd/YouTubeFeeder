@@ -17,6 +17,7 @@ import {
 import { randomToken } from '../auth/crypto';
 import {
 	createYoutubeClient,
+	emptyCalls,
 	fetchChannelLiveVideos,
 	fetchNewestPlaylistVideoIds,
 	fetchUploadsPlaylistIds,
@@ -42,10 +43,6 @@ export interface QuadRefreshResult {
 	error?: string;
 	nextOffset: number;
 	total: number;
-}
-
-function emptyCalls(): YoutubeClient['calls'] {
-	return { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 };
 }
 
 function summary(sources: QuadSourceRow[], extra: Partial<QuadRefreshResult> & { job: QuadRefreshResult['job'] }): QuadRefreshResult {

@@ -30,12 +30,91 @@ export class YoutubeApiError extends Error {
 export interface YoutubeClient {
 	quotaUsed: number;
 	searchQueries: number;
-	calls: { search: number; videos: number; playlistItems: number; channels: number; other: number };
+	calls: {
+		search: number;
+		videos: number;
+		playlistItems: number;
+		channels: number;
+		subscriptions: number;
+		other: number;
+	};
 	getJson<T>(path: string, params: Record<string, string>): Promise<T>;
 }
 
-function emptyCalls() {
-	return { search: 0, videos: 0, playlistItems: 0, channels: 0, other: 0 };
+export function emptyCalls(): YoutubeClient['calls'] {
+	return { search: 0, videos: 0, playlistItems: 0, channels: 0, subscriptions: 0, other: 0 };
+}
+
+function accountCall(client: YoutubeClient, path: string): void {
+	// YouTube Data API quota (verified 2026-08-17): search.list is a separate 100-call/day
+	// bucket at 1 unit/call and must not consume the 10,000 general units pool.
+	if (path === 'search') {
+		client.searchQueries += 1;
+		client.calls.search += 1;
+		return;
+	}
+	client.quotaUsed += 1;
+	if (path === 'videos') client.calls.videos += 1;
+	else if (path === 'playlistItems') client.calls.playlistItems += 1;
+	else if (path === 'channels') client.calls.channels += 1;
+	else if (path === 'subscriptions') client.calls.subscriptions += 1;
+	else client.calls.other += 1;
+}
+
+async function youtubeGetJson<T>(
+	client: YoutubeClient,
+	path: string,
+	params: Record<string, string>,
+	auth: { bearer?: string; apiKey?: string },
+): Promise<T> {
+	const url = new URL(`https://www.googleapis.com/youtube/v3/${path}`);
+	for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+	if (auth.apiKey) url.searchParams.set('key', auth.apiKey);
+	accountCall(client, path);
+	const headers: Record<string, string> = {};
+	if (auth.bearer) headers.Authorization = `Bearer ${auth.bearer}`;
+	const res = await fetch(url, { headers });
+	if (!res.ok) {
+		const body = await res.text();
+		const reason = extractYoutubeErrorReason(body);
+		const quotaExceeded =
+			reason === 'quotaExceeded' ||
+			reason === 'dailyLimitExceeded' ||
+			body.includes('quotaExceeded') ||
+			body.includes('dailyLimitExceeded');
+		throw new YoutubeApiError(
+			sanitizeErrorMessage(path, res.status, quotaExceeded),
+			res.status,
+			quotaExceeded,
+			path,
+			reason,
+		);
+	}
+	return (await res.json()) as T;
+}
+
+export function createYoutubeClient(accessToken: string): YoutubeClient {
+	const client: YoutubeClient = {
+		quotaUsed: 0,
+		searchQueries: 0,
+		calls: emptyCalls(),
+		async getJson<T>(path: string, params: Record<string, string>): Promise<T> {
+			return youtubeGetJson<T>(client, path, params, { bearer: accessToken });
+		},
+	};
+	return client;
+}
+
+export function createYoutubeApiKeyClient(apiKey: string): YoutubeClient {
+	const client: YoutubeClient = {
+		quotaUsed: 0,
+		searchQueries: 0,
+		calls: emptyCalls(),
+		async getJson<T>(path: string, params: Record<string, string>): Promise<T> {
+			return youtubeGetJson<T>(client, path, params, { apiKey });
+		},
+	};
+	return client;
 }
 
 /** Extract a short YouTube error reason without retaining raw credential-bearing payloads. */
@@ -63,47 +142,6 @@ function sanitizeErrorMessage(path: string, status: number, quotaExceeded: boole
 	if (status === 401) return 'YouTube API authorization failed.';
 	if (status === 429) return 'YouTube API rate limited.';
 	return `YouTube API ${path} failed (${status}).`;
-}
-
-export function createYoutubeClient(accessToken: string): YoutubeClient {
-	return {
-		quotaUsed: 0,
-		searchQueries: 0,
-		calls: emptyCalls(),
-		async getJson<T>(path: string, params: Record<string, string>): Promise<T> {
-			const url = new URL(`https://www.googleapis.com/youtube/v3/${path}`);
-			for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-			if (path === 'search') {
-				this.quotaUsed += 100;
-				this.searchQueries += 1;
-				this.calls.search += 1;
-			} else {
-				this.quotaUsed += 1;
-				if (path === 'videos') this.calls.videos += 1;
-				else if (path === 'playlistItems') this.calls.playlistItems += 1;
-				else if (path === 'channels') this.calls.channels += 1;
-				else this.calls.other += 1;
-			}
-			const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-			if (!res.ok) {
-				const body = await res.text();
-				const reason = extractYoutubeErrorReason(body);
-				const quotaExceeded =
-					reason === 'quotaExceeded' ||
-					reason === 'dailyLimitExceeded' ||
-					body.includes('quotaExceeded') ||
-					body.includes('dailyLimitExceeded');
-				throw new YoutubeApiError(
-					sanitizeErrorMessage(path, res.status, quotaExceeded),
-					res.status,
-					quotaExceeded,
-					path,
-					reason,
-				);
-			}
-			return (await res.json()) as T;
-		},
-	};
 }
 
 export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
