@@ -139,6 +139,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [channels, setChannels] = useState<ChannelRecord[]>([]);
 	const [categories, setCategories] = useState<CategoryRecord[]>([]);
 	const [items, setItems] = useState<InboxItem[] | null>(null);
+	const [inboxCount, setInboxCount] = useState<number | null>(null);
 	const [channelId, setChannelId] = useState<string | null>(null);
 	const [categoryId, setCategoryId] = useState<string | null>(null);
 	const [leftTab, setLeftTab] = useState<'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams' | 'categories'>('inbox');
@@ -194,18 +195,35 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				if (watchlistId) inboxQuery.set('watchlistId', watchlistId);
 			}
 			const qs = inboxQuery.toString();
-			const [chRes, inRes, catRes, wlRes] = await Promise.all([
+			const inboxCountQuery = new URLSearchParams();
+			if (categoryId && leftTab !== 'watchlist' && leftTab !== 'categories') {
+				inboxCountQuery.set('categoryId', categoryId);
+			}
+			const countQs = inboxCountQuery.toString();
+			const needsSeparateInboxCount = leftTab !== 'inbox';
+			const [chRes, inRes, catRes, wlRes, inboxCountRes] = await Promise.all([
 				fetch('/api/channels', { credentials: 'same-origin', signal }),
 				fetch(qs ? `/api/inbox?${qs}` : '/api/inbox', { credentials: 'same-origin', signal }),
 				fetch('/api/categories', { credentials: 'same-origin', signal }),
 				fetch('/api/watchlists', { credentials: 'same-origin', signal }),
+				needsSeparateInboxCount
+					? fetch(countQs ? `/api/inbox?${countQs}` : '/api/inbox', { credentials: 'same-origin', signal })
+					: Promise.resolve(null),
 			]);
-			if (!chRes.ok || !inRes.ok || !catRes.ok || !wlRes.ok) throw new Error('Could not load subscriptions.');
+			if (!chRes.ok || !inRes.ok || !catRes.ok || !wlRes.ok || (inboxCountRes && !inboxCountRes.ok)) {
+				throw new Error('Could not load subscriptions.');
+			}
 			setChannels(((await chRes.json()) as { channels: ChannelRecord[] }).channels);
-			setItems(((await inRes.json()) as { items: InboxItem[] }).items);
+			const nextItems = ((await inRes.json()) as { items: InboxItem[] }).items;
+			setItems(nextItems);
 			setCategories(((await catRes.json()) as { categories: CategoryRecord[] }).categories);
 			const nextLists = ((await wlRes.json()) as { watchlists: WatchlistRecord[] }).watchlists;
 			setWatchlists(nextLists);
+			if (inboxCountRes) {
+				setInboxCount(((await inboxCountRes.json()) as { items: InboxItem[] }).items.length);
+			} else {
+				setInboxCount(nextItems.length);
+			}
 		},
 		[channelId, categoryId, leftTab, watchlistId],
 	);
@@ -1098,7 +1116,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			{mainSection === 'feed' ? (
 				<nav className="feed-toolbar" aria-label="Feed views">
 					<button className={leftTab === 'inbox' ? 'tab active' : 'tab'} type="button" onClick={() => setLeftTab('inbox')}>
-						Inbox
+						Inbox{inboxCount === null ? '' : ` (${inboxCount})`}
 					</button>
 					{leftTab !== 'watchlist' && leftTab !== 'categories' ? (
 						<label className="feed-toolbar-filter">
@@ -1642,7 +1660,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				{phoneLayout ? (
 					<nav className="mobile-nav" aria-label="Feeder">
 						<button className={leftTab === 'inbox' ? 'active' : undefined} type="button" onClick={() => setLeftTab('inbox')}>
-							Inbox
+							Inbox{inboxCount === null ? '' : ` (${inboxCount})`}
 						</button>
 						<button className={leftTab === 'watchlist' ? 'active' : undefined} type="button" onClick={() => setLeftTab('watchlist')}>
 							Watchlists
