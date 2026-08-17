@@ -3,4 +3,5 @@ GOOGLE_CLIENT_SECRET=your-google-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:5173/api/auth/google/callback
 TOKEN_ENCRYPTION_KEY=replace-with-32-byte-hex-or-base64-key
 SESSION_SECRET=replace-with-a-long-random-string
+YOUTUBE_API_KEY=
 MOCK_DATA=true

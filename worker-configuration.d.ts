@@ -10,6 +10,7 @@ interface Env {
 	SESSION_SECRET?: string;
 	MOCK_DATA?: string;
 	PUBLIC_ORIGIN?: string;
+	YOUTUBE_API_KEY?: string;
 }
 
 interface ExecutionContext {
