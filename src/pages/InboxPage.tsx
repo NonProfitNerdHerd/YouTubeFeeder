@@ -1135,13 +1135,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						Inbox{inboxCount === null ? '' : ` (${inboxCount})`}
 					</button>
 					<button
-						className={leftTab === 'streams' ? 'tab active' : 'tab'}
-						type="button"
-						onClick={() => setLeftTab('streams')}
-					>
-						Streams
-					</button>
-					<button
 						className={leftTab === 'categories' ? 'tab active' : 'tab'}
 						type="button"
 						onClick={() => setLeftTab('categories')}
@@ -1161,6 +1154,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						onClick={() => setLeftTab('deleted')}
 					>
 						Deleted
+					</button>
+					<button
+						className={leftTab === 'streams' ? 'tab active' : 'tab'}
+						type="button"
+						onClick={() => setLeftTab('streams')}
+					>
+						Streams
 					</button>
 					{leftTab !== 'categories' ? (
 						<label className="feed-toolbar-filter">
