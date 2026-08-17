@@ -1266,7 +1266,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							</p>
 						) : null}
 					</div>
-					<button className="ghost tiny status-dismiss" type="button" onClick={dismissStatusBanner}>
+					<button className="status-dismiss" type="button" onClick={dismissStatusBanner}>
 						Dismiss
 					</button>
 				</div>

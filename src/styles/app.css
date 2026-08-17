@@ -39,18 +39,23 @@
 
 .status-line {
 	display: flex;
-	align-items: flex-start;
+	align-items: stretch;
 	justify-content: space-between;
 	gap: 16px;
 	margin: 0;
-	padding: 10px 24px;
+	padding: 8px 12px 8px 24px;
 	border-bottom: 1px solid var(--border);
+	background: color-mix(in srgb, var(--panel) 82%, #2a3344);
 	color: var(--muted);
 }
 
 .status-line-body {
 	min-width: 0;
 	flex: 1;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	padding: 4px 0;
 }
 
 .status-line p {
@@ -59,15 +64,32 @@
 
 .status-dismiss {
 	flex-shrink: 0;
-	margin-left: auto;
+	align-self: stretch;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	padding: 0 18px;
+	min-width: 5.5rem;
+	font-size: 0.85rem;
+	border-radius: 6px;
+	border: 1px solid color-mix(in srgb, var(--text) 35%, var(--border));
+	background: color-mix(in srgb, var(--accent) 22%, #1b2230);
+	color: var(--text);
+}
+
+.status-dismiss:hover {
+	background: color-mix(in srgb, var(--accent) 38%, #1b2230);
 }
 
 .status-line.error {
 	color: #ffb4b4;
+	background: color-mix(in srgb, #4a2222 42%, var(--panel));
 }
 
 .status-line.warning {
 	color: #e6c27a;
+	background: color-mix(in srgb, #3d3218 48%, var(--panel));
 }
 
 .status-details-toggle {
