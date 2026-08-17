@@ -9,6 +9,7 @@ import {
 	type YoutubeClient,
 	YoutubeApiError,
 } from './youtube';
+import { ensureHubSubscriptions, recordYoutubeCalls, unsubscribeIfOrphaned } from './websub';
 
 interface SubscriptionPage {
 	nextPageToken?: string;
@@ -19,13 +20,6 @@ interface SubscriptionPage {
 			resourceId?: { channelId?: string };
 			thumbnails?: { default?: { url?: string }; medium?: { url?: string } };
 		};
-	}>;
-}
-
-interface ChannelPage {
-	items?: Array<{
-		id?: string;
-		contentDetails?: { relatedPlaylists?: { uploads?: string } };
 	}>;
 }
 
@@ -195,57 +189,82 @@ export async function syncSubscriptions(
 			pageToken = page.nextPageToken ?? '';
 		} while (pageToken);
 
-		await env.DB.prepare('UPDATE channels SET subscribed = 0').run();
+		const syncId = randomToken(12);
+		const seenAt = new Date().toISOString();
 		for (const group of chunk(rows, 20)) {
 			const statements = group.map((row) =>
 				env.DB.prepare(
-					`INSERT INTO channels (channel_id, title, description, thumbnail_url, subscribed)
-					 VALUES (?, ?, ?, ?, 1)
+					`INSERT INTO channels (channel_id, title, description, thumbnail_url)
+					 VALUES (?, ?, ?, ?)
 					 ON CONFLICT(channel_id) DO UPDATE SET
 						title = excluded.title,
 						description = excluded.description,
-						thumbnail_url = excluded.thumbnail_url,
-						subscribed = 1`,
+						thumbnail_url = excluded.thumbnail_url`,
 				).bind(row.channelId, row.title, row.description, row.thumbnailUrl),
 			);
 			await env.DB.batch(statements);
 		}
 
 		const ids = rows.map((r) => r.channelId);
-		for (const group of chunk(ids, 50)) {
-			const page = await yt.getJson<ChannelPage>('channels', {
-				part: 'contentDetails',
-				id: group.join(','),
-				maxResults: '50',
-			});
-			const found = new Map<string, string>();
-			for (const ch of page.items ?? []) {
-				const uploads = ch.contentDetails?.relatedPlaylists?.uploads;
-				if (ch.id && uploads) found.set(ch.id, uploads);
-			}
-			// Only clear stale playlists after a successful channels.list snapshot for this group.
-			const updates = group.map((channelId) => {
-				const uploads = found.get(channelId);
-				if (uploads) {
-					return env.DB.prepare('UPDATE channels SET uploads_playlist_id = ? WHERE channel_id = ?').bind(
-						uploads,
-						channelId,
-					);
-				}
-				return env.DB.prepare('UPDATE channels SET uploads_playlist_id = NULL WHERE channel_id = ?').bind(channelId);
-			});
-			if (updates.length) await env.DB.batch(updates);
-		}
-
 		for (const group of chunk(ids, 20)) {
 			await env.DB.batch(
 				group.map((channelId) =>
 					env.DB.prepare(
-						`INSERT OR IGNORE INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull) VALUES (?, ?, 1, 0)`,
-					).bind(userId, channelId),
+						`INSERT INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull, is_subscribed, last_subscription_sync_id, subscription_seen_at, unsubscribed_at)
+						 VALUES (?, ?, 1, 0, 1, ?, ?, NULL)
+						 ON CONFLICT(user_id, channel_id) DO UPDATE SET
+							is_subscribed = 1,
+							last_subscription_sync_id = excluded.last_subscription_sync_id,
+							subscription_seen_at = excluded.subscription_seen_at,
+							unsubscribed_at = NULL`,
+					).bind(userId, channelId, syncId, seenAt),
 				),
 			);
 		}
+
+		const dropped = await env.DB.prepare(
+			`SELECT channel_id FROM channel_prefs
+			 WHERE user_id = ? AND is_subscribed = 1 AND (last_subscription_sync_id IS NULL OR last_subscription_sync_id != ?)`,
+		)
+			.bind(userId, syncId)
+			.all<{ channel_id: string }>();
+		await env.DB.prepare(
+			`UPDATE channel_prefs
+			 SET is_subscribed = 0, unsubscribed_at = ?
+			 WHERE user_id = ? AND is_subscribed = 1 AND (last_subscription_sync_id IS NULL OR last_subscription_sync_id != ?)`,
+		)
+			.bind(seenAt, userId, syncId)
+			.run();
+
+		await ensureHubSubscriptions(env, ids);
+		await unsubscribeIfOrphaned(env, (dropped.results ?? []).map((row) => row.channel_id));
+
+		if (ids.length) {
+			const missing = await env.DB.prepare(
+				`SELECT channel_id FROM channels WHERE uploads_playlist_id IS NULL AND channel_id IN (${ids.map(() => '?').join(',')})`,
+			)
+				.bind(...ids)
+				.all<{ channel_id: string }>();
+			const needPlaylist = (missing.results ?? []).map((row) => row.channel_id);
+			if (needPlaylist.length) {
+				try {
+					const found = await fetchUploadsPlaylistIds(yt, needPlaylist);
+					const updates = needPlaylist
+						.filter((channelId) => found.get(channelId))
+						.map((channelId) =>
+							env.DB.prepare('UPDATE channels SET uploads_playlist_id = ? WHERE channel_id = ?').bind(
+								found.get(channelId)!,
+								channelId,
+							),
+						);
+					if (updates.length) await env.DB.batch(updates);
+				} catch (error) {
+					if (error instanceof YoutubeApiError && error.isGlobalFatal) throw error;
+				}
+			}
+		}
+
+		await recordYoutubeCalls(env.DB, yt);
 
 		const result: SyncResult = {
 			syncType: 'subscriptions',
@@ -570,8 +589,8 @@ export async function syncContent(
 				p.newest_seen_published_at,
 				c.last_synchronized_at
 			 FROM channels c
-			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
-			 WHERE c.subscribed = 1 AND c.uploads_playlist_id IS NOT NULL`;
+			 JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
+			 WHERE p.is_subscribed = 1 AND c.uploads_playlist_id IS NOT NULL`;
 		const binds: string[] = [userId];
 		if (categoryId) {
 			sql += ` AND c.channel_id IN (SELECT channel_id FROM channel_categories WHERE user_id = ? AND category_id = ?)`;
@@ -639,6 +658,7 @@ export async function syncContent(
 			totalChannels: list.length,
 		};
 		await recordRun(env.DB, userId, result, startedAt);
+		await recordYoutubeCalls(env.DB, yt);
 		return result;
 	} catch (error) {
 		const quota = error instanceof YoutubeApiError && error.quotaExceeded;
@@ -742,7 +762,7 @@ export async function catchUpChannel(
 				c.last_synchronized_at
 			 FROM channels c
 			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
-			 WHERE c.channel_id = ? AND c.subscribed = 1`,
+			 WHERE c.channel_id = ? AND p.is_subscribed = 1`,
 		)
 			.bind(userId, channelId)
 			.first<ChannelSyncRow>();
@@ -811,6 +831,7 @@ export async function catchUpChannel(
 			totalChannels: 1,
 		};
 		await recordRun(env.DB, userId, result, startedAt);
+		await recordYoutubeCalls(env.DB, yt);
 		return result;
 	} catch (error) {
 		const quota = error instanceof YoutubeApiError && error.quotaExceeded;
