@@ -4,12 +4,12 @@ import { randomToken } from '../auth/crypto';
 export async function listSubscribedChannels(db: D1Database, userId: string): Promise<ChannelRecord[]> {
 	const rows = await db
 		.prepare(
-			`SELECT c.channel_id, c.title, c.description, c.thumbnail_url, c.uploads_playlist_id, c.subscribed, c.last_synchronized_at,
+			`SELECT c.channel_id, c.title, c.description, c.thumbnail_url, c.uploads_playlist_id, p.is_subscribed AS subscribed, c.last_synchronized_at,
 				COALESCE(p.follow_in_inbox, 1) AS follow_in_inbox,
 				COALESCE(p.max_videos_to_pull, 0) AS max_videos_to_pull
-			 FROM channels c
-			 LEFT JOIN channel_prefs p ON p.channel_id = c.channel_id AND p.user_id = ?
-			 WHERE c.subscribed = 1
+			 FROM channel_prefs p
+			 JOIN channels c ON c.channel_id = p.channel_id
+			 WHERE p.user_id = ? AND p.is_subscribed = 1
 			 ORDER BY c.title COLLATE NOCASE`,
 		)
 		.bind(userId)
@@ -73,7 +73,8 @@ function inboxWhere(
 		FROM inbox_state i
 		JOIN videos v ON v.video_id = i.video_id
 		JOIN channels c ON c.channel_id = v.channel_id
-		WHERE i.user_id = ? AND i.archived = 0 AND c.subscribed = 1
+		JOIN channel_prefs p ON p.user_id = i.user_id AND p.channel_id = v.channel_id AND p.is_subscribed = 1
+		WHERE i.user_id = ? AND i.archived = 0
 		${hiddenFilter}
 		${snoozeFilter}
 		${watchFilter}
@@ -380,8 +381,8 @@ export async function updateChannelPrefs(
 	const maxVideos = Math.max(0, Math.min(500, Math.floor(input.maxVideosToPull)));
 	await db
 		.prepare(
-			`INSERT INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull)
-			 VALUES (?, ?, ?, ?)
+			`INSERT INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull, is_subscribed)
+			 VALUES (?, ?, ?, ?, 1)
 			 ON CONFLICT(user_id, channel_id) DO UPDATE SET
 				follow_in_inbox = excluded.follow_in_inbox,
 				max_videos_to_pull = excluded.max_videos_to_pull`,
