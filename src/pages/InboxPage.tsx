@@ -146,6 +146,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		setGrid: (size: LiveGridSize) => void;
 	} | null>(null);
 	const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+	const leftScrollRef = useRef<HTMLDivElement | null>(null);
 	const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([]);
 	const [watchlistId, setWatchlistId] = useState<string | null>(null);
 	const [newWatchlist, setNewWatchlist] = useState('');
@@ -238,6 +239,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		window.addEventListener('popstate', onPop);
 		return () => window.removeEventListener('popstate', onPop);
 	}, []);
+
+	useEffect(() => {
+		leftScrollRef.current?.scrollTo({ top: 0 });
+	}, [categoryId, leftTab, watchlistId, channelId]);
+
+	function nextVideoIdAfterRemoval(list: InboxItem[], removedId: string): string | null {
+		const index = list.findIndex((item) => item.videoId === removedId);
+		if (index < 0) return list[0]?.videoId ?? null;
+		return list[index + 1]?.videoId ?? list[index - 1]?.videoId ?? null;
+	}
 
 	async function syncNow() {
 		setSyncing(true);
@@ -457,11 +468,14 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 
 	async function takeOffWatchlist(videoId: string) {
 		if (!watchlistId) return;
+		const previous = items;
+		const nextId = selectedVideoId === videoId && previous ? nextVideoIdAfterRemoval(previous, videoId) : selectedVideoId;
+		if (previous) setItems(previous.filter((item) => item.videoId !== videoId));
 		await fetch(`/api/watchlists/${encodeURIComponent(watchlistId)}/items/${encodeURIComponent(videoId)}`, {
 			method: 'DELETE',
 			credentials: 'same-origin',
 		});
-		if (selectedVideoId === videoId) setSelectedVideoId(null);
+		if (selectedVideoId === videoId) setSelectedVideoId(nextId);
 		await load();
 	}
 
@@ -470,6 +484,10 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		body: { action: 'delete' | 'snooze' | 'unsnooze' | 'restore' | 'notes'; until?: string; notes?: string },
 	) {
 		const previous = items;
+		const nextId =
+			body.action !== 'notes' && selectedVideoId === videoId && previous
+				? nextVideoIdAfterRemoval(previous, videoId)
+				: selectedVideoId;
 		if (previous && body.action !== 'notes') {
 			setItems(previous.filter((item) => item.videoId !== videoId));
 		}
@@ -484,7 +502,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			setError('Could not update that video.');
 			return false;
 		}
-		if (body.action !== 'notes' && selectedVideoId === videoId) setSelectedVideoId(null);
+		if (body.action !== 'notes' && selectedVideoId === videoId) setSelectedVideoId(nextId);
 		await load();
 		return true;
 	}
@@ -883,6 +901,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									onChange={(event) => {
 										setCategoryId(event.target.value || null);
 										setSelectedVideoId(null);
+										leftScrollRef.current?.scrollTo({ top: 0 });
 									}}
 								>
 									<option value="">All categories</option>
@@ -893,7 +912,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									))}
 								</select>
 							</label>
-							<div className="left-scroll">{renderFeed(items, true, 'inbox')}</div>
+							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'inbox')}</div>
 						</>
 					) : null}
 					{leftTab === 'snoozed' ? (
@@ -905,6 +924,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									onChange={(event) => {
 										setCategoryId(event.target.value || null);
 										setSelectedVideoId(null);
+										leftScrollRef.current?.scrollTo({ top: 0 });
 									}}
 								>
 									<option value="">All categories</option>
@@ -915,7 +935,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									))}
 								</select>
 							</label>
-							<div className="left-scroll">{renderFeed(items, true, 'snoozed')}</div>
+							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'snoozed')}</div>
 						</>
 					) : null}
 					{leftTab === 'deleted' ? (
@@ -927,6 +947,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									onChange={(event) => {
 										setCategoryId(event.target.value || null);
 										setSelectedVideoId(null);
+										leftScrollRef.current?.scrollTo({ top: 0 });
 									}}
 								>
 									<option value="">All categories</option>
@@ -937,7 +958,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 									))}
 								</select>
 							</label>
-							<div className="left-scroll">{renderFeed(items, true, 'deleted')}</div>
+							<div className="left-scroll" ref={leftScrollRef}>{renderFeed(items, true, 'deleted')}</div>
 						</>
 					) : null}
 					{leftTab === 'watchlist' ? (

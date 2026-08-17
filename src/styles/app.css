@@ -276,8 +276,8 @@
 }
 
 .inbox-item strong {
-	font-size: 0.9rem;
-	line-height: 1.2;
+	font-size: 1.1rem;
+	line-height: 1.35;
 }
 
 .preview {
@@ -304,8 +304,8 @@
 }
 
 .preview-identity strong {
-	font-size: 1.05rem;
-	line-height: 1.3;
+	font-size: 1.25rem;
+	line-height: 1.35;
 }
 
 .preview-header-actions {

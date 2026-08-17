@@ -194,8 +194,10 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         if (videoIds.isEmpty()) return
         val idSet = videoIds.toSet()
         _state.update {
+            val next = if (it.selected?.videoId in idSet) nextAfterRemoval(it.items, idSet) else it.selected
             it.copy(
                 items = it.items.filterNot { row -> row.videoId in idSet },
+                selected = next,
                 undoArchiveVideoId = null,
                 undoWatchlistVideoId = null,
                 undoWatchlistId = null,
@@ -212,7 +214,6 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             }
             _state.update {
                 it.copy(
-                    message = if (ok == 1) "Archived 1 video" else "Archived $ok videos",
                     error = if (ok < videoIds.size) "Some videos could not be archived" else null,
                 )
             }
@@ -226,8 +227,10 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         val listName = _state.value.watchlists.firstOrNull { it.id == listId }?.name ?: "watchlist"
         val idSet = videoIds.toSet()
         _state.update {
+            val next = if (it.selected?.videoId in idSet) nextAfterRemoval(it.items, idSet) else it.selected
             it.copy(
                 items = it.items.filterNot { row -> row.videoId in idSet },
+                selected = next,
                 undoArchiveVideoId = null,
                 undoWatchlistVideoId = null,
                 undoWatchlistId = null,
@@ -259,9 +262,10 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         val until = Instant.ofEpochMilli(untilEpochMillis).toString()
         val idSet = videoIds.toSet()
         _state.update {
+            val next = if (it.selected?.videoId in idSet) nextAfterRemoval(it.items, idSet) else it.selected
             it.copy(
                 items = it.items.filterNot { row -> row.videoId in idSet },
-                selected = if (it.selected?.videoId in idSet) null else it.selected,
+                selected = next,
                 undoArchiveVideoId = null,
                 undoWatchlistVideoId = null,
                 undoWatchlistId = null,
@@ -302,7 +306,17 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun snoozeItem(item: InboxItem, untilEpochMillis: Long) {
         val until = Instant.ofEpochMilli(untilEpochMillis).toString()
-        _state.update { it.copy(items = it.items.filterNot { row -> row.videoId == item.videoId }) }
+        _state.update {
+            val next = if (it.selected?.videoId == item.videoId) {
+                nextAfterRemoval(it.items, item.videoId)
+            } else {
+                it.selected
+            }
+            it.copy(
+                items = it.items.filterNot { row -> row.videoId == item.videoId },
+                selected = next,
+            )
+        }
         mutate(
             item.videoId,
             JSONObject().put("action", "snooze").put("until", until),
@@ -495,11 +509,12 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun archiveVideo(item: InboxItem, leaveDetail: Boolean) {
         _state.update {
+            val shouldAdvance = leaveDetail || it.selected?.videoId == item.videoId
+            val next = if (shouldAdvance) nextAfterRemoval(it.items, item.videoId) else it.selected
             it.copy(
                 items = it.items.filterNot { row -> row.videoId == item.videoId },
-                selected = if (leaveDetail) null else it.selected,
-                message = "Archived",
-                undoArchiveVideoId = item.videoId,
+                selected = next,
+                undoArchiveVideoId = null,
                 undoWatchlistVideoId = null,
                 undoWatchlistId = null,
             )
@@ -509,7 +524,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 api.patchInbox(item.videoId, JSONObject().put("action", "delete"))
                 if (_state.value.view == FeedView.Watchlist) refreshMeta()
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message ?: "Could not archive", undoArchiveVideoId = null) }
+                _state.update { it.copy(error = e.message ?: "Could not archive") }
                 refreshFeed()
             }
         }
@@ -522,17 +537,34 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         clearSelected: Boolean = true,
         silent: Boolean = false,
     ) {
+        val action = body.optString("action")
+        val removesFromList = action == "delete" || action == "restore" || action == "snooze" || action == "unsnooze"
+        if (removesFromList) {
+            _state.update {
+                val shouldAdvance = clearSelected || it.selected?.videoId == videoId
+                val next = if (shouldAdvance) nextAfterRemoval(it.items, videoId) else it.selected
+                it.copy(
+                    items = it.items.filterNot { row -> row.videoId == videoId },
+                    selected = next,
+                    message = if (silent) it.message else okMessage,
+                )
+            }
+        }
         viewModelScope.launch {
             try {
                 api.patchInbox(videoId, body)
-                _state.update {
-                    it.copy(
-                        message = if (silent) null else okMessage,
-                        selected = if (clearSelected) null else it.selected,
-                    )
+                if (!removesFromList) {
+                    _state.update {
+                        it.copy(
+                            message = if (silent) null else okMessage,
+                            selected = if (clearSelected) null else it.selected,
+                        )
+                    }
+                } else if (!silent) {
+                    // Keep optimistic selection; refresh list in background.
+                    refreshFeed()
                 }
-                if (!silent) refreshFeed()
-                if (_state.value.view == FeedView.Watchlist || body.optString("action") == "delete") {
+                if (_state.value.view == FeedView.Watchlist || action == "delete") {
                     refreshMeta()
                 }
             } catch (e: Exception) {
@@ -540,6 +572,16 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 refreshFeed()
             }
         }
+    }
+
+    private fun nextAfterRemoval(items: List<InboxItem>, removedId: String): InboxItem? =
+        nextAfterRemoval(items, setOf(removedId))
+
+    private fun nextAfterRemoval(items: List<InboxItem>, removedIds: Set<String>): InboxItem? {
+        val index = items.indexOfFirst { it.videoId in removedIds }
+        if (index < 0) return items.firstOrNull { it.videoId !in removedIds }
+        items.drop(index + 1).firstOrNull { it.videoId !in removedIds }?.let { return it }
+        return items.take(index).lastOrNull { it.videoId !in removedIds }
     }
 
     private fun refreshAll(showBoot: Boolean) {

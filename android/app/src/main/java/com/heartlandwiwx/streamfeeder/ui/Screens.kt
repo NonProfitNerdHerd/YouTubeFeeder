@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -817,9 +818,14 @@ private fun VideoList(
             }
         }
         else -> {
+            val listState = rememberLazyListState()
+            LaunchedEffect(state.view, state.categoryId, state.watchlistId, state.browsingChannelId) {
+                listState.scrollToItem(0)
+            }
             LazyColumn(
+                state = listState,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 items(state.items, key = { it.videoId }) { item ->
                     val multiSelected = item.videoId in selectedIds
@@ -922,11 +928,12 @@ private fun CategoriesPanel(
                     .fillMaxWidth()
                     .padding(vertical = 8.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text(cat.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 IconButton(onClick = { editing = cat }) {
                     Icon(Icons.Default.Edit, contentDescription = "Edit category")
                 }
+                Text(cat.name, style = MaterialTheme.typography.titleMedium)
             }
         }
     }
@@ -1027,7 +1034,15 @@ private fun StreamsListPanel(
                 )
             }
         } else {
-            LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val listState = rememberLazyListState()
+            LaunchedEffect(filterCategoryId) {
+                listState.scrollToItem(0)
+            }
+            LazyColumn(
+                state = listState,
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 items(filteredChannels, key = { it.channelId }) { ch ->
                     val selected = ch.channelId == selectedChannelId
                     Row(
@@ -1133,7 +1148,7 @@ private fun StreamVideosPane(
             else -> {
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     items(items, key = { it.videoId }) { item ->
                         FeedRow(
@@ -1235,7 +1250,7 @@ private fun StreamDetailScreen(
                 else -> {
                     LazyColumn(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         items(items, key = { it.videoId }) { item ->
                             SwipeFeedRow(
@@ -1320,21 +1335,21 @@ private fun PendingSnoozeDialog(
 private fun MessageDialogs(
     state: FeedUiState,
     onClearMessage: () -> Unit,
-    onUndoArchive: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onUndoArchive: () -> Unit,
     onUndoWatchlist: () -> Unit,
 ) {
-    if (!state.message.isNullOrBlank()) {
-        val canUndoArchive = state.message == "Archived" && !state.undoArchiveVideoId.isNullOrBlank()
-        val canUndoWatchlist = !state.undoWatchlistVideoId.isNullOrBlank() && state.message.startsWith("Added to ")
+    val message = state.message
+    if (!message.isNullOrBlank() && message != "Archived" && !message.startsWith("Archived ")) {
+        val canUndoWatchlist = !state.undoWatchlistVideoId.isNullOrBlank() && message.startsWith("Added to ")
         AlertDialog(
             onDismissRequest = onClearMessage,
             confirmButton = { TextButton(onClick = onClearMessage) { Text("OK") } },
-            dismissButton = when {
-                canUndoArchive -> ({ TextButton(onClick = onUndoArchive) { Text("Undo") } })
-                canUndoWatchlist -> ({ TextButton(onClick = onUndoWatchlist) { Text("Undo") } })
-                else -> null
+            dismissButton = if (canUndoWatchlist) {
+                { TextButton(onClick = onUndoWatchlist) { Text("Undo") } }
+            } else {
+                null
             },
-            text = { Text(state.message) },
+            text = { Text(message) },
         )
     }
     if (!state.error.isNullOrBlank()) {
@@ -1781,7 +1796,7 @@ private fun FeedRow(
                 minLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = if (item.unread) FontWeight.SemiBold else FontWeight.Normal,
-                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 18.sp),
+                style = MaterialTheme.typography.titleMedium.copy(lineHeight = 24.sp),
             )
             val date = item.publishedAt?.take(10).orEmpty()
             val meta = if (showChannelInMeta) {
@@ -1900,7 +1915,7 @@ private fun DetailScreen(
         ) {
             YoutubePlayer(videoId = item.videoId, embeddable = item.embeddable, thumbnailUrl = item.thumbnailUrl)
             CastRow()
-            Text(item.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(item.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(item.channelTitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!embedded) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
