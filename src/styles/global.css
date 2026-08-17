@@ -10,7 +10,10 @@
 	--live: #e23d3d;
 	--upcoming: #c47b16;
 	--video: #4c8dff;
-	font-family: "Segoe UI", system-ui, sans-serif;
+	/* App system font — Roboto for readable video titles and UI */
+	--font-system: "Roboto", system-ui, -apple-system, sans-serif;
+	font-family: var(--font-system);
+	font-weight: 400;
 }
 
 * {
@@ -25,6 +28,8 @@ body,
 	overflow: hidden;
 	background: var(--bg);
 	color: var(--text);
+	font-family: var(--font-system);
+	font-weight: 400;
 }
 
 button,
@@ -35,4 +40,10 @@ a.button {
 
 a {
 	color: var(--accent);
+}
+
+.video-title {
+	font-family: var(--font-system);
+	font-weight: 400;
+	line-height: 1.4;
 }

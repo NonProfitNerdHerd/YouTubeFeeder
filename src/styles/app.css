@@ -330,9 +330,11 @@
 	min-width: 0;
 }
 
-.inbox-item strong {
+.inbox-item strong,
+.inbox-item .video-title {
 	font-size: 1.1rem;
-	line-height: 1.35;
+	line-height: 1.4;
+	font-weight: 400;
 }
 
 .preview {
@@ -363,9 +365,11 @@
 	gap: 4px;
 }
 
-.preview-identity strong {
+.preview-identity strong,
+.preview-identity .video-title {
 	font-size: 1.25rem;
-	line-height: 1.35;
+	line-height: 1.4;
+	font-weight: 400;
 	display: -webkit-box;
 	-webkit-box-orient: vertical;
 	-webkit-line-clamp: 2;
@@ -714,8 +718,9 @@
 	padding-top: 4px;
 }
 
+.inbox-item.unread .video-title,
 .inbox-item.unread strong {
-	font-weight: 700;
+	font-weight: 400;
 }
 
 .video-thumb {

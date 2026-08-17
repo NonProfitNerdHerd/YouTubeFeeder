@@ -94,6 +94,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1795,7 +1796,8 @@ private fun FeedRow(
                 maxLines = 4,
                 minLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                fontWeight = if (item.unread) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = FontWeight.Normal,
+                fontFamily = FontFamily.Default,
                 style = MaterialTheme.typography.titleMedium.copy(lineHeight = 24.sp),
             )
             val date = item.publishedAt?.take(10).orEmpty()
@@ -1915,7 +1917,12 @@ private fun DetailScreen(
         ) {
             YoutubePlayer(videoId = item.videoId, embeddable = item.embeddable, thumbnailUrl = item.thumbnailUrl)
             CastRow()
-            Text(item.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                item.title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Normal,
+                fontFamily = FontFamily.Default,
+            )
             Text(item.channelTitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!embedded) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

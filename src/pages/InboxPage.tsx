@@ -561,7 +561,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			<div className="preview">
 				<header className="preview-header">
 					<div className="preview-identity">
-						<strong>{item.title}</strong>
+						<span className="video-title">{item.title}</span>
 						<small className="muted">
 							{item.channelTitle} · {relativeRelease(item.publishedAt)}
 						</small>
@@ -676,7 +676,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<img className="channel-avatar" src={item.channelThumbnailUrl || item.thumbnailUrl} alt="" />
 						<img className="video-thumb" src={item.thumbnailUrl} alt="" />
 						<span>
-							<strong>{item.title}</strong>
+							<strong className="video-title">{item.title}</strong>
 							<small className="muted">{item.channelTitle}</small>
 							<small className="muted">{relativeRelease(item.publishedAt)}</small>
 							{actions === 'snoozed' && item.snoozedUntil ? (
@@ -753,7 +753,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					<div>
 						<div>
 							<span className={`badge ${item.contentType}`}>{item.contentType}</span>
-							<strong>{item.title}</strong>
+							<strong className="video-title">{item.title}</strong>
 						</div>
 						<div className="muted">
 							{item.channelTitle} · {relativeRelease(item.publishedAt)}
