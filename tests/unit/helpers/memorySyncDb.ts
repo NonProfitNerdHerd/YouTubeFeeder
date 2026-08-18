@@ -21,6 +21,8 @@ export class MemorySyncDb {
 	quota: Row[] = [];
 	users = new Map<string, Row>();
 	reconcileState: Row | null = null;
+	jobs = new Map<string, Row>();
+	ingest: Row[] = [];
 	failFanout = false;
 
 	prepare(sql: string) {
@@ -72,6 +74,11 @@ export class MemorySyncDb {
 			is_subscribed?: number;
 			bootstrap_status?: string | null;
 			bootstrap_page_token?: string | null;
+			last_reconciled_at?: string | null;
+			last_reconcile_attempt_at?: string | null;
+			reconcile_failure_count?: number;
+			reconcile_next_retry_at?: string | null;
+			reconcile_last_error?: string | null;
 		},
 		userId = 'user-1',
 	) {
@@ -85,6 +92,16 @@ export class MemorySyncDb {
 			uploads_playlist_id: row.uploads_playlist_id,
 			subscribed: row.subscribed ?? 1,
 			last_synchronized_at: row.last_synchronized_at ?? (existing as Row).last_synchronized_at ?? null,
+			last_reconciled_at:
+				row.last_reconciled_at ??
+				(existing as Row).last_reconciled_at ??
+				row.last_synchronized_at ??
+				(existing as Row).last_synchronized_at ??
+				null,
+			last_reconcile_attempt_at: row.last_reconcile_attempt_at ?? (existing as Row).last_reconcile_attempt_at ?? null,
+			reconcile_failure_count: row.reconcile_failure_count ?? (existing as Row).reconcile_failure_count ?? 0,
+			reconcile_next_retry_at: row.reconcile_next_retry_at ?? (existing as Row).reconcile_next_retry_at ?? null,
+			reconcile_last_error: row.reconcile_last_error ?? (existing as Row).reconcile_last_error ?? null,
 			bootstrap_status: row.bootstrap_status ?? (existing as Row).bootstrap_status ?? null,
 			bootstrap_page_token: row.bootstrap_page_token ?? (existing as Row).bootstrap_page_token ?? null,
 		});
@@ -111,7 +128,32 @@ export class MemorySyncDb {
 		if (normalized.startsWith('UPDATE channels SET last_synchronized_at')) {
 			const channelId = String(bound[bound.length - 1]);
 			const row = this.channels.get(channelId);
-			if (row) row.last_synchronized_at = bound.length > 1 ? String(bound[0]) : nowIso();
+			if (!row) return 0;
+			row.last_synchronized_at = String(bound[0]);
+			if (normalized.includes('last_reconciled_at')) {
+				row.last_reconciled_at = String(bound[1]);
+				row.last_reconcile_attempt_at = String(bound[2]);
+				row.reconcile_failure_count = 0;
+				row.reconcile_last_error = null;
+				row.reconcile_next_retry_at = null;
+				if (Number(bound[3]) > 0) row.last_new_video_at = String(bound[4]);
+			}
+			return 1;
+		}
+		if (normalized.startsWith('UPDATE channels SET last_reconcile_attempt_at')) {
+			const channelId = String(bound[bound.length - 1]);
+			const row = this.channels.get(channelId);
+			if (!row) return 0;
+			row.last_reconcile_attempt_at = String(bound[0]);
+			row.reconcile_failure_count = Number(bound[1]);
+			row.reconcile_last_error = String(bound[2]);
+			row.reconcile_next_retry_at = String(bound[3]);
+			return 1;
+		}
+		if (normalized.startsWith('UPDATE websub_subscriptions SET last_notify_at')) {
+			const channelId = String(bound[0]);
+			const row = this.websub.get(channelId);
+			if (row) row.last_notify_at = nowIso();
 			return row ? 1 : 0;
 		}
 		if (normalized.startsWith('UPDATE channels SET uploads_playlist_id = NULL')) {
@@ -243,7 +285,15 @@ export class MemorySyncDb {
 				if (pref.channel_id !== channelId || pref.is_subscribed !== 1 || pref.follow_in_inbox !== 1) continue;
 				const key = `${pref.user_id}:${videoId}`;
 				if (!this.inbox.has(key)) {
-					this.inbox.set(key, { user_id: pref.user_id, video_id: videoId, unread: 1 });
+					this.inbox.set(key, {
+						user_id: pref.user_id,
+						video_id: videoId,
+						unread: 1,
+						archived: 0,
+						hidden: 0,
+						first_seen_at: nowIso(),
+						watched_at: null,
+					});
 					n += 1;
 				}
 			}
@@ -252,7 +302,15 @@ export class MemorySyncDb {
 		if (normalized.startsWith('INSERT OR IGNORE INTO inbox_state')) {
 			const key = `${bound[0]}:${bound[1]}`;
 			if (!this.inbox.has(key)) {
-				this.inbox.set(key, { user_id: bound[0], video_id: bound[1], unread: 1 });
+				this.inbox.set(key, {
+					user_id: bound[0],
+					video_id: bound[1],
+					unread: 1,
+					archived: 0,
+					hidden: 0,
+					first_seen_at: nowIso(),
+					watched_at: null,
+				});
 				return 1;
 			}
 			return 0;
@@ -423,6 +481,35 @@ export class MemorySyncDb {
 			}
 			return 0;
 		}
+		if (normalized.startsWith('INSERT INTO feed_ingest_daily')) {
+			const day = String(bound[0]);
+			const source = String(bound[1]);
+			const added = Number(bound[2] ?? 0);
+			const existing = this.ingest.find((row) => row.day === day && row.source === source);
+			if (existing) existing.videos_added = Number(existing.videos_added ?? 0) + added;
+			else this.ingest.push({ day, source, videos_added: added });
+			return 1;
+		}
+		if (normalized.startsWith('INSERT INTO feed_sync_jobs')) {
+			const id = String(bound[0]);
+			const row: Row = {
+				id,
+				kind: bound[1],
+				status: bound[2],
+				user_id: bound[3],
+				cursor_channel_id: bound[4],
+				channels_total: bound[5],
+				channels_checked: bound[6],
+				videos_added: bound[7],
+				error_count: bound[8],
+				last_error: bound[9],
+				started_at: bound[10],
+				completed_at: bound[11],
+				updated_at: nowIso(),
+			};
+			this.jobs.set(id, { ...(this.jobs.get(id) ?? {}), ...row });
+			return 1;
+		}
 		if (normalized.startsWith('INSERT INTO channels')) {
 			const channelId = String(bound[0]);
 			const existing = this.channels.get(channelId) ?? {};
@@ -509,6 +596,104 @@ export class MemorySyncDb {
 		}
 		if (normalized.includes('FROM feed_reconcile_state')) {
 			return this.reconcileState ? [this.reconcileState] : [];
+		}
+		if (normalized.includes('FROM feed_sync_jobs')) {
+			let rows = [...this.jobs.values()];
+			if (normalized.includes("status IN ('queued', 'running')")) {
+				rows = rows.filter((row) => row.status === 'queued' || row.status === 'running');
+			}
+			if (normalized.includes('AND kind = ?')) {
+				rows = rows.filter((row) => row.kind === bound[0]);
+			}
+			if (normalized.includes('WHERE id = ?')) {
+				const row = this.jobs.get(String(bound[0]));
+				return row ? [row] : [];
+			}
+			rows.sort((a, b) => String(b.started_at ?? '').localeCompare(String(a.started_at ?? '')));
+			return rows.slice(0, 1);
+		}
+		if (normalized.includes('FROM feed_ingest_daily')) {
+			const day = String(bound[0]);
+			const source = bound.length > 1 ? String(bound[1]) : null;
+			return this.ingest.filter((row) => row.day === day && (!source || row.source === source));
+		}
+		if (normalized.includes('SELECT endpoint, call_count, general_units FROM api_quota_daily')) {
+			const day = String(bound[0]);
+			return this.quota.filter((row) => row.day === day).sort((a, b) => String(a.endpoint).localeCompare(String(b.endpoint)));
+		}
+		if (normalized.includes('MAX(COALESCE(v.published_at')) {
+			const userId = String(bound[0]);
+			let newest: string | null = null;
+			for (const row of this.inbox.values()) {
+				if (row.user_id !== userId || Number(row.archived ?? 0) === 1 || Number(row.hidden ?? 0) === 1) continue;
+				const video = this.videos.get(String(row.video_id));
+				const published = String(video?.published_at ?? video?.scheduled_start_at ?? row.first_seen_at ?? '');
+				if (published && (!newest || published > newest)) newest = published;
+			}
+			return [{ newest }];
+		}
+		if (normalized.includes('FROM channels c') && normalized.includes('EXISTS (SELECT 1 FROM channel_prefs')) {
+			const subscribed = [...this.channels.values()].filter((ch) =>
+				[...this.prefs.values()].some((p) => p.channel_id === ch.channel_id && p.is_subscribed === 1),
+			);
+			if (normalized.includes('SELECT COUNT(*) AS n')) {
+				let rows = subscribed;
+				if (normalized.includes('c.channel_id > ?')) {
+					rows = rows.filter((ch) => String(ch.channel_id) > String(bound[0]));
+				} else if (normalized.includes('last_reconciled_at <= ?')) {
+					const cutoff = String(bound[0]);
+					const nowIso = String(bound[1] ?? '');
+					rows = rows.filter((ch) => {
+						if (ch.reconcile_next_retry_at != null && String(ch.reconcile_next_retry_at) > nowIso) return false;
+						return ch.last_reconciled_at == null || String(ch.last_reconciled_at) <= cutoff;
+					});
+				} else if (normalized.includes('c.last_reconciled_at IS NOT NULL AND c.last_reconciled_at > ?')) {
+					rows = rows.filter((ch) => ch.last_reconciled_at != null && String(ch.last_reconciled_at) > String(bound[0]));
+				} else if (normalized.includes('bootstrap_status')) {
+					rows = rows.filter((ch) => {
+						const status = ch.bootstrap_status;
+						return status == null || status === 'pending' || status === 'in_progress';
+					});
+				}
+				return [{ n: rows.length }];
+			}
+			if (normalized.includes('MIN(last_reconciled_at)')) {
+				const times = subscribed.map((ch) => ch.last_reconciled_at).filter((value) => value != null) as string[];
+				times.sort();
+				return [{ oldest: times[0] ?? null }];
+			}
+			if (normalized.includes('reconcile_failure_count')) {
+				let rows = subscribed.filter((ch) => {
+					if (normalized.includes('? IS NULL OR c.channel_id > ?')) {
+						const after = bound[0];
+						if (after != null && after !== '') return String(ch.channel_id) > String(bound[1] ?? after);
+						return true;
+					}
+					const cutoff = String(bound[0] ?? '');
+					const nowIso = String(bound[1] ?? '');
+					if (ch.reconcile_next_retry_at != null && String(ch.reconcile_next_retry_at) > nowIso) return false;
+					return ch.last_reconciled_at == null || String(ch.last_reconciled_at) <= cutoff;
+				});
+				if (normalized.includes('ORDER BY c.channel_id ASC')) {
+					rows = rows.sort((a, b) => String(a.channel_id).localeCompare(String(b.channel_id)));
+				} else {
+					rows = rows.sort((a, b) => {
+						if (a.last_reconciled_at == null && b.last_reconciled_at != null) return -1;
+						if (a.last_reconciled_at != null && b.last_reconciled_at == null) return 1;
+						const byTime = String(a.last_reconciled_at ?? '').localeCompare(String(b.last_reconciled_at ?? ''));
+						if (byTime !== 0) return byTime;
+						return String(a.channel_id).localeCompare(String(b.channel_id));
+					});
+				}
+				const limit = Number(bound[bound.length - 1] ?? rows.length);
+				return rows.slice(0, limit).map((ch) => ({
+					channel_id: ch.channel_id,
+					uploads_playlist_id: ch.uploads_playlist_id,
+					last_reconciled_at: ch.last_reconciled_at ?? null,
+					reconcile_next_retry_at: ch.reconcile_next_retry_at ?? null,
+					reconcile_failure_count: Number(ch.reconcile_failure_count ?? 0),
+				}));
+			}
 		}
 		if (normalized.includes('LEFT JOIN websub_subscriptions w') && normalized.includes('FROM channels c')) {
 			const now = String(bound[0] ?? '');

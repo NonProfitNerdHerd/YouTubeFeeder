@@ -365,7 +365,7 @@ describe('scheduler and quota accounting', () => {
 		expect(feed).not.toContain('syncAllDueContent');
 		expect(feed).not.toContain('syncContent(');
 		expect(feed).toContain('processPendingWebSubEvents');
-		expect(feed).toContain('runStaleChannelReconcile');
+		expect(feed).toContain('reconcileDueChannels');
 		expect(feed).not.toContain('catchUpChannel');
 		const sync = readFileSync(new URL('../../worker/services/sync.ts', import.meta.url), 'utf8');
 		expect(sync).toContain('enqueueHubSubscriptions');

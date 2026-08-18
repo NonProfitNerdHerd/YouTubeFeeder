@@ -143,6 +143,27 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(booting = false, signedIn = false, error = message) }
     }
 
+    fun onAppResume() {
+        if (!_state.value.signedIn) return
+        viewModelScope.launch {
+            try {
+                val newest = api.syncStatus().newestInboxPublishedAt ?: return@launch
+                val current = _state.value.items.firstOrNull()?.publishedAt
+                if (inboxHeadIsStale(current, newest)) refreshFeed()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun inboxHeadIsStale(current: String?, server: String): Boolean {
+        if (current.isNullOrBlank()) return true
+        return try {
+            Instant.parse(server).isAfter(Instant.parse(current))
+        } catch (_: Exception) {
+            server > current
+        }
+    }
+
     fun selectView(view: FeedView) {
         _state.update {
             it.copy(

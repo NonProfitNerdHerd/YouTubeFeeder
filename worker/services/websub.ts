@@ -167,6 +167,39 @@ export async function dailyQuotaUsed(db: D1Database, endpoint: string): Promise<
 	return row?.general_units ?? 0;
 }
 
+export type IngestSource = 'websub' | 'reconcile' | 'catchup' | 'backfill';
+
+export async function recordIngest(db: D1Database, source: IngestSource, videosAdded: number): Promise<void> {
+	if (videosAdded < 1) return;
+	const day = new Date().toISOString().slice(0, 10);
+	await db
+		.prepare(
+			`INSERT INTO feed_ingest_daily (day, source, videos_added)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT(day, source) DO UPDATE SET videos_added = videos_added + excluded.videos_added`,
+		)
+		.bind(day, source, videosAdded)
+		.run();
+}
+
+export async function ingestAddedToday(db: D1Database, source: IngestSource): Promise<number> {
+	const day = new Date().toISOString().slice(0, 10);
+	const row = await db
+		.prepare(`SELECT videos_added FROM feed_ingest_daily WHERE day = ? AND source = ?`)
+		.bind(day, source)
+		.first<{ videos_added: number }>();
+	return Number(row?.videos_added ?? 0);
+}
+
+export async function quotaRowsToday(db: D1Database): Promise<Array<{ endpoint: string; call_count: number; general_units: number }>> {
+	const day = new Date().toISOString().slice(0, 10);
+	const rows = await db
+		.prepare(`SELECT endpoint, call_count, general_units FROM api_quota_daily WHERE day = ? ORDER BY endpoint`)
+		.bind(day)
+		.all<{ endpoint: string; call_count: number; general_units: number }>();
+	return rows.results ?? [];
+}
+
 export async function countWebSubEvents(db: D1Database): Promise<{ pending: number; error: number; dead: number }> {
 	const rows = await db
 		.prepare(`SELECT status, COUNT(*) AS n FROM websub_events GROUP BY status`)
@@ -483,6 +516,13 @@ export async function handleWebSubNotification(env: Env, request: Request): Prom
 		return { response: new Response('invalid entry', { status: 400 }), inserted: 0 };
 	}
 	const inserted = await insertWebSubEvents(env.DB, entries);
+	if (payloadChannel && entries.length) {
+		await env.DB.prepare(
+			`UPDATE websub_subscriptions SET last_notify_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE channel_id = ?`,
+		)
+			.bind(payloadChannel)
+			.run();
+	}
 	await recordQuota(env.DB, 'websub.notify', { callCount: 1, generalUnits: 0 });
 	return { response: new Response(null, { status: 204 }), inserted };
 }

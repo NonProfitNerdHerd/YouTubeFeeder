@@ -40,7 +40,7 @@ describe('OAuth and Feed isolation audit', () => {
 		const wrangler = readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8');
 		expect(wrangler).toContain('"name": "youtube-feeder-worker"');
 		expect(wrangler.match(/"database_id"/g)?.length).toBe(1);
-		expect(wrangler).toContain('0 1,4,6,8,10,12,14,16,18,20,23 * * *');
+		expect(wrangler).toContain('0 */2 * * *');
 	});
 
 	it('scheduled handler no longer playlist-polls every user', () => {

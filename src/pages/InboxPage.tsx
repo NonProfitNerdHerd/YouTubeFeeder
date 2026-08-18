@@ -10,6 +10,7 @@ import { TEST_APK_PATH, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease'
 import { UNCATEGORIZED_CATEGORY_ID, isUncategorizedFilter } from '../lib/categories';
 import { qrSvgForUrl } from '../lib/qrSvg';
 import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../lib/syncStatus';
+import { formatFeedHealth, inboxIsStale } from '../lib/inboxFreshness';
 import { LivePage } from './LivePage';
 import '../styles/app.css';
 import '../styles/live.css';
@@ -31,6 +32,14 @@ interface SyncApiBody {
 	status?: string;
 	budgetExhausted?: boolean;
 	remainingBudget?: number;
+}
+
+interface FeedSyncStatusBody {
+	newestInboxPublishedAt?: string | null;
+	overdueCount?: number;
+	quotaLimited?: boolean;
+	reconciledLastTwoHours?: number;
+	activeChannels?: number;
 }
 
 function syncMessage(body: SyncApiBody, fallback: string): string {
@@ -218,6 +227,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [status, setStatus] = useState<string | null>(null);
 	const [syncWarnings, setSyncWarnings] = useState<SyncWarning[]>([]);
 	const [showSkipDetails, setShowSkipDetails] = useState(false);
+	const [newVideosAvailable, setNewVideosAvailable] = useState(false);
+	const [feedHealth, setFeedHealth] = useState<FeedSyncStatusBody | null>(null);
+	const inboxHeadRef = useRef<string | null>(null);
 	const autoStarted = useRef(false);
 	const androidClient = isAndroidClient();
 	const [narrow, setNarrow] = useState(isNarrowFeeder());
@@ -280,9 +292,26 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					? inboxBody.unwatchedCount
 					: inboxBody.items.filter((item) => !item.watchedAt).length,
 			);
+			inboxHeadRef.current = inboxBody.items[0]?.publishedAt ?? null;
+			setNewVideosAvailable(false);
 		},
 		[channelId, categoryId, leftTab, watchlistId, watchedFilter],
 	);
+
+	const checkInboxFreshness = useCallback(async () => {
+		if (androidClient) return;
+		try {
+			const res = await fetch('/api/sync/status', { credentials: 'same-origin' });
+			if (!res.ok) return;
+			const body = (await res.json()) as FeedSyncStatusBody;
+			setFeedHealth(body);
+			if (inboxIsStale(inboxHeadRef.current, body.newestInboxPublishedAt)) {
+				setNewVideosAvailable(true);
+			}
+		} catch {
+			/* keep the current list */
+		}
+	}, [androidClient]);
 
 	useEffect(() => {
 		const ac = new AbortController();
@@ -301,7 +330,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			void load().catch(() => undefined);
 		};
 		const onVisible = () => {
-			if (document.visibilityState === 'visible') void load().catch(() => undefined);
+			if (document.visibilityState === 'visible') void checkInboxFreshness();
 		};
 		window.addEventListener('resize', onResize);
 		window.addEventListener('offline', onOffline);
@@ -313,7 +342,16 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			window.removeEventListener('online', onOnline);
 			document.removeEventListener('visibilitychange', onVisible);
 		};
-	}, [load]);
+	}, [load, checkInboxFreshness]);
+
+	useEffect(() => {
+		if (androidClient || mainSection !== 'feed') return;
+		const id = window.setInterval(() => {
+			void checkInboxFreshness();
+		}, 60_000);
+		void checkInboxFreshness();
+		return () => window.clearInterval(id);
+	}, [androidClient, mainSection, checkInboxFreshness]);
 
 	useEffect(() => {
 		if (androidClient && mainSection !== 'feed') setMainSection('feed');
@@ -1474,14 +1512,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							</label>
 							{watchFilterBar()}
 							{!androidClient ? (
-								<button
-									className="feed-toolbar-sync"
-									type="button"
-									disabled={syncing || streamsList.length === 0}
-									onClick={() => void syncNow()}
-								>
-									{syncing ? 'Syncing…' : `Sync now (${streamsList.length})`}
-								</button>
+								<div className="feed-toolbar-sync-wrap">
+									<button
+										className="feed-toolbar-sync"
+										type="button"
+										disabled={syncing || streamsList.length === 0}
+										onClick={() => void syncNow()}
+									>
+										{syncing ? 'Syncing…' : `Sync now (${streamsList.length})`}
+									</button>
+									{feedHealth ? (
+										<p className="feed-sync-health">{formatFeedHealth(feedHealth)}</p>
+									) : null}
+								</div>
 							) : null}
 						</>
 					) : null}
@@ -1493,6 +1536,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				</nav>
 			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
+			{newVideosAvailable ? (
+				<p className="status-line">
+					<button className="new-videos-banner" type="button" onClick={() => void load()}>
+						New videos available
+					</button>
+				</p>
+			) : null}
 			{status || error ? (
 				<div
 					className={

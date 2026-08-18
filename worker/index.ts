@@ -38,8 +38,9 @@ import { addLiveSourceFromInput, discoverLiveSources, getLiveJobs, getLiveMonito
 import { getQuadSettings, putQuadSettings } from './db/quadSettings';
 import { runScheduledQuadRefresh } from './services/quadSchedule';
 import { catchUpChannel, syncSubscriptions } from './services/sync';
-import { runFeedMaintenance, syncFeedNow } from './services/feedSchedule';
-import { handleWebSubNotification, handleWebSubVerification, WEBSUB_CALLBACK_PATH, countWebSubEvents } from './services/websub';
+import { runFeedMaintenance, syncFeedNow, continueOverdueReconcile } from './services/feedSchedule';
+import { buildFeedSyncStatus } from './services/feedStatus';
+import { handleWebSubNotification, handleWebSubVerification, WEBSUB_CALLBACK_PATH } from './services/websub';
 import { processPendingWebSubEvents } from './services/websubProcess';
 import { YoutubeApiError } from './services/youtube';
 import { isLiveGridSize } from '../src/types';
@@ -448,12 +449,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 	if (path === '/api/sync/status' && request.method === 'GET') {
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
-		const websubEvents = await countWebSubEvents(env.DB);
-		return json({
-			lastSyncAt: await lastSyncAt(env.DB, user.id),
-			connected: Boolean(user.encrypted_refresh_token),
-			websubEvents,
-		});
+		return json(
+			await buildFeedSyncStatus(env, user.id, await lastSyncAt(env.DB, user.id), Boolean(user.encrypted_refresh_token)),
+		);
 	}
 
 	if ((path === '/api/sync/subscriptions' || path === '/api/sync/content') && request.method === 'POST') {
@@ -477,7 +475,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			path === '/api/sync/subscriptions'
 				? await syncSubscriptions(env, user.id, token)
 				: await syncFeedNow(env, user.id);
-		const status = result.status === 'ok' ? 200 : result.status === 'quota' ? 429 : 502;
+		const status =
+			result.status === 'ok' ? 200 : result.status === 'quota' || result.status === 'busy' ? 429 : 502;
 		return json(result, { status });
 	}
 
@@ -513,7 +512,11 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const token = request.headers.get('x-cron-sync') ?? '';
 		const payload = await verifySignedValue(secret, token);
 		if (!payload?.startsWith('cron-content:')) return apiError(401, 'unauthorized', 'Invalid cron token.');
-		const summary = await runFeedMaintenance(env);
+		if (payload.startsWith('cron-content:continue:')) {
+			const summary = await continueOverdueReconcile(env, ctx);
+			return json({ ok: true, ...summary });
+		}
+		const summary = await runFeedMaintenance(env, ctx);
 		return json({ ok: true, ...summary });
 	}
 
@@ -823,7 +826,7 @@ export default {
 		}
 	},
 	async scheduled(_controller, env, ctx): Promise<void> {
-		ctx.waitUntil(runFeedMaintenance(env));
+		ctx.waitUntil(runFeedMaintenance(env, ctx));
 		ctx.waitUntil(
 			(async () => {
 				const users = await env.DB.prepare(

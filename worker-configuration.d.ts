@@ -11,6 +11,10 @@ interface Env {
 	MOCK_DATA?: string;
 	PUBLIC_ORIGIN?: string;
 	YOUTUBE_API_KEY?: string;
+	YOUTUBE_DAILY_QUOTA?: string;
+	YOUTUBE_QUOTA_WARN?: string;
+	YOUTUBE_RECONCILE_RESERVE?: string;
+	YOUTUBE_BACKFILL_CUTOFF?: string;
 }
 
 interface ExecutionContext {

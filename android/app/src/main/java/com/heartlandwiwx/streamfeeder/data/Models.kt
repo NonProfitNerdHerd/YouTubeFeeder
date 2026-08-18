@@ -54,6 +54,12 @@ data class InboxPage(
     val unwatchedCount: Int,
 )
 
+data class FeedSyncStatus(
+    val newestInboxPublishedAt: String?,
+    val overdueCount: Int = 0,
+    val quotaLimited: Boolean = false,
+)
+
 data class CategoryRecord(
     val id: String,
     val name: String,

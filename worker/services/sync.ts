@@ -11,7 +11,7 @@ import {
 	type YoutubeClient,
 	YoutubeApiError,
 } from './youtube';
-import { enqueueHubSubscriptions, dailyQuotaUsed, recordQuota, recordYoutubeCalls } from './websub';
+import { enqueueHubSubscriptions, dailyQuotaUsed, recordIngest, recordQuota, recordYoutubeCalls } from './websub';
 
 interface SubscriptionPage {
 	nextPageToken?: string;
@@ -65,7 +65,7 @@ export interface SyncWarning {
 
 export interface SyncResult {
 	syncType: 'subscriptions' | 'content';
-	status: 'ok' | 'error' | 'quota';
+	status: 'ok' | 'error' | 'quota' | 'busy';
 	channelsChecked: number;
 	videosAdded: number;
 	videosUpdated: number;
@@ -900,6 +900,7 @@ export async function catchUpChannel(
 		await persistCatchupCursor(env.DB, userId, channelId, done ? null : page.nextPageToken ?? null, done ? 0 : nextPulled);
 		if (yt.quotaUsed) await recordQuota(env.DB, 'catchup', { callCount: yt.quotaUsed, generalUnits: yt.quotaUsed });
 		await recordYoutubeCalls(env.DB, yt);
+		await recordIngest(env.DB, 'catchup', videosAdded);
 		const result: SyncResult = {
 			syncType: 'content',
 			status: 'ok',

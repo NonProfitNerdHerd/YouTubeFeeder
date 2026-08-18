@@ -445,6 +445,23 @@ export async function lastSyncAt(db: D1Database, userId: string): Promise<string
 	return row?.started_at ?? null;
 }
 
+export async function newestInboxPublishedAt(db: D1Database, userId: string): Promise<string | null> {
+	const nowExpr = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+	const row = await db
+		.prepare(
+			`SELECT MAX(COALESCE(v.published_at, v.scheduled_start_at, i.first_seen_at)) AS newest
+			 FROM inbox_state i
+			 JOIN videos v ON v.video_id = i.video_id
+			 WHERE i.user_id = ?
+			 AND i.archived = 0
+			 AND i.hidden = 0
+			 AND (i.snoozed_until IS NULL OR i.snoozed_until <= ${nowExpr})`,
+		)
+		.bind(userId)
+		.first<{ newest: string | null }>();
+	return row?.newest ?? null;
+}
+
 export async function listCategories(db: D1Database, userId: string): Promise<CategoryRecord[]> {
 	const rows = await db
 		.prepare(`SELECT id, name FROM categories WHERE user_id = ? ORDER BY name COLLATE NOCASE`)

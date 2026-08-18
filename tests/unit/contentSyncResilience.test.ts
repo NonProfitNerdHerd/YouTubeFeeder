@@ -534,6 +534,10 @@ describe('frontend sync warning messaging', () => {
 		expect(source).toContain("status-line warning");
 		expect(source).toContain("throw new Error(syncMessage(contentBody, 'Video sync failed.'))");
 		expect(source).toContain('if (next === offset) throw new Error');
+		expect(source).toContain('if (contentBody.done) break');
+		expect(source).toContain('await load()');
+		expect(source).toContain('New videos available');
+		expect(source).toContain('checkInboxFreshness');
 	});
 });
 

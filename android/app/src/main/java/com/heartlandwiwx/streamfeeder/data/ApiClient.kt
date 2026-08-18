@@ -54,6 +54,15 @@ class ApiClient(
         )
     }
 
+    suspend fun syncStatus(): FeedSyncStatus = withContext(Dispatchers.IO) {
+        val obj = getJson("/api/sync/status")
+        FeedSyncStatus(
+            newestInboxPublishedAt = optionalString(obj, "newestInboxPublishedAt"),
+            overdueCount = obj.optInt("overdueCount", 0),
+            quotaLimited = obj.optBoolean("quotaLimited", false),
+        )
+    }
+
     suspend fun channels(): List<ChannelRecord> = withContext(Dispatchers.IO) {
         val arr = getJson("/api/channels").optJSONArray("channels") ?: JSONArray()
         (0 until arr.length()).map { parseChannel(arr.getJSONObject(it)) }
