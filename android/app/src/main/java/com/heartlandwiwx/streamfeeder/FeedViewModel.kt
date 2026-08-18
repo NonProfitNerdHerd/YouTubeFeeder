@@ -664,6 +664,8 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         samplerVideoId = null
         _state.update { it.copy(selected = next) }
     }
+
+    fun flushPlayback() {
         val id = samplerVideoId ?: return
         persistProgress(id, sampler.playbackSeconds, lastPosition, playbackEnded)
     }
@@ -979,17 +981,19 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                         signedIn = true,
                     )
                 }
-                val items = if (
+                val skipFeed =
                     _state.value.view.isLocal ||
                     (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null) ||
                     (_state.value.view == FeedView.Categories && _state.value.categoryId == null)
-                ) {
-                    emptyList()
-                } else {
-                    loadInbox()
-                }
+                val page = if (skipFeed) null else loadInbox()
                 _state.update {
-                    it.copy(booting = false, loading = false, items = items)
+                    it.copy(
+                        booting = false,
+                        loading = false,
+                        items = page?.items ?: emptyList(),
+                        feedHasMore = page?.hasMore ?: false,
+                        feedLoadingMore = false,
+                    )
                 }
             } catch (e: ApiException) {
                 if (e.code == 401) {
