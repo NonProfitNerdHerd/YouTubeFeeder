@@ -85,6 +85,7 @@ class MainActivity : AppCompatActivity() {
                             onFlushPlayback = viewModel::flushPlayback,
                             onPlaythrough = viewModel::startPlaythrough,
                             onStopPlaythrough = viewModel::stopPlaythrough,
+                            onLoadMore = viewModel::loadMoreFeed,
                         )
                     }
                 }

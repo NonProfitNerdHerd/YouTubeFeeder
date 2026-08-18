@@ -52,6 +52,7 @@ data class InboxPage(
     val items: List<InboxItem>,
     val count: Int,
     val unwatchedCount: Int,
+    val hasMore: Boolean = false,
 )
 
 data class FeedSyncStatus(

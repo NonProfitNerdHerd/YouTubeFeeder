@@ -139,6 +139,15 @@
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
+	overflow-anchor: auto;
+}
+
+.inbox-load-more {
+	height: 1px;
+}
+
+.inbox-load-more-status {
+	padding: 8px 10px 16px;
 }
 
 .playthrough-bar {
@@ -507,17 +516,6 @@
 	font-size: 0.75rem;
 	color: var(--muted);
 	white-space: nowrap;
-}
-
-.new-videos-banner {
-	font: inherit;
-	font-size: 0.9rem;
-	color: var(--accent);
-	background: none;
-	border: 0;
-	padding: 0;
-	cursor: pointer;
-	text-decoration: underline;
 }
 
 .tabs {

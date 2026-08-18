@@ -138,6 +138,10 @@ function inboxBinds(
 	return binds;
 }
 
+const VIDEO_ID = /^[a-zA-Z0-9_-]{11}$/;
+const INBOX_SORT_AT = `COALESCE(v.published_at, v.scheduled_start_at, i.first_seen_at)`;
+export const INBOX_PAGE_LIMIT = 200;
+
 export async function countInbox(
 	db: D1Database,
 	userId: string,
@@ -178,8 +182,25 @@ export async function listInbox(
 	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
 	watchlistId: string | null = null,
 	watched: WatchedFilter = 'all',
+	beforeId: string | null = null,
 ): Promise<InboxItem[]> {
 	if (view === 'watchlist' && !watchlistId) return [];
+	let cursorSql = '';
+	const cursorBinds: string[] = [];
+	if (beforeId && VIDEO_ID.test(beforeId)) {
+		const head = await db
+			.prepare(
+				`SELECT ${INBOX_SORT_AT} AS sort_at
+				 FROM inbox_state i
+				 JOIN videos v ON v.video_id = i.video_id
+				 WHERE i.user_id = ? AND i.video_id = ?`,
+			)
+			.bind(userId, beforeId)
+			.first<{ sort_at: string | null }>();
+		if (!head?.sort_at) return [];
+		cursorSql = `AND (${INBOX_SORT_AT} < ? OR (${INBOX_SORT_AT} = ? AND v.video_id < ?))`;
+		cursorBinds.push(head.sort_at, head.sort_at, beforeId);
+	}
 	const sql = `
 		SELECT
 			v.video_id, v.channel_id, c.title AS channel_title, c.thumbnail_url AS channel_thumbnail,
@@ -190,10 +211,11 @@ export async function listInbox(
 			i.watched_at, COALESCE(i.playback_seconds, 0) AS playback_seconds,
 			COALESCE(i.last_position_seconds, 0) AS last_position_seconds, i.watch_updated_at
 		${inboxWhere(channelId, categoryId, view, watched)}
-		ORDER BY COALESCE(v.published_at, v.scheduled_start_at, i.first_seen_at) DESC
-		LIMIT 200
+		${cursorSql}
+		ORDER BY ${INBOX_SORT_AT} DESC, v.video_id DESC
+		LIMIT ${INBOX_PAGE_LIMIT}
 	`;
-	const binds = inboxBinds(userId, channelId, categoryId, view, watchlistId);
+	const binds = [...inboxBinds(userId, channelId, categoryId, view, watchlistId), ...cursorBinds];
 	const rows = await db
 		.prepare(sql)
 		.bind(...binds)
@@ -255,8 +277,6 @@ export async function listInbox(
 		watchUpdatedAt: row.watch_updated_at,
 	}));
 }
-
-const VIDEO_ID = /^[a-zA-Z0-9_-]{11}$/;
 
 export async function hideInboxItem(db: D1Database, userId: string, videoId: string): Promise<boolean> {
 	if (!VIDEO_ID.test(videoId)) return false;

@@ -23,7 +23,7 @@ import {
 	ingestAddedToday,
 	topicForChannel,
 } from '../../worker/services/websub';
-import { inboxIsStale, formatFeedHealth } from '../../src/lib/inboxFreshness';
+import { inboxIsStale, formatFeedHealth, prependNewerInboxItems, appendOlderInboxItems } from '../../src/lib/inboxFreshness';
 import { nextAttemptAt } from '../../worker/services/websubProcess';
 
 const CH_A = 'UCaaaaaaaaaaaaaaaaaaaaaa';
@@ -291,6 +291,43 @@ describe('inbox freshness and wiring', () => {
 		expect(formatFeedHealth({ overdueCount: 3 })).toContain('3 channels due');
 	});
 
+	it('prepends newer unseen videos above the current list', () => {
+		const current = [
+			{ videoId: 'aaaa1111111', publishedAt: '2026-08-18T10:00:00Z', scheduledStartAt: null, firstSeenAt: '2026-08-18T10:00:00Z' },
+			{ videoId: 'bbbb2222222', publishedAt: '2026-08-18T09:00:00Z', scheduledStartAt: null, firstSeenAt: '2026-08-18T09:00:00Z' },
+		];
+		const incoming = [
+			{ videoId: 'cccc3333333', publishedAt: '2026-08-18T11:00:00Z', scheduledStartAt: null, firstSeenAt: '2026-08-18T11:00:00Z' },
+			...current,
+		];
+		expect(prependNewerInboxItems(current, incoming, '2026-08-18T10:00:00Z').map((item) => item.videoId)).toEqual([
+			'cccc3333333',
+			'aaaa1111111',
+			'bbbb2222222',
+		]);
+		const unchanged = prependNewerInboxItems(current, current, '2026-08-18T10:00:00Z');
+		expect(unchanged).toBe(current);
+		expect(
+			prependNewerInboxItems(
+				current,
+				[
+					{ videoId: 'oldvid00001', publishedAt: '2026-08-18T08:00:00Z', scheduledStartAt: null, firstSeenAt: '2026-08-18T08:00:00Z' },
+					...current,
+				],
+				'2026-08-18T10:00:00Z',
+			),
+		).toBe(current);
+	});
+
+	it('appends older unseen videos below the current list', () => {
+		const current = [
+			{ videoId: 'aaaa1111111', publishedAt: '2026-08-18T10:00:00Z', scheduledStartAt: null, firstSeenAt: '2026-08-18T10:00:00Z' },
+		];
+		const older = { videoId: 'bbbb2222222', publishedAt: '2026-08-18T09:00:00Z', scheduledStartAt: null, firstSeenAt: '2026-08-18T09:00:00Z' };
+		expect(appendOlderInboxItems(current, [older, current[0]!]).map((item) => item.videoId)).toEqual(['aaaa1111111', 'bbbb2222222']);
+		expect(appendOlderInboxItems(current, current)).toBe(current);
+	});
+
 	it('cron densifies to every 2 hours and Sync now uses the job path', () => {
 		const wrangler = readFileSync(new URL('../../wrangler.jsonc', import.meta.url), 'utf8');
 		expect(wrangler).toContain('0 */2 * * *');
@@ -299,6 +336,7 @@ describe('inbox freshness and wiring', () => {
 		expect(index).toContain('continueOverdueReconcile');
 		expect(index).toContain('buildFeedSyncStatus');
 		expect(index).toContain('runFeedMaintenance(env, ctx)');
+		expect(index).toContain('beforeId');
 		expect(index).not.toContain('syncAllDueContent');
 		const feed = readFileSync(new URL('../../worker/services/feedSchedule.ts', import.meta.url), 'utf8');
 		expect(feed.indexOf('reconcileDueChannels')).toBeGreaterThan(feed.indexOf('processPendingWebSubEvents'));

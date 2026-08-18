@@ -37,6 +37,7 @@ class ApiClient(
         watchlistId: String? = null,
         channelId: String? = null,
         watched: String = "all",
+        beforeId: String? = null,
     ): InboxPage = withContext(Dispatchers.IO) {
         val q = buildString {
             append("view=").append(view)
@@ -44,6 +45,7 @@ class ApiClient(
             if (!watchlistId.isNullOrBlank()) append("&watchlistId=").append(watchlistId)
             if (!channelId.isNullOrBlank()) append("&channelId=").append(channelId)
             if (watched != "all") append("&watched=").append(watched)
+            if (!beforeId.isNullOrBlank()) append("&beforeId=").append(beforeId)
         }
         val obj = getJson("/api/inbox?$q")
         val arr = obj.optJSONArray("items") ?: JSONArray()
@@ -51,6 +53,7 @@ class ApiClient(
             items = (0 until arr.length()).map { parseInboxItem(arr.getJSONObject(it)) },
             count = obj.optInt("count", arr.length()),
             unwatchedCount = obj.optInt("unwatchedCount", 0),
+            hasMore = obj.optBoolean("hasMore", arr.length() >= 200),
         )
     }
 

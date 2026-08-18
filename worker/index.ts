@@ -16,7 +16,7 @@ import {
 	readOauthState,
 	readSessionUserId,
 } from './auth/session';
-import { lastSyncAt, listInbox, countInbox, countUnwatchedInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, applyInboxProgress, markInboxWatched, unwatchInboxItem, watchAllInbox, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist } from './db/queries';
+import { lastSyncAt, listInbox, countInbox, countUnwatchedInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, applyInboxProgress, markInboxWatched, unwatchInboxItem, watchAllInbox, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist, INBOX_PAGE_LIMIT } from './db/queries';
 import {
 	applyLiveLayout,
 	assignLiveSlot,
@@ -359,10 +359,13 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			viewParam === 'snoozed' || viewParam === 'deleted' || viewParam === 'watchlist' ? viewParam : 'inbox';
 		const watchlistId = url.searchParams.get('watchlistId');
 		const watched = parseWatchedFilter(url.searchParams.get('watched'));
-		const items = await listInbox(env.DB, user.id, channelId, categoryId, view, watchlistId, watched);
+		const beforeId = url.searchParams.get('beforeId');
+		const items = await listInbox(env.DB, user.id, channelId, categoryId, view, watchlistId, watched, beforeId);
+		const hasMore = items.length === INBOX_PAGE_LIMIT;
+		if (beforeId) return json({ items, hasMore });
 		const count = await countInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
 		const unwatchedCount = await countUnwatchedInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
-		return json({ items, count, unwatchedCount });
+		return json({ items, count, unwatchedCount, hasMore });
 	}
 
 	if (path === '/api/inbox/watch-all' && request.method === 'POST') {

@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -106,6 +107,7 @@ import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -269,6 +271,7 @@ fun FeedScreen(
     onFlushPlayback: () -> Unit,
     onPlaythrough: () -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
+    onLoadMore: () -> Unit = {},
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -401,6 +404,9 @@ fun FeedScreen(
             onCompleteSnoozeExit = onCompleteSnoozeExit,
             onPlaythrough = onPlaythrough,
             onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
+            hasMore = state.feedHasMore,
+            loadingMore = state.feedLoadingMore,
         )
         EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
         PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
@@ -653,6 +659,7 @@ fun FeedScreen(
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
                                     onPlaythrough = onPlaythrough,
                                     onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                                 )
                             }
                             FeedView.Watchlist -> {
@@ -686,6 +693,7 @@ fun FeedScreen(
                                     detailVideoId = selected?.videoId,
                                     onPlaythrough = onPlaythrough,
                                     onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                                 )
                             }
                             FeedView.Categories -> {
@@ -708,6 +716,7 @@ fun FeedScreen(
                                         detailVideoId = selected?.videoId,
                                         onPlaythrough = onPlaythrough,
                                         onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                                     )
                                 }
                             }
@@ -722,6 +731,7 @@ fun FeedScreen(
                                     detailVideoId = selected?.videoId,
                                     onPlaythrough = onPlaythrough,
                                     onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                                 )
                             }
                         }
@@ -812,6 +822,9 @@ fun FeedScreen(
                                 playthroughActive = state.playthroughActive,
                                 onPlaythrough = onPlaythrough,
                                 onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
+                                hasMore = state.feedHasMore,
+                                loadingMore = state.feedLoadingMore,
                             )
                         } else {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -930,6 +943,7 @@ fun FeedScreen(
                                 swipe = true,
                                 onPlaythrough = onPlaythrough,
                                 onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                             )
                         }
                         FeedView.Categories -> {
@@ -951,6 +965,7 @@ fun FeedScreen(
                                 swipe = true,
                                 onPlaythrough = onPlaythrough,
                                 onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                             )
                             }
                         }
@@ -1014,6 +1029,7 @@ fun FeedScreen(
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
                                     onPlaythrough = onPlaythrough,
                                     onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                                 )
                             } else {
                                 VideoList(
@@ -1025,6 +1041,7 @@ fun FeedScreen(
                                     swipe = false,
                                     onPlaythrough = onPlaythrough,
                                     onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
                                 )
                             }
                         }
@@ -1124,6 +1141,7 @@ private fun InboxListPane(
     onCompleteSnoozeExit: () -> Unit = {},
     onPlaythrough: () -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
+    onLoadMore: () -> Unit = {},
 ) {
     val uncategorizedId = "__uncategorized__"
     val selectedCategoryName = when (state.categoryId) {
@@ -1175,7 +1193,27 @@ private fun InboxListPane(
         onEnterSelection = onEnterSelection,
         onPlaythrough = onPlaythrough,
         onStopPlaythrough = onStopPlaythrough,
+            onLoadMore = onLoadMore,
     )
+}
+
+@Composable
+private fun LoadMoreOnEnd(
+    listState: LazyListState,
+    enabled: Boolean,
+    loading: Boolean,
+    onLoadMore: () -> Unit,
+) {
+    val shouldLoad by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = listState.layoutInfo.totalItemsCount
+            total > 0 && last >= total - 8
+        }
+    }
+    LaunchedEffect(shouldLoad, enabled, loading) {
+        if (shouldLoad && enabled && !loading) onLoadMore()
+    }
 }
 
 @Composable
@@ -1193,6 +1231,7 @@ private fun VideoList(
     onEnterSelection: (String) -> Unit = {},
     onPlaythrough: () -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
+    onLoadMore: () -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         when {
@@ -1217,6 +1256,7 @@ private fun VideoList(
                     onClick = { if (state.playthroughActive) onStopPlaythrough() else onPlaythrough() },
                 )
             }
+            LoadMoreOnEnd(listState, state.feedHasMore, state.feedLoadingMore, onLoadMore)
             LazyColumn(
                 state = listState,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -1250,6 +1290,13 @@ private fun VideoList(
                             exiting = exiting,
                             onExitFinished = onCompleteSnoozeExit,
                         )
+                    }
+                }
+                if (state.feedLoadingMore) {
+                    item("inbox-loading-more") {
+                        Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(24.dp))
+                        }
                     }
                 }
             }
@@ -1553,6 +1600,9 @@ private fun StreamVideosPane(
     playthroughActive: Boolean = false,
     onPlaythrough: () -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
+    hasMore: Boolean = false,
+    loadingMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -1608,7 +1658,10 @@ private fun StreamVideosPane(
                         onClick = { if (playthroughActive) onStopPlaythrough() else onPlaythrough() },
                     )
                 }
+                val listState = rememberLazyListState()
+                LoadMoreOnEnd(listState, hasMore, loadingMore, onLoadMore)
                 LazyColumn(
+                    state = listState,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
@@ -1621,6 +1674,13 @@ private fun StreamVideosPane(
                             exiting = snoozeExitVideoId == item.videoId,
                             onExitFinished = onCompleteSnoozeExit,
                         )
+                    }
+                    if (loadingMore) {
+                        item("stream-loading-more") {
+                            Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(Modifier.size(24.dp))
+                            }
+                        }
                     }
                 }
             }
@@ -1648,6 +1708,9 @@ private fun StreamDetailScreen(
     onCompleteSnoozeExit: () -> Unit,
     onPlaythrough: () -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
+    hasMore: Boolean = false,
+    loadingMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -1723,7 +1786,10 @@ private fun StreamDetailScreen(
                             onClick = { if (playthroughActive) onStopPlaythrough() else onPlaythrough() },
                         )
                     }
+                    val listState = rememberLazyListState()
+                    LoadMoreOnEnd(listState, hasMore, loadingMore, onLoadMore)
                     LazyColumn(
+                        state = listState,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
@@ -1737,6 +1803,13 @@ private fun StreamDetailScreen(
                                 exiting = snoozeExitVideoId == item.videoId,
                                 onExitFinished = onCompleteSnoozeExit,
                             )
+                        }
+                        if (loadingMore) {
+                            item("stream-detail-loading-more") {
+                                Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(Modifier.size(24.dp))
+                                }
+                            }
                         }
                     }
                 }

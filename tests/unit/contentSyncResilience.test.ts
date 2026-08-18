@@ -536,7 +536,8 @@ describe('frontend sync warning messaging', () => {
 		expect(source).toContain('if (next === offset) throw new Error');
 		expect(source).toContain('if (contentBody.done) break');
 		expect(source).toContain('await load()');
-		expect(source).toContain('New videos available');
+		expect(source).toContain('prependNewerInboxItems');
+		expect(source).toContain('loadMoreInbox');
 		expect(source).toContain('checkInboxFreshness');
 		expect(source).toContain('Playthrough');
 		expect(source).toContain('startPlaythrough');

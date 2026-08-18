@@ -218,6 +218,18 @@ describe('inbox watched queries', () => {
 		db.close();
 	});
 
+	it('pages older inbox rows from beforeId without repeating the cursor video', async () => {
+		const { db, d1 } = seed();
+		const first = await listInbox(d1, USER_A, null, null, 'inbox', null, 'all');
+		expect(first.map((row) => row.videoId)).toEqual([VID_B, VID_A, VID_SHORT]);
+		const next = await listInbox(d1, USER_A, null, null, 'inbox', null, 'all', VID_B);
+		expect(next.map((row) => row.videoId)).toEqual([VID_A, VID_SHORT]);
+		const rest = await listInbox(d1, USER_A, null, null, 'inbox', null, 'all', VID_A);
+		expect(rest.map((row) => row.videoId)).toEqual([VID_SHORT]);
+		expect(await listInbox(d1, USER_A, null, null, 'inbox', null, 'all', VID_SHORT)).toEqual([]);
+		db.close();
+	});
+
 	it('progress helpers do not call YouTube or sync', () => {
 		const queries = readFileSync(join(root, 'worker/db/queries.ts'), 'utf8');
 		const index = readFileSync(join(root, 'worker/index.ts'), 'utf8');

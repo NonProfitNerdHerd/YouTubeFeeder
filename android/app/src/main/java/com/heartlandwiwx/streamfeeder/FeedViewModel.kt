@@ -11,6 +11,7 @@ import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.CurrentUser
 import com.heartlandwiwx.streamfeeder.data.InboxItem
+import com.heartlandwiwx.streamfeeder.data.InboxPage
 import com.heartlandwiwx.streamfeeder.data.InboxWatchFields
 import com.heartlandwiwx.streamfeeder.data.LiveSourceRecord
 import com.heartlandwiwx.streamfeeder.data.SessionStore
@@ -88,6 +89,8 @@ data class FeedUiState(
     val liveRefreshing: Boolean = false,
     val playthroughActive: Boolean = false,
     val playthroughQueue: List<InboxItem> = emptyList(),
+    val feedHasMore: Boolean = false,
+    val feedLoadingMore: Boolean = false,
 )
 
 class FeedViewModel(app: Application) : AndroidViewModel(app) {
@@ -1002,6 +1005,29 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadMoreFeed() {
+        val s = _state.value
+        if (!s.feedHasMore || s.feedLoadingMore || s.loading || s.items.isEmpty()) return
+        val lastId = s.items.last().videoId
+        viewModelScope.launch {
+            _state.update { it.copy(feedLoadingMore = true) }
+            try {
+                val page = loadInbox(beforeId = lastId)
+                val seen = _state.value.items.map { it.videoId }.toSet()
+                val extra = page.items.filter { it.videoId !in seen }
+                _state.update {
+                    it.copy(
+                        feedLoadingMore = false,
+                        feedHasMore = extra.isNotEmpty() && page.hasMore,
+                        items = it.items + extra,
+                    )
+                }
+            } catch (_: Exception) {
+                _state.update { it.copy(feedLoadingMore = false) }
+            }
+        }
+    }
+
     private fun refreshFeed() {
         viewModelScope.launch {
             if (
@@ -1009,13 +1035,13 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 (_state.value.view == FeedView.Streams && _state.value.browsingChannelId == null) ||
                 (_state.value.view == FeedView.Categories && _state.value.categoryId == null)
             ) {
-                _state.update { it.copy(loading = false, items = emptyList()) }
+                _state.update { it.copy(loading = false, items = emptyList(), feedHasMore = false, feedLoadingMore = false) }
                 return@launch
             }
             _state.update { it.copy(loading = true, error = null) }
             try {
-                val items = loadInbox()
-                _state.update { it.copy(loading = false, items = items) }
+                val page = loadInbox()
+                _state.update { it.copy(loading = false, items = page.items, feedHasMore = page.hasMore, feedLoadingMore = false) }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = e.message ?: "Could not load feed") }
             }
@@ -1036,24 +1062,27 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun loadInbox(): List<InboxItem> {
+    private suspend fun loadInbox(beforeId: String? = null): InboxPage {
         val s = _state.value
         val watched = s.watchedFilter.api
+        val empty = InboxPage(emptyList(), 0, 0, false)
         val page = when (s.view) {
-            FeedView.Watchlist -> api.inbox(view = "watchlist", watchlistId = s.watchlistId, watched = watched)
+            FeedView.Watchlist -> api.inbox(view = "watchlist", watchlistId = s.watchlistId, watched = watched, beforeId = beforeId)
             FeedView.Streams -> {
-                val channelId = s.browsingChannelId ?: return emptyList()
-                api.inbox(view = "inbox", channelId = channelId, watched = watched)
+                val channelId = s.browsingChannelId ?: return empty
+                api.inbox(view = "inbox", channelId = channelId, watched = watched, beforeId = beforeId)
             }
             FeedView.Categories -> {
-                val categoryId = s.categoryId ?: return emptyList()
-                api.inbox(view = "inbox", categoryId = categoryId, watched = watched)
+                val categoryId = s.categoryId ?: return empty
+                api.inbox(view = "inbox", categoryId = categoryId, watched = watched, beforeId = beforeId)
             }
-            FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId, watched = watched)
-            FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId, watched = watched)
-            FeedView.Settings, FeedView.LiveGrid, FeedView.LiveStreams, FeedView.LiveCategories -> return emptyList()
+            FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId, watched = watched, beforeId = beforeId)
+            FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId, watched = watched, beforeId = beforeId)
+            FeedView.Settings, FeedView.LiveGrid, FeedView.LiveStreams, FeedView.LiveCategories -> return empty
         }
-        _state.update { it.copy(unwatchedCount = page.unwatchedCount) }
-        return page.items
+        if (beforeId == null) {
+            _state.update { it.copy(unwatchedCount = page.unwatchedCount) }
+        }
+        return page
     }
 }

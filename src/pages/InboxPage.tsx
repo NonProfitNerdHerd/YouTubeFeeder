@@ -10,7 +10,7 @@ import { TEST_APK_PATH, STREAMFEEDER_DISPLAY_NAME } from '../lib/androidRelease'
 import { UNCATEGORIZED_CATEGORY_ID, isUncategorizedFilter } from '../lib/categories';
 import { qrSvgForUrl } from '../lib/qrSvg';
 import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../lib/syncStatus';
-import { formatFeedHealth, inboxIsStale } from '../lib/inboxFreshness';
+import { formatFeedHealth, inboxIsStale, inboxItemHeadAt, inboxPageHasMore, prependNewerInboxItems, appendOlderInboxItems } from '../lib/inboxFreshness';
 import { playthroughNextId, playthroughQueue, playthroughStartId } from '../lib/playthrough';
 import { LivePage } from './LivePage';
 import '../styles/app.css';
@@ -45,6 +45,31 @@ interface FeedSyncStatusBody {
 
 function syncMessage(body: SyncApiBody, fallback: string): string {
 	return body.error?.message || body.errorSummary || fallback;
+}
+
+function buildInboxListQuery(opts: {
+	leftTab: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams' | 'categories';
+	channelId: string | null;
+	categoryId: string | null;
+	watchlistId: string | null;
+	watchedFilter: WatchedFilter;
+}): string {
+	const inboxQuery = new URLSearchParams();
+	if (opts.leftTab === 'streams' && opts.channelId) inboxQuery.set('channelId', opts.channelId);
+	if (
+		(opts.leftTab === 'inbox' || opts.leftTab === 'snoozed' || opts.leftTab === 'deleted' || opts.leftTab === 'categories') &&
+		opts.categoryId
+	) {
+		inboxQuery.set('categoryId', opts.categoryId);
+	}
+	if (opts.leftTab === 'snoozed') inboxQuery.set('view', 'snoozed');
+	if (opts.leftTab === 'deleted') inboxQuery.set('view', 'deleted');
+	if (opts.leftTab === 'watchlist') {
+		inboxQuery.set('view', 'watchlist');
+		if (opts.watchlistId) inboxQuery.set('watchlistId', opts.watchlistId);
+	}
+	if (opts.watchedFilter !== 'all') inboxQuery.set('watched', opts.watchedFilter);
+	return inboxQuery.toString();
 }
 
 function toLocalInputValue(date: Date): string {
@@ -236,9 +261,17 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [status, setStatus] = useState<string | null>(null);
 	const [syncWarnings, setSyncWarnings] = useState<SyncWarning[]>([]);
 	const [showSkipDetails, setShowSkipDetails] = useState(false);
-	const [newVideosAvailable, setNewVideosAvailable] = useState(false);
 	const [feedHealth, setFeedHealth] = useState<FeedSyncStatusBody | null>(null);
 	const inboxHeadRef = useRef<string | null>(null);
+	const itemsRef = useRef<InboxItem[] | null>(null);
+	const selectedVideoIdRef = useRef<string | null>(null);
+	const narrowRef = useRef(false);
+	const mergeInboxRef = useRef(false);
+	const loadInFlightRef = useRef(0);
+	const loadingMoreRef = useRef(false);
+	const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+	const [inboxHasMore, setInboxHasMore] = useState(false);
+	const [loadingMore, setLoadingMore] = useState(false);
 	const playerShellRef = useRef<HTMLDivElement | null>(null);
 	const playthroughActiveRef = useRef(false);
 	const playthroughQueueRef = useRef<InboxItem[]>([]);
@@ -258,21 +291,15 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [bulkSnoozeIds, setBulkSnoozeIds] = useState<string[] | null>(null);
 	const [bulkWatchlistIds, setBulkWatchlistIds] = useState<string[] | null>(null);
 
+	itemsRef.current = items;
+	selectedVideoIdRef.current = selectedVideoId;
+	narrowRef.current = narrow;
+
 	const load = useCallback(
 		async (signal?: AbortSignal) => {
-			const inboxQuery = new URLSearchParams();
-			if (leftTab === 'streams' && channelId) inboxQuery.set('channelId', channelId);
-			if ((leftTab === 'inbox' || leftTab === 'snoozed' || leftTab === 'deleted' || leftTab === 'categories') && categoryId) {
-				inboxQuery.set('categoryId', categoryId);
-			}
-			if (leftTab === 'snoozed') inboxQuery.set('view', 'snoozed');
-			if (leftTab === 'deleted') inboxQuery.set('view', 'deleted');
-			if (leftTab === 'watchlist') {
-				inboxQuery.set('view', 'watchlist');
-				if (watchlistId) inboxQuery.set('watchlistId', watchlistId);
-			}
-			if (watchedFilter !== 'all') inboxQuery.set('watched', watchedFilter);
-			const qs = inboxQuery.toString();
+			loadInFlightRef.current += 1;
+			try {
+			const qs = buildInboxListQuery({ leftTab, channelId, categoryId, watchlistId, watchedFilter });
 			const inboxCountQuery = new URLSearchParams();
 			if (categoryId && leftTab !== 'watchlist' && leftTab !== 'categories') {
 				inboxCountQuery.set('categoryId', categoryId);
@@ -292,7 +319,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				throw new Error('Could not load subscriptions.');
 			}
 			setChannels(((await chRes.json()) as { channels: ChannelRecord[] }).channels);
-			const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number; unwatchedCount?: number };
+			const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number; unwatchedCount?: number; hasMore?: boolean };
 			setItems(inboxBody.items);
 			setCategories(((await catRes.json()) as { categories: CategoryRecord[] }).categories);
 			const nextLists = ((await wlRes.json()) as { watchlists: WatchlistRecord[] }).watchlists;
@@ -308,8 +335,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					? inboxBody.unwatchedCount
 					: inboxBody.items.filter((item) => !item.watchedAt).length,
 			);
-			inboxHeadRef.current = inboxBody.items[0]?.publishedAt ?? null;
-			setNewVideosAvailable(false);
+			inboxHeadRef.current = inboxBody.items[0] ? inboxItemHeadAt(inboxBody.items[0]) : null;
+			setInboxHasMore(typeof inboxBody.hasMore === 'boolean' ? inboxBody.hasMore : inboxPageHasMore(inboxBody.items.length));
+			setLoadingMore(false);
+			loadingMoreRef.current = false;
+			} finally {
+				loadInFlightRef.current = Math.max(0, loadInFlightRef.current - 1);
+			}
 		},
 		[channelId, categoryId, leftTab, watchlistId, watchedFilter],
 	);
@@ -321,13 +353,61 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			if (!res.ok) return;
 			const body = (await res.json()) as FeedSyncStatusBody;
 			setFeedHealth(body);
-			if (inboxIsStale(inboxHeadRef.current, body.newestInboxPublishedAt)) {
-				setNewVideosAvailable(true);
+			if (!inboxIsStale(inboxHeadRef.current, body.newestInboxPublishedAt)) return;
+			const current = itemsRef.current;
+			if (!current || mergeInboxRef.current || loadInFlightRef.current) return;
+			mergeInboxRef.current = true;
+			try {
+				const qs = buildInboxListQuery({ leftTab, channelId, categoryId, watchlistId, watchedFilter });
+				const inRes = await fetch(qs ? `/api/inbox?${qs}` : '/api/inbox', { credentials: 'same-origin' });
+				if (!inRes.ok || loadInFlightRef.current) return;
+				const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number; unwatchedCount?: number };
+				const latest = itemsRef.current ?? current;
+				const previousFirstId = latest[0]?.videoId ?? null;
+				const merged = prependNewerInboxItems(latest, inboxBody.items, inboxHeadRef.current);
+				inboxHeadRef.current =
+					body.newestInboxPublishedAt ?? (merged[0] ? inboxItemHeadAt(merged[0]) : null);
+				if (typeof inboxBody.unwatchedCount === 'number') setUnwatchedCount(inboxBody.unwatchedCount);
+				if (leftTab === 'inbox' && typeof inboxBody.count === 'number') setInboxCount(inboxBody.count);
+				if (merged === latest) return;
+				setItems(merged);
+				if (!selectedVideoIdRef.current && !narrowRef.current && previousFirstId) {
+					setSelectedVideoId(previousFirstId);
+				}
+			} finally {
+				mergeInboxRef.current = false;
 			}
 		} catch {
 			/* keep the current list */
 		}
-	}, [androidClient]);
+	}, [androidClient, channelId, categoryId, leftTab, watchlistId, watchedFilter]);
+
+	const loadMoreInbox = useCallback(async () => {
+		if (!inboxHasMore || loadingMoreRef.current || loadInFlightRef.current || mergeInboxRef.current) return;
+		const current = itemsRef.current;
+		const lastId = current?.[current.length - 1]?.videoId;
+		if (!lastId) return;
+		loadingMoreRef.current = true;
+		setLoadingMore(true);
+		try {
+			const qs = buildInboxListQuery({ leftTab, channelId, categoryId, watchlistId, watchedFilter });
+			const pageQuery = new URLSearchParams(qs);
+			pageQuery.set('beforeId', lastId);
+			const inRes = await fetch(`/api/inbox?${pageQuery.toString()}`, { credentials: 'same-origin' });
+			if (!inRes.ok || loadInFlightRef.current) return;
+			const inboxBody = (await inRes.json()) as { items: InboxItem[]; hasMore?: boolean };
+			const latest = itemsRef.current ?? current ?? [];
+			const merged = appendOlderInboxItems(latest, inboxBody.items);
+			const pageHasMore = typeof inboxBody.hasMore === 'boolean' ? inboxBody.hasMore : inboxPageHasMore(inboxBody.items.length);
+			setInboxHasMore(merged !== latest && pageHasMore);
+			if (merged !== latest) setItems(merged);
+		} catch {
+			/* keep the current list */
+		} finally {
+			loadingMoreRef.current = false;
+			setLoadingMore(false);
+		}
+	}, [inboxHasMore, leftTab, channelId, categoryId, watchlistId, watchedFilter]);
 
 	useEffect(() => {
 		const ac = new AbortController();
@@ -368,6 +448,19 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		void checkInboxFreshness();
 		return () => window.clearInterval(id);
 	}, [androidClient, mainSection, checkInboxFreshness]);
+
+	useEffect(() => {
+		const sentinel = loadMoreSentinelRef.current;
+		if (!sentinel || !inboxHasMore) return;
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((entry) => entry.isIntersecting)) void loadMoreInbox();
+			},
+			{ root: leftScrollRef.current, rootMargin: '480px' },
+		);
+		io.observe(sentinel);
+		return () => io.disconnect();
+	}, [inboxHasMore, loadMoreInbox, items?.length, leftTab]);
 
 	useEffect(() => {
 		if (!playthroughActive || !selectedVideoId) return;
@@ -1444,6 +1537,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				</a>
 			),
 				)}
+				{inboxHasMore ? <div ref={loadMoreSentinelRef} className="inbox-load-more" aria-hidden="true" /> : null}
+				{loadingMore ? <p className="muted inbox-load-more-status">Loading older videos…</p> : null}
 			</>
 		);
 	}
@@ -1658,13 +1753,6 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 				</nav>
 			) : null}
 			{offline ? <p className="status-line">Offline. Showing the last loaded inbox until you reconnect.</p> : null}
-			{newVideosAvailable ? (
-				<p className="status-line">
-					<button className="new-videos-banner" type="button" onClick={() => void load()}>
-						New videos available
-					</button>
-				</p>
-			) : null}
 			{status || error ? (
 				<div
 					className={
