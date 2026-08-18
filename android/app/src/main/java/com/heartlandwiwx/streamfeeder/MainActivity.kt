@@ -80,6 +80,7 @@ class MainActivity : AppCompatActivity() {
                             onMarkAllWatched = viewModel::markAllWatched,
                             onToggleWatched = viewModel::toggleWatched,
                             onSelectTheme = viewModel::setTheme,
+                            onRefreshLive = viewModel::refreshLiveStatuses,
                             onPlayerEvent = viewModel::onPlayerEvent,
                             onFlushPlayback = viewModel::flushPlayback,
                         )

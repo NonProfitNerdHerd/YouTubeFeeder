@@ -182,6 +182,23 @@ class ApiClient(
         }
     }
 
+    suspend fun liveSources(): List<LiveSourceRecord> = withContext(Dispatchers.IO) {
+        parseLiveSources(getJson("/api/live/sources"))
+    }
+
+    suspend fun liveCategories(): List<CategoryRecord> = withContext(Dispatchers.IO) {
+        val arr = getJson("/api/live/categories").optJSONArray("categories") ?: JSONArray()
+        (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            CategoryRecord(o.getString("id"), o.getString("name"))
+        }
+    }
+
+    suspend fun refreshLiveStatuses(): Pair<List<LiveSourceRecord>, String> = withContext(Dispatchers.IO) {
+        val obj = requestJson("POST", "/api/live/refresh", JSONObject().put("force", false))
+        parseLiveSources(obj) to liveRefreshStatus(obj)
+    }
+
     fun loginUrl(): String = "$base/api/auth/google?intent=login&client=android"
 
     private fun parseChannel(o: JSONObject): ChannelRecord {
@@ -221,6 +238,49 @@ class ApiClient(
         if (!o.has(key) || o.isNull(key)) return null
         val value = o.optString(key, "")
         return value.ifBlank { null }
+    }
+
+    private fun parseLiveSources(obj: JSONObject): List<LiveSourceRecord> {
+        val arr = obj.optJSONArray("sources") ?: JSONArray()
+        return (0 until arr.length()).map { parseLiveSource(arr.getJSONObject(it)) }
+    }
+
+    private fun parseLiveSource(o: JSONObject): LiveSourceRecord {
+        val videos = o.optJSONArray("liveVideos") ?: JSONArray()
+        val ids = o.optJSONArray("categoryIds") ?: JSONArray()
+        return LiveSourceRecord(
+            id = o.getString("id"),
+            displayName = o.optString("displayName", "Stream"),
+            enabled = o.optBoolean("enabled", true),
+            sourceMode = o.optString("sourceMode", "normal"),
+            verifyState = o.optString("verifyState", "ok"),
+            verifyError = optionalString(o, "verifyError"),
+            lastStatusCheckAt = optionalString(o, "lastStatusCheckAt") ?: optionalString(o, "liveCheckedAt"),
+            liveVideoId = optionalString(o, "liveVideoId"),
+            liveVideos = (0 until videos.length()).map { parseLiveVideo(videos.getJSONObject(it)) },
+            categoryIds = (0 until ids.length()).map { ids.getString(it) },
+        )
+    }
+
+    private fun parseLiveVideo(o: JSONObject) = LiveVideoRecord(
+        videoId = o.getString("videoId"),
+        title = o.optString("title", "(untitled)"),
+        status = optionalString(o, "status"),
+        embeddable = if (o.has("embeddable") && !o.isNull("embeddable")) o.optBoolean("embeddable") else null,
+    )
+
+    private fun liveRefreshStatus(obj: JSONObject): String {
+        if (obj.optBoolean("inProgress") || obj.optBoolean("duplicatePrevented")) {
+            return "Duplicate request prevented — using the job already running."
+        }
+        if (obj.optBoolean("cached") || obj.optBoolean("cacheHit")) {
+            val next = optionalString(obj, "nextEligibleAt")
+            return if (next != null) "Cached result returned. Next eligible $next." else "Cached result returned."
+        }
+        if (obj.optString("job") == "confirm") {
+            return "Refresh completed — ${obj.optInt("liveCount", 0)} live."
+        }
+        return "Refresh completed."
     }
 
     private fun getJson(path: String): JSONObject = requestJson("GET", path, null)

@@ -44,8 +44,8 @@ describe('VortiQuest Android phase 1', () => {
 	});
 
 	it('shares one version source', () => {
-		expect(version.versionName).toBe('1.0.20');
-		expect(version.versionCode).toBe(21);
+		expect(version.versionName).toBe('1.0.21');
+		expect(version.versionCode).toBe(22);
 	});
 
 	it('supports native Android OAuth return and Bearer sessions', async () => {

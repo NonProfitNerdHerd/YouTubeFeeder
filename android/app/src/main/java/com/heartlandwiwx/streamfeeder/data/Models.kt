@@ -75,4 +75,45 @@ data class WatchlistRecord(
     val videoCount: Int,
 )
 
+data class LiveVideoRecord(
+    val videoId: String,
+    val title: String,
+    val status: String?,
+    val embeddable: Boolean?,
+)
+
+data class LiveSourceRecord(
+    val id: String,
+    val displayName: String,
+    val enabled: Boolean,
+    val sourceMode: String,
+    val verifyState: String,
+    val verifyError: String?,
+    val lastStatusCheckAt: String?,
+    val liveVideoId: String?,
+    val liveVideos: List<LiveVideoRecord>,
+    val categoryIds: List<String>,
+) {
+    fun playableLive(): List<LiveVideoRecord> =
+        liveVideos.filter { it.status == "live" && it.embeddable != false }
+
+    fun blockedLive(): List<LiveVideoRecord> =
+        liveVideos.filter { it.status == "non_embeddable" }
+
+    fun upcoming(): List<LiveVideoRecord> =
+        liveVideos.filter { it.status == "upcoming" }
+
+    fun liveCount(): Int = playableLive().size + blockedLive().size
+
+    fun embedVideoId(): String? = playableLive().firstOrNull()?.videoId ?: liveVideoId
+
+    fun statusLabel(): String = when {
+        sourceMode == "disabled" -> "Disabled"
+        verifyState == "error" -> "Unknown"
+        liveCount() > 0 -> "Live"
+        upcoming().isNotEmpty() -> "Upcoming"
+        else -> "Offline"
+    }
+}
+
 class ApiException(val code: Int, message: String) : Exception(message)

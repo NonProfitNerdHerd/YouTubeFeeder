@@ -42,6 +42,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
@@ -55,12 +57,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -132,6 +139,7 @@ import com.heartlandwiwx.streamfeeder.FeedView
 import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.InboxItem
+import com.heartlandwiwx.streamfeeder.data.LiveSourceRecord
 import com.heartlandwiwx.streamfeeder.data.AppTheme
 import com.heartlandwiwx.streamfeeder.data.WatchedFilter
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
@@ -145,6 +153,23 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
+
+private val LiveGridSizes = listOf(1, 4, 6, 8, 12)
+
+private fun liveGridColumns(size: Int): Int = when (size) {
+    1 -> 1
+    4 -> 2
+    6 -> 3
+    else -> 4
+}
+
+private fun parseLiveSlotValue(value: String?): Pair<String?, String?> {
+    if (value.isNullOrBlank()) return null to null
+    val sep = value.indexOf("::")
+    return if (sep == -1) value to null else value.substring(0, sep) to value.substring(sep + 2)
+}
+
+private fun liveSlotAssignment(sourceId: String, videoId: String): String = "$sourceId::$videoId"
 
 private fun FeedView.pageTitle(): String =
     if (isLiveSection) "Live · $label" else label
@@ -238,6 +263,7 @@ fun FeedScreen(
     onMarkAllWatched: () -> Unit,
     onToggleWatched: () -> Unit,
     onSelectTheme: (AppTheme) -> Unit,
+    onRefreshLive: () -> Unit,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
     onFlushPlayback: () -> Unit,
 ) {
@@ -263,12 +289,21 @@ fun FeedScreen(
     var watchlistBulkOpen by remember { mutableStateOf(false) }
     var bulkSnoozeOpen by remember { mutableStateOf(false) }
     val selectionMode = selectedVideoIds.isNotEmpty()
+    var liveGridSize by remember { mutableStateOf(4) }
+    var liveSlotFeeds by remember { mutableStateOf(List(12) { null as String? }) }
+    var liveFullscreenSlot by remember { mutableStateOf<Int?>(null) }
+    var liveActiveSlot by remember { mutableStateOf(0) }
+    var liveGridImmersive by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.view) {
         selectedVideoIds = emptySet()
         confirmArchiveOpen = false
         watchlistBulkOpen = false
         bulkSnoozeOpen = false
+        if (state.view != FeedView.LiveGrid) {
+            liveFullscreenSlot = null
+            liveGridImmersive = false
+        }
     }
 
     val overlaysClear = state.pendingSnoozeItem == null && state.editingChannel == null &&
@@ -279,14 +314,18 @@ fun FeedScreen(
         state.selected == null &&
         browsingChannel == null &&
         !selectionMode &&
-        overlaysClear
+        overlaysClear &&
+        liveFullscreenSlot == null &&
+        !liveGridImmersive
     val canReturnToInbox = state.view != FeedView.Inbox &&
         !navOpen &&
         state.selected == null &&
         browsingChannel == null &&
         !browsingCategory &&
         !selectionMode &&
-        overlaysClear
+        overlaysClear &&
+        liveFullscreenSlot == null &&
+        !liveGridImmersive
 
     BackHandler(enabled = state.selected != null) { onClose() }
     BackHandler(enabled = browsingChannel != null && state.selected == null) { onCloseStream() }
@@ -304,6 +343,8 @@ fun FeedScreen(
     }
     BackHandler(enabled = canReturnToInbox) { onSelectView(FeedView.Inbox) }
     BackHandler(enabled = atRootInbox) { /* stay in app on Inbox */ }
+    BackHandler(enabled = liveFullscreenSlot != null) { liveFullscreenSlot = null }
+    BackHandler(enabled = liveGridImmersive && liveFullscreenSlot == null) { liveGridImmersive = false }
 
     val selected = state.selected
     if (selected != null && !useListMasterDetail && !useStreamsMasterDetail) {
@@ -346,6 +387,68 @@ fun FeedScreen(
         EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
         PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
         MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
+        return
+    }
+
+    val fullscreenSlot = liveFullscreenSlot
+    if (fullscreenSlot != null) {
+        LiveSlotCard(
+            number = fullscreenSlot + 1,
+            selected = liveSlotFeeds[fullscreenSlot],
+            sources = state.liveSources,
+            onSelect = { name ->
+                liveSlotFeeds = liveSlotFeeds.toMutableList().also { it[fullscreenSlot] = name }
+            },
+            focused = true,
+            onFocus = { liveActiveSlot = fullscreenSlot },
+            onExitFullscreen = { liveFullscreenSlot = null },
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(8.dp),
+        )
+        return
+    }
+
+    if (liveGridImmersive) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            LiveGridPane(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
+                gridSize = liveGridSize,
+                slotFeeds = liveSlotFeeds,
+                onSlotFeedChange = { index, name ->
+                    liveSlotFeeds = liveSlotFeeds.toMutableList().also { it[index] = name }
+                    liveActiveSlot = index
+                },
+                activeSlot = liveActiveSlot,
+                onActivate = { liveActiveSlot = it },
+                onFullscreen = null,
+                sources = state.liveSources,
+                compact = true,
+            )
+            IconButton(
+                onClick = { liveGridImmersive = false },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(4.dp),
+            ) {
+                Icon(
+                    Icons.Default.FullscreenExit,
+                    contentDescription = "Exit full screen grid",
+                    tint = Color.White,
+                )
+            }
+        }
         return
     }
 
@@ -401,6 +504,30 @@ fun FeedScreen(
                         }
                         IconButton(onClick = { watchlistBulkOpen = true }) {
                             Icon(Icons.Default.PlaylistAdd, contentDescription = "Add to watchlist")
+                        }
+                    } else if (state.view.isLiveSection) {
+                        if (state.view == FeedView.LiveGrid) {
+                            IconButton(onClick = { liveGridImmersive = true }) {
+                                Icon(Icons.Default.GridView, contentDescription = "Full screen grid")
+                            }
+                        }
+                        if (state.liveRefreshing) {
+                            Box(
+                                modifier = Modifier.size(48.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = onRefreshLive,
+                                enabled = !state.loading,
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh live statuses")
+                            }
                         }
                     }
                 },
@@ -724,6 +851,12 @@ fun FeedScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                             )
+                            if (state.view == FeedView.LiveGrid) {
+                                LiveGridSizeButtons(
+                                    gridSize = liveGridSize,
+                                    onGridSizeChange = { liveGridSize = it },
+                                )
+                            }
                             if (state.view == FeedView.Watchlist) {
                                 IconButton(onClick = { createWatchlistOpen = true }) {
                                     Icon(Icons.Default.Add, contentDescription = "Create watchlist")
@@ -803,9 +936,31 @@ fun FeedScreen(
                                 onSelectTheme = onSelectTheme,
                             )
                         }
-                        FeedView.LiveGrid -> LiveGridMockPane(Modifier.weight(1f))
-                        FeedView.LiveStreams -> LiveStreamsMockPane()
-                        FeedView.LiveCategories -> LiveCategoriesMockPane()
+                        FeedView.LiveGrid -> LiveGridPane(
+                            modifier = Modifier.weight(1f),
+                            gridSize = liveGridSize,
+                            slotFeeds = liveSlotFeeds,
+                            onSlotFeedChange = { index, name ->
+                                liveSlotFeeds = liveSlotFeeds.toMutableList().also { it[index] = name }
+                                liveActiveSlot = index
+                            },
+                            activeSlot = liveActiveSlot,
+                            onActivate = { liveActiveSlot = it },
+                            onFullscreen = {
+                                liveActiveSlot = it
+                                liveFullscreenSlot = it
+                            },
+                            sources = state.liveSources,
+                        )
+                        FeedView.LiveStreams -> LiveStreamsPane(
+                            sources = state.liveSources,
+                            loading = state.loading,
+                            refreshing = state.liveRefreshing,
+                        )
+                        FeedView.LiveCategories -> LiveCategoriesPane(
+                            categories = state.liveCategories,
+                            loading = state.loading,
+                        )
                         else -> {
                             if (state.view == FeedView.Inbox) {
                                 InboxListPane(
@@ -1971,62 +2126,321 @@ private fun SettingsPane(
 }
 
 @Composable
-private fun LiveGridMockPane(modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+private fun LiveGridSizeButtons(
+    gridSize: Int,
+    onGridSizeChange: (Int) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Text(
-            "Mock quad grid. Live streams are not connected yet.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            LiveSlotCard(number = 1, modifier = Modifier.weight(1f))
-            LiveSlotCard(number = 2, modifier = Modifier.weight(1f))
-        }
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            LiveSlotCard(number = 3, modifier = Modifier.weight(1f))
-            LiveSlotCard(number = 4, modifier = Modifier.weight(1f))
-        }
-    }
-}
-
-@Composable
-private fun LiveSlotCard(number: Int, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Slot $number", fontWeight = FontWeight.SemiBold)
+        LiveGridSizes.forEach { size ->
             Text(
-                "Empty",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "$size",
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { onGridSizeChange(size) }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (gridSize == size) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (gridSize == size) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
             )
         }
     }
 }
 
 @Composable
-private fun LiveStreamsMockPane() {
-    val samples = listOf("WeatherNation", "NASA TV", "NOAA Weather Radio", "EarthCam — Times Square")
+private fun LiveGridPane(
+    modifier: Modifier = Modifier,
+    gridSize: Int,
+    slotFeeds: List<String?>,
+    onSlotFeedChange: (Int, String?) -> Unit,
+    activeSlot: Int,
+    onActivate: (Int) -> Unit,
+    onFullscreen: ((Int) -> Unit)?,
+    sources: List<LiveSourceRecord>,
+    compact: Boolean = false,
+) {
+    val columns = liveGridColumns(gridSize)
+    val rows = gridSize / columns
+    val gap = if (compact) 2.dp else 6.dp
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (compact) Modifier else Modifier.padding(horizontal = 8.dp, vertical = 4.dp)),
+        verticalArrangement = Arrangement.spacedBy(gap),
+    ) {
+        repeat(rows) { row ->
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(gap),
+            ) {
+                repeat(columns) { col ->
+                    val index = row * columns + col
+                    LiveSlotCard(
+                        number = index + 1,
+                        selected = slotFeeds[index],
+                        sources = sources,
+                        onSelect = { onSlotFeedChange(index, it) },
+                        focused = activeSlot == index,
+                        onFocus = { onActivate(index) },
+                        onFullscreen = onFullscreen?.let { expand -> { expand(index) } },
+                        compact = compact,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveSlotCard(
+    number: Int,
+    selected: String?,
+    sources: List<LiveSourceRecord>,
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+    focused: Boolean = false,
+    onFocus: () -> Unit = {},
+    onFullscreen: (() -> Unit)? = null,
+    onExitFullscreen: (() -> Unit)? = null,
+    compact: Boolean = false,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val (selectedSourceId, selectedVideoId) = parseLiveSlotValue(selected)
+    val selectedSource = sources.firstOrNull { it.id == selectedSourceId }
+    val liveVideos = selectedSource?.playableLive().orEmpty()
+    val selectedVideo = selectedVideoId?.let { id -> liveVideos.firstOrNull { it.videoId == id } }
+        ?: liveVideos.firstOrNull()
+    val selectedLabel = selectedVideo?.title ?: selectedSource?.displayName ?: "Select feed"
+    val embedId = selectedVideo?.videoId ?: selectedSource?.embedVideoId()
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(if (compact) 2.dp else 10.dp))
+            .background(Color.Black)
+            .then(if (compact) Modifier else Modifier.padding(6.dp)),
+    ) {
+        if (!compact) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                        .clickable { menuOpen = true }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        selectedLabel,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    Icon(
+                        Icons.Default.ArrowDropDown,
+                        contentDescription = "Choose live feed",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                    modifier = Modifier.heightIn(max = 360.dp),
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Empty") },
+                        onClick = {
+                            onSelect(null)
+                            menuOpen = false
+                        },
+                    )
+                    sources.filter { it.enabled }.forEach { source ->
+                        val lives = source.playableLive()
+                        if (lives.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("${source.displayName} · ${source.statusLabel()}") },
+                                enabled = false,
+                                onClick = {},
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "${source.displayName} (${lives.size} live)",
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                },
+                                enabled = false,
+                                onClick = {},
+                            )
+                            lives.forEach { video ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            video.title,
+                                            modifier = Modifier.padding(start = 8.dp),
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                    onClick = {
+                                        onSelect(liveSlotAssignment(source.id, video.videoId))
+                                        onFocus()
+                                        menuOpen = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (onFullscreen != null) {
+                IconButton(onClick = onFullscreen, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Fullscreen,
+                        contentDescription = "Full screen",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            if (onExitFullscreen != null) {
+                IconButton(onClick = onExitFullscreen, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.FullscreenExit,
+                        contentDescription = "Exit full screen",
+                        tint = Color.White,
+                    )
+                }
+            }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(if (compact) 0.dp else 6.dp))
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                embedId != null -> LiveEmbedPlayer(
+                    videoId = embedId,
+                    muted = !focused,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                selectedSource != null -> Text(
+                    "${selectedSource.displayName} is ${selectedSource.statusLabel().lowercase()}.",
+                    color = Color.White.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(8.dp),
+                )
+                else -> Text(
+                    "Slot $number · Empty",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun LiveEmbedPlayer(
+    videoId: String,
+    muted: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val html = remember(videoId) {
+        """
+        <!DOCTYPE html><html><head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+          <style>html,body,#player{margin:0;padding:0;background:#000;height:100%;width:100%;overflow:hidden;}iframe{border:0;width:100%;height:100%;}</style>
+        </head><body>
+          <div id="player"></div>
+          <script>
+            var tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            document.head.appendChild(tag);
+            var player;
+            var muted = true;
+            function applyMute() {
+              if (!player || !player.mute) return;
+              if (muted) player.mute(); else player.unMute();
+            }
+            function onYouTubeIframeAPIReady() {
+              player = new YT.Player('player', {
+                videoId: '$videoId',
+                host: 'https://www.youtube-nocookie.com',
+                playerVars: { autoplay: 1, mute: 1, playsinline: 1, rel: 0, modestbranding: 1, enablejsapi: 1 },
+                events: {
+                  onReady: function () {
+                    applyMute();
+                    player.playVideo();
+                  }
+                }
+              });
+            }
+          </script>
+        </body></html>
+        """.trimIndent()
+    }
+    AndroidView(
+        factory = { context ->
+            WebView(context).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                setBackgroundColor(android.graphics.Color.BLACK)
+                webViewClient = WebViewClient()
+                webChromeClient = WebChromeClient()
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.mediaPlaybackRequiresUserGesture = false
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                tag = videoId
+                loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
+            }
+        },
+        update = { webView ->
+            if (webView.tag as? String != videoId) {
+                webView.tag = videoId
+                webView.loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
+            }
+            webView.evaluateJavascript(
+                "muted = ${if (muted) "true" else "false"}; if (typeof applyMute === 'function') applyMute();",
+                null,
+            )
+        },
+        onRelease = {
+            it.stopLoading()
+            it.destroy()
+        },
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun LiveStreamsPane(
+    sources: List<LiveSourceRecord>,
+    loading: Boolean,
+    refreshing: Boolean,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2040,32 +2454,92 @@ private fun LiveStreamsMockPane() {
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            "Placeholder list. Sources will load from the Live API later.",
+            "Refresh rechecks whether these channels are live. It uses the same Live API as the website.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        samples.forEach { name ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-            ) {
-                Text(name, style = MaterialTheme.typography.titleMedium)
+        when {
+            loading && sources.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            sources.isEmpty() -> {
                 Text(
-                    "Offline · mock",
-                    style = MaterialTheme.typography.bodySmall,
+                    "No live sources yet. Add a YouTube channel on the website, then refresh here.",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            else -> {
+                if (refreshing) {
+                    Text(
+                        "Checking live status…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                sources.forEach { source ->
+                    val status = source.statusLabel()
+                    val liveTitle = source.playableLive().firstOrNull()?.title
+                        ?: source.blockedLive().firstOrNull()?.title
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                source.displayName,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            if (source.liveCount() > 0) {
+                                Text(
+                                    "${source.liveCount()} LIVE",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        Text(
+                            buildString {
+                                append(status)
+                                if (!source.enabled) append(" · Off")
+                                if (liveTitle != null) append(" · ").append(liveTitle)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (!source.verifyError.isNullOrBlank()) {
+                            Text(
+                                source.verifyError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun LiveCategoriesMockPane() {
-    val samples = listOf("Storms", "Traffic", "Space", "News")
+private fun LiveCategoriesPane(
+    categories: List<CategoryRecord>,
+    loading: Boolean,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2079,20 +2553,41 @@ private fun LiveCategoriesMockPane() {
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            "Placeholder list. Live categories will load from the Live API later.",
+            "Live categories are separate from Feed. Tag streams on the website.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        samples.forEach { name ->
-            Text(
-                name,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                    .padding(horizontal = 14.dp, vertical = 14.dp),
-                style = MaterialTheme.typography.titleMedium,
-            )
+        when {
+            loading && categories.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            categories.isEmpty() -> {
+                Text(
+                    "No live categories yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            else -> {
+                categories.forEach { category ->
+                    Text(
+                        category.name,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
         }
     }
 }

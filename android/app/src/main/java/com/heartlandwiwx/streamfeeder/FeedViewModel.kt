@@ -12,6 +12,7 @@ import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.CurrentUser
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.InboxWatchFields
+import com.heartlandwiwx.streamfeeder.data.LiveSourceRecord
 import com.heartlandwiwx.streamfeeder.data.SessionStore
 import com.heartlandwiwx.streamfeeder.data.WatchedFilter
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
@@ -82,6 +83,9 @@ data class FeedUiState(
     val watchedFilter: WatchedFilter = WatchedFilter.All,
     val unwatchedCount: Int = 0,
     val theme: AppTheme = AppTheme.Dark,
+    val liveSources: List<LiveSourceRecord> = emptyList(),
+    val liveCategories: List<CategoryRecord> = emptyList(),
+    val liveRefreshing: Boolean = false,
 )
 
 class FeedViewModel(app: Application) : AndroidViewModel(app) {
@@ -156,6 +160,10 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                     it.items
                 },
             )
+        }
+        if (view.isLiveSection) {
+            loadLive()
+            return
         }
         if (view.isLocal) return
         if (view != FeedView.Streams && view != FeedView.Categories) {
@@ -239,6 +247,38 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         refreshAll(showBoot = false)
+    }
+
+    fun refreshLiveStatuses() {
+        if (_state.value.liveRefreshing) return
+        viewModelScope.launch {
+            _state.update { it.copy(liveRefreshing = true, error = null) }
+            try {
+                val (sources, status) = api.refreshLiveStatuses()
+                _state.update {
+                    it.copy(liveRefreshing = false, liveSources = sources, message = status)
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(liveRefreshing = false, error = e.message ?: "Could not refresh live statuses")
+                }
+            }
+        }
+    }
+
+    private fun loadLive() {
+        viewModelScope.launch {
+            _state.update { it.copy(loading = true, error = null) }
+            try {
+                val sources = api.liveSources()
+                val categories = api.liveCategories()
+                _state.update {
+                    it.copy(loading = false, liveSources = sources, liveCategories = categories)
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false, error = e.message ?: "Could not load live sources") }
+            }
+        }
     }
 
     fun deleteSelected() {
