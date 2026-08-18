@@ -141,6 +141,59 @@
 	overflow-y: auto;
 }
 
+.playthrough-bar {
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	padding: 6px 8px 10px;
+	background: color-mix(in srgb, var(--panel) 92%, transparent);
+	border-bottom: 1px solid var(--border);
+}
+
+.playthrough-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	font: inherit;
+	font-size: 0.9rem;
+	border-radius: 6px;
+	border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+	background: color-mix(in srgb, var(--accent) 28%, #0f1115);
+	color: var(--text);
+	cursor: pointer;
+}
+
+.playthrough-btn:hover {
+	background: color-mix(in srgb, var(--accent) 42%, #0f1115);
+}
+
+.playthrough-exit {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 3;
+	padding: 6px 10px;
+	font: inherit;
+	font-size: 0.8rem;
+	border-radius: 6px;
+	border: 1px solid rgba(255, 255, 255, 0.4);
+	background: rgba(0, 0, 0, 0.65);
+	color: #fff;
+	cursor: pointer;
+}
+
+.preview-player:fullscreen,
+.preview-player:-webkit-full-screen {
+	width: 100vw;
+	height: 100vh;
+	max-width: none;
+	max-height: none;
+	aspect-ratio: auto;
+	border-radius: 0;
+	align-self: stretch;
+}
+
 .sub {
 	display: flex;
 	align-items: center;

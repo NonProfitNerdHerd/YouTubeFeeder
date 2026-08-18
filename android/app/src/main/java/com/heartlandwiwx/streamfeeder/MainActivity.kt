@@ -83,6 +83,8 @@ class MainActivity : AppCompatActivity() {
                             onRefreshLive = viewModel::refreshLiveStatuses,
                             onPlayerEvent = viewModel::onPlayerEvent,
                             onFlushPlayback = viewModel::flushPlayback,
+                            onPlaythrough = viewModel::startPlaythrough,
+                            onStopPlaythrough = viewModel::stopPlaythrough,
                         )
                     }
                 }

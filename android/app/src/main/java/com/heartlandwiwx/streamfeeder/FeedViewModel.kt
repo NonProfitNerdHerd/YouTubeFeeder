@@ -86,6 +86,8 @@ data class FeedUiState(
     val liveSources: List<LiveSourceRecord> = emptyList(),
     val liveCategories: List<CategoryRecord> = emptyList(),
     val liveRefreshing: Boolean = false,
+    val playthroughActive: Boolean = false,
+    val playthroughQueue: List<InboxItem> = emptyList(),
 )
 
 class FeedViewModel(app: Application) : AndroidViewModel(app) {
@@ -174,6 +176,8 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 snoozeExitVideoId = null,
                 snoozeExitUntilMillis = null,
                 editingChannel = null,
+                playthroughActive = false,
+                playthroughQueue = emptyList(),
                 categoryId = if (view.isFeedSection || view.isLocal) null else it.categoryId,
                 items = if (view == FeedView.Streams || view == FeedView.Categories || view.isLocal) {
                     emptyList()
@@ -240,12 +244,27 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openItem(item: InboxItem) {
+        if (_state.value.playthroughActive) stopPlaythrough()
         _state.update { it.copy(selected = item) }
     }
 
     fun closeItem() {
         flushPlayback()
+        stopPlaythrough()
         _state.update { it.copy(selected = null) }
+    }
+
+    fun startPlaythrough() {
+        val state = _state.value
+        val queue = state.items.filter { it.embeddable }
+        if (queue.isEmpty()) return
+        val start = queue.firstOrNull { it.videoId == state.selected?.videoId } ?: queue.first()
+        _state.update { it.copy(playthroughActive = true, playthroughQueue = queue, selected = start) }
+    }
+
+    fun stopPlaythrough() {
+        if (!_state.value.playthroughActive && _state.value.playthroughQueue.isEmpty()) return
+        _state.update { it.copy(playthroughActive = false, playthroughQueue = emptyList()) }
     }
 
     fun selectWatchedFilter(filter: WatchedFilter) {
@@ -624,11 +643,24 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 playbackEnded = true
                 sampler = setSamplerPlaying(sampler, false)
                 persistProgress(videoId, sampler.playbackSeconds, currentTime, ended = true)
+                advancePlaythrough(videoId)
             }
         }
     }
 
-    fun flushPlayback() {
+    private fun advancePlaythrough(currentId: String) {
+        val state = _state.value
+        if (!state.playthroughActive) return
+        val queue = state.playthroughQueue
+        val index = queue.indexOfFirst { it.videoId == currentId }
+        val next = if (index < 0) queue.firstOrNull() else queue.getOrNull(index + 1)
+        if (next == null) {
+            stopPlaythrough()
+            return
+        }
+        samplerVideoId = null
+        _state.update { it.copy(selected = next) }
+    }
         val id = samplerVideoId ?: return
         persistProgress(id, sampler.playbackSeconds, lastPosition, playbackEnded)
     }

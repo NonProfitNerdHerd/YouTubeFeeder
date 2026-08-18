@@ -538,6 +538,8 @@ describe('frontend sync warning messaging', () => {
 		expect(source).toContain('await load()');
 		expect(source).toContain('New videos available');
 		expect(source).toContain('checkInboxFreshness');
+		expect(source).toContain('Playthrough');
+		expect(source).toContain('startPlaythrough');
 	});
 });
 

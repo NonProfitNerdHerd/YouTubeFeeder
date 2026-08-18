@@ -48,12 +48,14 @@ export function FeedYouTubePlayer({
 	title,
 	durationSeconds,
 	initialPlaybackSeconds,
+	autoplay = false,
 	onPersist,
 }: {
 	videoId: string;
 	title: string;
 	durationSeconds: number | null;
 	initialPlaybackSeconds: number;
+	autoplay?: boolean;
 	onPersist: (videoId: string, payload: WatchPersistPayload, options?: { keepalive?: boolean }) => void;
 }) {
 	const hostRef = useRef<HTMLDivElement | null>(null);
@@ -162,9 +164,19 @@ export function FeedYouTubePlayer({
 					modestbranding: 1,
 					playsinline: 1,
 					enablejsapi: 1,
+					autoplay: autoplay ? 1 : 0,
 					origin: window.location.origin,
 				},
 				events: {
+					onReady: (event) => {
+						if (autoplay) {
+							try {
+								(event.target as unknown as { playVideo: () => void }).playVideo();
+							} catch {
+								/* autoplay may be blocked */
+							}
+						}
+					},
 					onStateChange: (event) => onState(event.data),
 				},
 			});
@@ -190,7 +202,7 @@ export function FeedYouTubePlayer({
 			}
 			playerRef.current = null;
 		};
-	}, [videoId]);
+	}, [videoId, autoplay]);
 
 	return (
 		<div className="yt-frame" title={title}>

@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Snooze
@@ -266,6 +267,8 @@ fun FeedScreen(
     onRefreshLive: () -> Unit,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
     onFlushPlayback: () -> Unit,
+    onPlaythrough: () -> Unit = {},
+    onStopPlaythrough: () -> Unit = {},
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -347,6 +350,18 @@ fun FeedScreen(
     BackHandler(enabled = liveGridImmersive && liveFullscreenSlot == null) { liveGridImmersive = false }
 
     val selected = state.selected
+    if (state.playthroughActive && selected != null) {
+        BackHandler(enabled = true) { onClose() }
+        PlaythroughOverlay(
+            item = selected,
+            onExit = onClose,
+            onPlayerEvent = onPlayerEvent,
+            onFlushPlayback = onFlushPlayback,
+        )
+        MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
+        return
+    }
+
     if (selected != null && !useListMasterDetail && !useStreamsMasterDetail) {
         DetailScreen(
             item = selected,
@@ -376,6 +391,7 @@ fun FeedScreen(
             syncing = state.syncing,
             status = state.status,
             snoozeExitVideoId = state.snoozeExitVideoId,
+            playthroughActive = state.playthroughActive,
             onBack = onCloseStream,
             onCatchUp = onCatchUp,
             onEdit = { onOpenEditChannel(browsingChannel) },
@@ -383,6 +399,8 @@ fun FeedScreen(
             onArchiveItem = onArchiveItem,
             onRequestSnooze = onRequestSnooze,
             onCompleteSnoozeExit = onCompleteSnoozeExit,
+            onPlaythrough = onPlaythrough,
+            onStopPlaythrough = onStopPlaythrough,
         )
         EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
         PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
@@ -633,6 +651,8 @@ fun FeedScreen(
                                             if (id in selectedVideoIds) selectedVideoIds - id else selectedVideoIds + id
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
+                                    onPlaythrough = onPlaythrough,
+                                    onStopPlaythrough = onStopPlaythrough,
                                 )
                             }
                             FeedView.Watchlist -> {
@@ -664,6 +684,8 @@ fun FeedScreen(
                                     onCompleteSnoozeExit = onCompleteSnoozeExit,
                                     swipe = true,
                                     detailVideoId = selected?.videoId,
+                                    onPlaythrough = onPlaythrough,
+                                    onStopPlaythrough = onStopPlaythrough,
                                 )
                             }
                             FeedView.Categories -> {
@@ -684,6 +706,8 @@ fun FeedScreen(
                                         onCompleteSnoozeExit = onCompleteSnoozeExit,
                                         swipe = true,
                                         detailVideoId = selected?.videoId,
+                                        onPlaythrough = onPlaythrough,
+                                        onStopPlaythrough = onStopPlaythrough,
                                     )
                                 }
                             }
@@ -696,6 +720,8 @@ fun FeedScreen(
                                     onCompleteSnoozeExit = onCompleteSnoozeExit,
                                     swipe = false,
                                     detailVideoId = selected?.videoId,
+                                    onPlaythrough = onPlaythrough,
+                                    onStopPlaythrough = onStopPlaythrough,
                                 )
                             }
                         }
@@ -783,6 +809,9 @@ fun FeedScreen(
                                 onArchiveItem = onArchiveItem,
                                 onRequestSnooze = onRequestSnooze,
                                 onCompleteSnoozeExit = onCompleteSnoozeExit,
+                                playthroughActive = state.playthroughActive,
+                                onPlaythrough = onPlaythrough,
+                                onStopPlaythrough = onStopPlaythrough,
                             )
                         } else {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -899,6 +928,8 @@ fun FeedScreen(
                                 onRequestSnooze,
                                 onCompleteSnoozeExit,
                                 swipe = true,
+                                onPlaythrough = onPlaythrough,
+                                onStopPlaythrough = onStopPlaythrough,
                             )
                         }
                         FeedView.Categories -> {
@@ -918,6 +949,8 @@ fun FeedScreen(
                                 onRequestSnooze,
                                 onCompleteSnoozeExit,
                                 swipe = true,
+                                onPlaythrough = onPlaythrough,
+                                onStopPlaythrough = onStopPlaythrough,
                             )
                             }
                         }
@@ -979,6 +1012,8 @@ fun FeedScreen(
                                             if (id in selectedVideoIds) selectedVideoIds - id else selectedVideoIds + id
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
+                                    onPlaythrough = onPlaythrough,
+                                    onStopPlaythrough = onStopPlaythrough,
                                 )
                             } else {
                                 VideoList(
@@ -988,6 +1023,8 @@ fun FeedScreen(
                                     onRequestSnooze,
                                     onCompleteSnoozeExit,
                                     swipe = false,
+                                    onPlaythrough = onPlaythrough,
+                                    onStopPlaythrough = onStopPlaythrough,
                                 )
                             }
                         }
@@ -1085,6 +1122,8 @@ private fun InboxListPane(
     onToggleSelect: (String) -> Unit,
     onEnterSelection: (String) -> Unit,
     onCompleteSnoozeExit: () -> Unit = {},
+    onPlaythrough: () -> Unit = {},
+    onStopPlaythrough: () -> Unit = {},
 ) {
     val uncategorizedId = "__uncategorized__"
     val selectedCategoryName = when (state.categoryId) {
@@ -1134,6 +1173,8 @@ private fun InboxListPane(
         detailVideoId = detailVideoId,
         onToggleSelect = onToggleSelect,
         onEnterSelection = onEnterSelection,
+        onPlaythrough = onPlaythrough,
+        onStopPlaythrough = onStopPlaythrough,
     )
 }
 
@@ -1150,6 +1191,8 @@ private fun VideoList(
     detailVideoId: String? = null,
     onToggleSelect: (String) -> Unit = {},
     onEnterSelection: (String) -> Unit = {},
+    onPlaythrough: () -> Unit = {},
+    onStopPlaythrough: () -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         when {
@@ -1163,10 +1206,16 @@ private fun VideoList(
                 Text("No videos in this view.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        else -> {
+            else -> {
             val listState = rememberLazyListState()
             LaunchedEffect(state.view, state.categoryId, state.watchlistId, state.browsingChannelId) {
                 listState.scrollToItem(0)
+            }
+            if (state.items.any { it.embeddable }) {
+                PlaythroughBar(
+                    active = state.playthroughActive,
+                    onClick = { if (state.playthroughActive) onStopPlaythrough() else onPlaythrough() },
+                )
             }
             LazyColumn(
                 state = listState,
@@ -1501,6 +1550,9 @@ private fun StreamVideosPane(
     onArchiveItem: (InboxItem) -> Unit,
     onRequestSnooze: (InboxItem) -> Unit,
     onCompleteSnoozeExit: () -> Unit,
+    playthroughActive: Boolean = false,
+    onPlaythrough: () -> Unit = {},
+    onStopPlaythrough: () -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -1550,6 +1602,12 @@ private fun StreamVideosPane(
                 }
             }
             else -> {
+                if (items.any { it.embeddable }) {
+                    PlaythroughBar(
+                        active = playthroughActive,
+                        onClick = { if (playthroughActive) onStopPlaythrough() else onPlaythrough() },
+                    )
+                }
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1580,6 +1638,7 @@ private fun StreamDetailScreen(
     syncing: Boolean,
     status: String?,
     snoozeExitVideoId: String?,
+    playthroughActive: Boolean = false,
     onBack: () -> Unit,
     onCatchUp: () -> Unit,
     onEdit: () -> Unit,
@@ -1587,6 +1646,8 @@ private fun StreamDetailScreen(
     onArchiveItem: (InboxItem) -> Unit,
     onRequestSnooze: (InboxItem) -> Unit,
     onCompleteSnoozeExit: () -> Unit,
+    onPlaythrough: () -> Unit = {},
+    onStopPlaythrough: () -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -1656,6 +1717,12 @@ private fun StreamDetailScreen(
                     }
                 }
                 else -> {
+                    if (items.any { it.embeddable }) {
+                        PlaythroughBar(
+                            active = playthroughActive,
+                            onClick = { if (playthroughActive) onStopPlaythrough() else onPlaythrough() },
+                        )
+                    }
                     LazyColumn(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1674,6 +1741,59 @@ private fun StreamDetailScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PlaythroughBar(active: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onClick) {
+            Icon(
+                Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(if (active) "Exit playthrough" else "Playthrough")
+        }
+    }
+}
+
+@Composable
+private fun PlaythroughOverlay(
+    item: InboxItem,
+    onExit: () -> Unit,
+    onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
+    onFlushPlayback: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+    ) {
+        YoutubePlayer(
+            videoId = item.videoId,
+            embeddable = item.embeddable,
+            thumbnailUrl = item.thumbnailUrl,
+            autoplay = true,
+            onPlayerEvent = onPlayerEvent,
+            onFlushPlayback = onFlushPlayback,
+            modifier = Modifier.fillMaxSize(),
+        )
+        IconButton(
+            onClick = onExit,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(8.dp),
+        ) {
+            Icon(Icons.Default.Close, contentDescription = "Exit playthrough", tint = Color.White)
         }
     }
 }
@@ -3098,8 +3218,13 @@ private fun YoutubePlayer(
     videoId: String,
     embeddable: Boolean,
     thumbnailUrl: String,
+    autoplay: Boolean = false,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit = { _, _, _, _, _ -> },
     onFlushPlayback: () -> Unit = {},
+    modifier: Modifier = Modifier
+        .fillMaxWidth()
+        .aspectRatio(16f / 9f)
+        .clip(RoundedCornerShape(12.dp)),
 ) {
     if (!embeddable) {
         AsyncImage(
@@ -3119,7 +3244,7 @@ private fun YoutubePlayer(
     DisposableEffect(videoId) {
         onDispose { onFlushPlayback() }
     }
-    val html = remember(videoId) {
+    val html = remember(videoId, autoplay) {
         """
         <!DOCTYPE html><html><head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
@@ -3132,6 +3257,7 @@ private fun YoutubePlayer(
             tag.src = 'https://www.youtube.com/iframe_api';
             document.head.appendChild(tag);
             var player;
+            var shouldAutoplay = ${if (autoplay) "true" else "false"};
             function post(type) {
               try {
                 var t = player && player.getCurrentTime ? player.getCurrentTime() : 0;
@@ -3144,8 +3270,9 @@ private fun YoutubePlayer(
               player = new YT.Player('player', {
                 videoId: '$videoId',
                 host: 'https://www.youtube-nocookie.com',
-                playerVars: { playsinline: 1, rel: 0, modestbranding: 1, enablejsapi: 1 },
+                playerVars: { playsinline: 1, rel: 0, modestbranding: 1, enablejsapi: 1, autoplay: shouldAutoplay ? 1 : 0 },
                 events: {
+                  onReady: function (e) { if (shouldAutoplay) e.target.playVideo(); },
                   onStateChange: function (e) {
                     if (e.data === 1) post('playing');
                     else if (e.data === 2) post('paused');
@@ -3252,10 +3379,7 @@ private fun YoutubePlayer(
             it.stopLoading()
             it.destroy()
         },
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .clip(RoundedCornerShape(12.dp)),
+        modifier = modifier,
     )
 }
 

@@ -11,6 +11,7 @@ import { UNCATEGORIZED_CATEGORY_ID, isUncategorizedFilter } from '../lib/categor
 import { qrSvgForUrl } from '../lib/qrSvg';
 import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../lib/syncStatus';
 import { formatFeedHealth, inboxIsStale } from '../lib/inboxFreshness';
+import { playthroughNextId, playthroughQueue, playthroughStartId } from '../lib/playthrough';
 import { LivePage } from './LivePage';
 import '../styles/app.css';
 import '../styles/live.css';
@@ -135,6 +136,14 @@ function IconReload() {
 	);
 }
 
+function IconPlay() {
+	return (
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+			<path fill="currentColor" d="M8 5v14l11-7z" />
+		</svg>
+	);
+}
+
 function IconRestore() {
 	return (
 		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
@@ -230,6 +239,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [newVideosAvailable, setNewVideosAvailable] = useState(false);
 	const [feedHealth, setFeedHealth] = useState<FeedSyncStatusBody | null>(null);
 	const inboxHeadRef = useRef<string | null>(null);
+	const playerShellRef = useRef<HTMLDivElement | null>(null);
+	const playthroughActiveRef = useRef(false);
+	const playthroughQueueRef = useRef<InboxItem[]>([]);
+	const playthroughAdvancingRef = useRef(false);
+	const playthroughHadFullscreenRef = useRef(false);
+	const [playthroughActive, setPlaythroughActive] = useState(false);
+	const [playthroughItems, setPlaythroughItems] = useState<InboxItem[]>([]);
 	const autoStarted = useRef(false);
 	const androidClient = isAndroidClient();
 	const [narrow, setNarrow] = useState(isNarrowFeeder());
@@ -354,6 +370,35 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	}, [androidClient, mainSection, checkInboxFreshness]);
 
 	useEffect(() => {
+		if (!playthroughActive || !selectedVideoId) return;
+		const el = playerShellRef.current;
+		if (!el || document.fullscreenElement === el) return;
+		const req = el.requestFullscreen?.bind(el) ?? (el as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen?.bind(el);
+		if (!req) return;
+		void Promise.resolve(req())
+			.then(() => {
+				playthroughHadFullscreenRef.current = true;
+			})
+			.catch(() => undefined);
+	}, [playthroughActive, selectedVideoId]);
+
+	useEffect(() => {
+		const onFs = () => {
+			const doc = document as Document & { webkitFullscreenElement?: Element | null };
+			const active = document.fullscreenElement ?? doc.webkitFullscreenElement;
+			if (playthroughActiveRef.current && playthroughHadFullscreenRef.current && !active) {
+				stopPlaythrough();
+			}
+		};
+		document.addEventListener('fullscreenchange', onFs);
+		document.addEventListener('webkitfullscreenchange', onFs);
+		return () => {
+			document.removeEventListener('fullscreenchange', onFs);
+			document.removeEventListener('webkitfullscreenchange', onFs);
+		};
+	}, []);
+
+	useEffect(() => {
 		if (androidClient && mainSection !== 'feed') setMainSection('feed');
 	}, [androidClient, mainSection]);
 
@@ -368,6 +413,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	}, [categoryId, leftTab, watchlistId, channelId]);
 
 	function selectFeedView(tab: 'inbox' | 'snoozed' | 'deleted' | 'streams') {
+		stopPlaythrough();
 		setLeftTab(tab);
 		setCategoryId(null);
 		setInboxSelectedIds([]);
@@ -784,6 +830,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			ended: payload.ended || undefined,
 		});
 		try {
+			if (payload.ended) advancePlaythrough(videoId);
 			if (options?.keepalive) {
 				void fetch(`/api/inbox/${encodeURIComponent(videoId)}`, {
 					method: 'PATCH',
@@ -981,10 +1028,60 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const feedThreeCol = streamsThreeCol || watchlistThreeCol || categoryThreeCol;
 	const streamsList = categoryId ? channels.filter((ch) => channelMatchesCategory(ch, categoryId)) : channels;
 	const visibleItems = items?.filter((item) => matchesWatchedFilter(item.watchedAt, watchedFilter)) ?? null;
+	const playthroughCurrent = playthroughActive
+		? playthroughItems.find((item) => item.videoId === selectedVideoId) ?? null
+		: null;
 	const selectedVideo =
-		visibleItems?.find((item) => item.videoId === selectedVideoId) ?? (phoneLayout ? null : (visibleItems?.[0] ?? null));
+		playthroughCurrent ??
+		visibleItems?.find((item) => item.videoId === selectedVideoId) ??
+		(phoneLayout ? null : (visibleItems?.[0] ?? null));
+
+	function stopPlaythrough() {
+		playthroughActiveRef.current = false;
+		playthroughHadFullscreenRef.current = false;
+		setPlaythroughActive(false);
+		setPlaythroughItems([]);
+		playthroughQueueRef.current = [];
+		const doc = document as Document & {
+			webkitFullscreenElement?: Element | null;
+			webkitExitFullscreen?: () => Promise<void>;
+		};
+		const fs = document.fullscreenElement ?? doc.webkitFullscreenElement;
+		if (fs) {
+			void (document.exitFullscreen ?? doc.webkitExitFullscreen)?.call(document);
+		}
+	}
+
+	function advancePlaythrough(currentId: string) {
+		if (!playthroughActiveRef.current) return;
+		const ids = playthroughQueueRef.current.map((item) => item.videoId);
+		const next = playthroughNextId(ids, currentId);
+		if (!next) {
+			stopPlaythrough();
+			return;
+		}
+		playthroughAdvancingRef.current = true;
+		openVideo(next);
+		playthroughAdvancingRef.current = false;
+	}
+
+	function startPlaythrough(list: InboxItem[]) {
+		const queue = playthroughQueue(list);
+		const ids = queue.map((item) => item.videoId);
+		const startId = playthroughStartId(ids, selectedVideoId);
+		if (!startId) return;
+		playthroughQueueRef.current = queue;
+		playthroughActiveRef.current = true;
+		playthroughHadFullscreenRef.current = false;
+		setPlaythroughItems(queue);
+		setPlaythroughActive(true);
+		playthroughAdvancingRef.current = true;
+		openVideo(startId);
+		playthroughAdvancingRef.current = false;
+	}
 
 	function openVideo(videoId: string) {
+		if (playthroughActiveRef.current && !playthroughAdvancingRef.current) stopPlaythrough();
 		setSelectedVideoId(videoId);
 		if (phoneLayout) history.pushState({ feederVideo: videoId }, '');
 	}
@@ -1126,18 +1223,24 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						)}
 					</div>
 				</header>
-				<div className="preview-player">
+				<div className={`preview-player${playthroughActive ? ' playthrough-shell' : ''}`} ref={playerShellRef}>
 					{item.embeddable ? (
 						<FeedYouTubePlayer
 							videoId={item.videoId}
 							title={item.title}
 							durationSeconds={item.durationSeconds}
 							initialPlaybackSeconds={item.playbackSeconds ?? 0}
+							autoplay={playthroughActive}
 							onPersist={persistWatchProgress}
 						/>
 					) : (
 						<img src={item.thumbnailUrl} alt="" />
 					)}
+					{playthroughActive ? (
+						<button className="playthrough-exit" type="button" onClick={() => stopPlaythrough()}>
+							Exit playthrough
+						</button>
+					) : null}
 				</div>
 				{item.embeddable ? null : (
 					<div className="preview-unavailable">
@@ -1179,7 +1282,22 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		if (list === null && !error) return <p className="muted">Loading feed…</p>;
 		if (list?.length === 0) return <p className="muted">No videos in this view.</p>;
 		const allowMultiSelect = !androidClient && (actions === 'inbox' || actions === 'snoozed' || actions === 'deleted');
-		return list?.map((item) =>
+		const queue = playthroughQueue(list);
+		return (
+			<>
+				{!androidClient && queue.length > 0 ? (
+					<div className="playthrough-bar">
+						<button
+							className="playthrough-btn"
+							type="button"
+							onClick={() => (playthroughActive ? stopPlaythrough() : startPlaythrough(list ?? []))}
+						>
+							<IconPlay />
+							{playthroughActive ? 'Exit playthrough' : 'Playthrough'}
+						</button>
+					</div>
+				) : null}
+				{(list ?? []).map((item) =>
 			compact ? (
 				<div
 					key={item.videoId}
@@ -1325,6 +1443,8 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					</div>
 				</a>
 			),
+				)}
+			</>
 		);
 	}
 
@@ -1353,6 +1473,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							role="tab"
 							aria-selected={mainSection === 'feed' && leftTab !== 'watchlist'}
 							onClick={() => {
+								stopPlaythrough();
 								setMainSection('feed');
 								if (leftTab === 'watchlist') setLeftTab('inbox');
 							}}
@@ -1365,6 +1486,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							role="tab"
 							aria-selected={mainSection === 'feed' && leftTab === 'watchlist'}
 							onClick={() => {
+								stopPlaythrough();
 								setMainSection('feed');
 								setLeftTab('watchlist');
 							}}
