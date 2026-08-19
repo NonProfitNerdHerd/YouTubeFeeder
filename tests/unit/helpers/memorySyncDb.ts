@@ -27,6 +27,7 @@ export class MemorySyncDb {
 	discoverBrowseCache = new Map<string, Row>();
 	topicDiscoveryCache = new Map<string, Row>();
 	recommendationFeedback: Row[] = [];
+	discoverInterestCandidates: Row[] = [];
 	categories = new Map<string, Row>();
 	channelCategories: Row[] = [];
 	failFanout = false;
@@ -463,6 +464,60 @@ export class MemorySyncDb {
 				next_page_token: bound[4] ?? null,
 			});
 			return 1;
+		}
+		if (normalized.includes('INSERT INTO discover_interest_candidates')) {
+			const existing = this.discoverInterestCandidates.find(
+				(row) =>
+					row.user_id === bound[1] &&
+					row.interest_id === bound[2] &&
+					row.provider === bound[4] &&
+					row.external_id === bound[5],
+			);
+			if (existing) {
+				existing.channel_title = bound[6];
+				existing.channel_thumbnail = bound[7];
+				existing.channel_description = bound[8];
+				existing.source = bound[9];
+				existing.recommendation_reason = bound[10];
+				existing.interest_label = bound[3];
+				existing.dismissed_at = null;
+				return 1;
+			}
+			this.discoverInterestCandidates.push({
+				id: bound[0],
+				user_id: bound[1],
+				interest_id: bound[2],
+				interest_label: bound[3],
+				provider: bound[4],
+				external_id: bound[5],
+				channel_title: bound[6],
+				channel_thumbnail: bound[7],
+				channel_description: bound[8],
+				source: bound[9],
+				recommendation_reason: bound[10],
+				dismissed_at: null,
+				created_at: bound[11],
+			});
+			return 1;
+		}
+		if (normalized.includes('UPDATE discover_interest_candidates') && normalized.includes('dismissed_at')) {
+			const dismissedAt = bound[0];
+			const userId = String(bound[1]);
+			const provider = String(bound[2]);
+			const externalId = String(bound[3]);
+			let changes = 0;
+			for (const row of this.discoverInterestCandidates) {
+				if (
+					row.user_id === userId &&
+					row.provider === provider &&
+					row.external_id === externalId &&
+					row.dismissed_at == null
+				) {
+					row.dismissed_at = dismissedAt;
+					changes += 1;
+				}
+			}
+			return changes;
 		}
 		if (normalized.includes('INSERT INTO recommendation_feedback')) {
 			this.recommendationFeedback.push({
@@ -995,6 +1050,20 @@ export class MemorySyncDb {
 			const userId = String(bound[1]);
 			const row = this.recommendationFeedback.find((item) => item.id === id && item.user_id === userId);
 			return row ? [{ id: row.id, restored_at: row.restored_at ?? null }] : [];
+		}
+		if (normalized.includes('FROM discover_interest_candidates')) {
+			const userId = String(bound[0]);
+			let rows = this.discoverInterestCandidates.filter(
+				(row) => row.user_id === userId && row.dismissed_at == null,
+			);
+			if (normalized.includes('AND interest_id = ?')) {
+				const interestId = String(bound[1]);
+				rows = rows.filter((row) => row.interest_id === interestId);
+			}
+			if (normalized.includes('SELECT 1 AS ok')) {
+				return rows.length ? [{ ok: 1 }] : [];
+			}
+			return rows.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 		}
 		if (normalized.includes('FROM discover_browse_cache WHERE section_key = ?')) {
 			const row = this.discoverBrowseCache.get(String(bound[0]));

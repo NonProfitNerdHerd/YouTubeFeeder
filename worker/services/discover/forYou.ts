@@ -1,4 +1,9 @@
 import type { DiscoverRecommendation, DiscoveryResult } from '../../../src/types/discover';
+import {
+	candidateRowToRecommendation,
+	loadActiveInterestCandidates,
+	type DiscoverInterestCandidateRow,
+} from '../../db/discoverInterestCandidates';
 import { loadActiveFeedbackRows, loadActiveSuppressions } from '../../db/recommendationFeedback';
 import { getSubscribedChannelIds } from '../../db/queries';
 import {
@@ -60,6 +65,48 @@ export interface ForYouResult {
 
 function suppressionKey(provider: string, externalId: string): string {
 	return `${provider}:${externalId}`;
+}
+
+function fingerprintForPersistedCandidate(
+	row: DiscoverInterestCandidateRow,
+	fingerprintByInterest: Map<string, InterestFingerprint>,
+): InterestFingerprint | null {
+	const existing = fingerprintByInterest.get(row.interest_id);
+	if (existing) return existing;
+	const label = row.interest_label.trim();
+	if (!label) return null;
+	return {
+		interestId: row.interest_id,
+		label: row.interest_label,
+		phrases: [{ text: label.toLowerCase(), weight: 10 }],
+		terms: [],
+		negativeHints: [],
+		channelCount: 0,
+		confidence: 0,
+	};
+}
+
+function persistedCandidatesToPoolEntries(
+	rows: DiscoverInterestCandidateRow[],
+	fingerprintByInterest: Map<string, InterestFingerprint>,
+	subscribed: Set<string>,
+	suppressions: Set<string>,
+	excludeIds: Set<string>,
+): Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> {
+	const out: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> = [];
+	for (const row of rows) {
+		if (subscribed.has(row.external_id)) continue;
+		if (suppressions.has(suppressionKey(row.provider, row.external_id))) continue;
+		if (excludeIds.has(row.external_id)) continue;
+		const fingerprint = fingerprintForPersistedCandidate(row, fingerprintByInterest);
+		if (!fingerprint) continue;
+		const candidate: DiscoveryResult = candidateRowToRecommendation(row);
+		out.push({
+			row: scoreCandidateAgainstFingerprint(candidate, fingerprint),
+			fingerprint,
+		});
+	}
+	return out;
 }
 
 function dedupeScored(scored: ScoredCandidate[]): ScoredCandidate[] {
@@ -265,6 +312,21 @@ export async function buildForYouRecommendations(
 		...primaryDeduped.map((row) => ({ row, fingerprint: fingerprintByInterest.get(row.interestId)! })),
 		...extendedDeduped.map((row) => ({ row, fingerprint: fingerprintByInterest.get(row.interestId)! })),
 	];
+	const poolIds = new Set(poolEntries.map((entry) => entry.row.result.externalId));
+	const persistedRows = await loadActiveInterestCandidates(
+		env.DB,
+		userId,
+		opts?.interestId,
+	);
+	const persistedEntries = persistedCandidatesToPoolEntries(
+		persistedRows,
+		fingerprintByInterest,
+		subscribed,
+		suppressions,
+		poolIds,
+	);
+	poolEntries.push(...persistedEntries);
+
 	const pageSlice = poolEntries.slice(offset, offset + limit);
 	const secret = env.SESSION_SECRET;
 	const page: DiscoverRecommendation[] = [];

@@ -39,6 +39,8 @@ import {
 	type RecommendationFeedbackAction,
 } from './services/discover/recommendationFeedbackService';
 import { followYoutubeChannel, unfollowYoutubeChannel } from './services/discoverFollow';
+import { dismissInterestCandidate } from './db/discoverInterestCandidates';
+import { loadAndPersistInterestPopular } from './services/discover/interestPopular';
 import { catchUpPodcast } from './services/podcastCatchup';
 import {
 	applyLiveLayout,
@@ -446,6 +448,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 				description: body.description,
 				thumbnailUrl: body.thumbnailUrl,
 			});
+			await dismissInterestCandidate(env.DB, user.id, 'youtube', body.channelId);
 			let feedbackRecorded = false;
 			if (body.recommendationToken) {
 				const feedback = await recordFollowFeedbackFromToken(env, user.id, body.recommendationToken, body.channelId);
@@ -460,6 +463,24 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			if (msg === 'invalid_channel') return apiError(400, 'invalid_channel', 'Invalid channel.');
 			return apiError(500, 'follow_failed', msg);
 		}
+	}
+
+	if (path === '/api/discover/interest-popular' && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const body = await readJson<{ interestId?: string }>(request);
+		const interestId = body?.interestId?.trim();
+		const result = await loadAndPersistInterestPopular(
+			env,
+			user.id,
+			interestId && interestId !== 'all' ? interestId : undefined,
+		);
+		return json({
+			channels: result.channels,
+			interestLabel: result.interestLabel,
+			usedGlobalFallback: result.usedGlobalFallback,
+			fromPersisted: result.fromPersisted,
+		});
 	}
 
 	if (path === '/api/discover/feedback' && request.method === 'POST') {

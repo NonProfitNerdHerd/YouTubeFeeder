@@ -7,6 +7,7 @@ import {
 	type RecommendationFeedbackRow,
 	type RecommendationHistoryOpts,
 } from '../../db/recommendationFeedback';
+import { dismissInterestCandidate } from '../../db/discoverInterestCandidates';
 import {
 	mintRecommendationToken,
 	verifyRecommendationToken,
@@ -99,6 +100,7 @@ export async function submitRecommendationFeedback(
 	}
 
 	const feedback = await insertRecommendationFeedback(env.DB, payloadToInsert(userId, action, payload));
+	await dismissInterestCandidate(env.DB, userId, payload.provider, payload.externalId);
 	return { ok: true, feedback };
 }
 
@@ -116,6 +118,7 @@ export async function recordFollowFeedbackFromToken(
 	if (payload.externalId !== channelId) return { ok: false, code: 'token_channel_mismatch' };
 
 	const feedback = await insertRecommendationFeedback(env.DB, payloadToInsert(userId, 'followed', payload));
+	await dismissInterestCandidate(env.DB, userId, payload.provider, payload.externalId);
 	return { ok: true, feedback };
 }
 

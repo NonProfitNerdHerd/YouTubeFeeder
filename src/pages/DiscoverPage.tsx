@@ -88,8 +88,6 @@ interface DiscoverPageProps {
 }
 
 const FOR_YOU_PAGE_SIZE = 25;
-/** Cache key for Browse Popular on the All interest chip (global trending). */
-const FOR_YOU_ALL_POPULAR_KEY = '__global__';
 
 function mergeForYouItems(
 	primary: DiscoverRecommendation[],
@@ -103,45 +101,6 @@ function mergeForYouItems(
 		out.push(row);
 	}
 	return out;
-}
-
-function buildForYouDisplayItems(
-	interestId: string,
-	serverItems: DiscoverRecommendation[],
-	popularCache: Record<string, DiscoverRecommendation[]>,
-): DiscoverRecommendation[] {
-	if (interestId === 'all') {
-		const popularMerged = Object.values(popularCache).reduce(
-			(acc, rows) => mergeForYouItems(acc, rows),
-			[] as DiscoverRecommendation[],
-		);
-		return mergeForYouItems(serverItems, popularMerged);
-	}
-	if (serverItems.length > 0) return serverItems;
-	return popularCache[interestId] ?? [];
-}
-
-function isShowingPopularFallback(
-	interestId: string,
-	serverItems: DiscoverRecommendation[],
-	popularCache: Record<string, DiscoverRecommendation[]>,
-): boolean {
-	if (interestId === 'all') return false;
-	return serverItems.length === 0 && (popularCache[interestId]?.length ?? 0) > 0;
-}
-
-function tagGlobalPopularFallback(
-	channels: DiscoveryResult[],
-	interestId: string,
-	interestLabel: string,
-): DiscoverRecommendation[] {
-	return channels.map((row) => ({
-		...row,
-		subscribed: false,
-		interestId,
-		interestLabel,
-		recommendationReason: `Trending while we build ${interestLabel} recommendations`,
-	}));
 }
 
 export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPageProps) {
@@ -170,10 +129,8 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [searchMode, setSearchMode] = useState(false);
 	const [popularBrowse, setPopularBrowse] = useState<DiscoverBrowseResponse | null>(null);
 	const [popularInterestContext, setPopularInterestContext] = useState<string | undefined>();
-	const [forYouPopularCache, setForYouPopularCache] = useState<Record<string, DiscoverRecommendation[]>>({});
-	const [forYouPopularLoading, setForYouPopularLoading] = useState<string | null>(null);
-	const [forYouPopularLoaded, setForYouPopularLoaded] = useState<Record<string, boolean>>({});
-	const [forYouPopularUsedGlobal, setForYouPopularUsedGlobal] = useState<Record<string, boolean>>({});
+	const [forYouPopularLoading, setForYouPopularLoading] = useState(false);
+	const [forYouPopularExhaustedInterest, setForYouPopularExhaustedInterest] = useState<string | null>(null);
 	const [notInterestedTarget, setNotInterestedTarget] = useState<DiscoverRecommendation | null>(null);
 	const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 	const [undoFeedback, setUndoFeedback] = useState<UndoFeedbackState | null>(null);
@@ -289,13 +246,6 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	function removeForYouItem(externalId: string) {
 		setForYouItems((rows) => rows.filter((row) => row.externalId !== externalId));
 		setForYouTotal((value) => Math.max(0, value - 1));
-		setForYouPopularCache((prev) => {
-			const next: Record<string, DiscoverRecommendation[]> = {};
-			for (const [key, rows] of Object.entries(prev)) {
-				next[key] = rows.filter((row) => row.externalId !== externalId);
-			}
-			return next;
-		});
 	}
 
 	async function submitNotInterested(action: RecommendationFeedbackAction) {
@@ -380,13 +330,6 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		const removeChannel = (rows: DiscoveryResult[]) => rows.filter((row) => row.externalId !== channelId);
 		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
 		setForYouItems((rows) => mark(rows));
-		setForYouPopularCache((prev) => {
-			const next: Record<string, DiscoverRecommendation[]> = {};
-			for (const [key, rows] of Object.entries(prev)) {
-				next[key] = mark(rows);
-			}
-			return next;
-		});
 		setBrowseCache((prev) => {
 			const next = { ...prev };
 			for (const tab of Object.keys(next) as DiscoverBrowseTab[]) {
@@ -519,13 +462,6 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			rows.filter((row) => row.externalId !== channelId && row.parentExternalId !== channelId);
 		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
 		setForYouItems((rows) => filterForYou(rows));
-		setForYouPopularCache((prev) => {
-			const next: Record<string, DiscoverRecommendation[]> = {};
-			for (const [key, rows] of Object.entries(prev)) {
-				next[key] = filterForYou(rows);
-			}
-			return next;
-		});
 		setPopularBrowse((prev) =>
 			prev
 				? {
@@ -819,32 +755,25 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const popularInterestChannels = activeBrowse?.popularInterestChannels ?? [];
 	const popularChannels = activeBrowse?.popularChannels ?? [];
 	const popularInterestLabel = activeBrowse?.popularInterestLabel;
-	const forYouDisplayItems =
-		browseTab === 'forYou'
-			? buildForYouDisplayItems(forYouInterest, forYouItems, forYouPopularCache)
-			: [];
-	const showingPopularFallback = isShowingPopularFallback(forYouInterest, forYouItems, forYouPopularCache);
 	const popularFallbackLabel =
 		forYouInterests?.find((row) => row.id === forYouInterest)?.label ?? 'this interest';
-	const forYouPopularCacheKey = forYouInterest === 'all' ? FOR_YOU_ALL_POPULAR_KEY : forYouInterest;
-	const forYouPopularExhausted =
-		browseTab === 'forYou' &&
-		forYouPopularLoaded[forYouPopularCacheKey] &&
-		forYouDisplayItems.length === 0 &&
-		!forYouPopularLoading &&
-		!browseLoading;
 	const browseResults =
 		browseTab === 'forYou'
-			? forYouDisplayItems
+			? forYouItems
 			: browseTab === 'recent'
 				? activeBrowse?.recentlyFollowed ?? []
 				: [];
-	const showForYouSeeMore = browseTab === 'forYou' && forYouItems.length > 0 && forYouHasMore;
-	const forYouEmpty =
+	const showingPopularFallback =
 		browseTab === 'forYou' &&
-		!browseLoading &&
-		!forYouPopularLoading &&
-		forYouDisplayItems.length === 0;
+		forYouInterest !== 'all' &&
+		forYouItems.some((row) => row.recommendationReason?.startsWith('Popular in'));
+	const showingGlobalPopularFallback =
+		browseTab === 'forYou' &&
+		forYouItems.some((row) => row.recommendationReason?.startsWith('Trending while we build'));
+	const forYouPopularExhausted =
+		browseTab === 'forYou' && forYouPopularExhaustedInterest === forYouInterest && forYouItems.length === 0;
+	const showForYouSeeMore = browseTab === 'forYou' && forYouHasMore;
+	const forYouEmpty = browseTab === 'forYou' && !browseLoading && !forYouPopularLoading && forYouItems.length === 0;
 	const popularEmpty =
 		browseTab === 'popular' && !browseLoading && popularInterestChannels.length === 0 && popularChannels.length === 0;
 	const searchActive = searchMode;
@@ -863,42 +792,34 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		setSearchMode(false);
 		setResponse(null);
 		onError('');
-		const cacheKey = forYouPopularCacheKey;
-		if (forYouPopularCache[cacheKey]?.length) return;
-
-		setForYouPopularLoading(cacheKey);
+		setForYouPopularExhaustedInterest(null);
+		setForYouPopularLoading(true);
 		try {
-			const params = new URLSearchParams({ tab: 'popular' });
-			if (forYouInterest !== 'all') params.set('interest', forYouInterest);
-			const res = await fetch(`/api/discover/browse?${params.toString()}`, { credentials: 'same-origin' });
+			const res = await fetch('/api/discover/interest-popular', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({
+					interestId: forYouInterest !== 'all' ? forYouInterest : undefined,
+				}),
+			});
 			if (!res.ok) {
 				onError('Could not load popular channels.');
 				return;
 			}
-			const body = (await res.json()) as DiscoverBrowseResponse;
-			let channels: DiscoverRecommendation[] = [];
-			let usedGlobalFallback = false;
-
-			if (forYouInterest === 'all') {
-				channels = body.popularChannels ?? [];
-			} else {
-				const interestLabel = body.popularInterestLabel ?? popularFallbackLabel;
-				const interestChannels = body.popularInterestChannels ?? [];
-				if (interestChannels.length) {
-					channels = interestChannels;
-				} else {
-					usedGlobalFallback = true;
-					channels = tagGlobalPopularFallback(body.popularChannels ?? [], forYouInterest, interestLabel);
-				}
+			const body = (await res.json()) as {
+				channels?: DiscoverRecommendation[];
+				error?: { message: string };
+			};
+			if (!body.channels?.length) {
+				setForYouPopularExhaustedInterest(forYouInterest);
+				return;
 			}
-
-			setForYouPopularCache((prev) => ({ ...prev, [cacheKey]: channels }));
-			setForYouPopularUsedGlobal((prev) => ({ ...prev, [cacheKey]: usedGlobalFallback }));
-			setForYouPopularLoaded((prev) => ({ ...prev, [cacheKey]: true }));
+			await loadForYou(forYouInterest);
 		} catch {
 			onError('Could not load popular channels.');
 		} finally {
-			setForYouPopularLoading(null);
+			setForYouPopularLoading(false);
 		}
 	}
 
@@ -1049,18 +970,18 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 							<button
 								className="ghost tiny"
 								type="button"
-								disabled={forYouPopularLoading === forYouPopularCacheKey}
+								disabled={forYouPopularLoading}
 								onClick={() => void browsePopularFromInterest()}
 							>
-								{forYouPopularLoading === forYouPopularCacheKey ? 'Loading popular…' : 'Browse Popular'}
+								{forYouPopularLoading ? 'Loading popular…' : 'Browse Popular'}
 							</button>
 						) : null}
 					</div>
 				) : null}
 
-				{!searchActive && browseTab === 'forYou' && showingPopularFallback ? (
+				{!searchActive && browseTab === 'forYou' && (showingPopularFallback || showingGlobalPopularFallback) ? (
 					<p className="muted discover-hint">
-						{forYouPopularUsedGlobal[forYouPopularCacheKey]
+						{showingGlobalPopularFallback
 							? `Trending channels while we build ${popularFallbackLabel} recommendations`
 							: `Popular ${popularFallbackLabel} channels`}
 					</p>
