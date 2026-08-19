@@ -297,12 +297,12 @@ describe('browse tabs', () => {
 		const forYou = await discoverBrowse(env, 'user-1', 'forYou', undefined, now);
 		expect(forYou.forYou.some((r) => r.externalId === CHANNEL_C)).toBe(true);
 		expect(forYou.forYouInterests?.some((i) => i.label === 'Storm Chasing')).toBe(true);
-		expect(forYou.popularVideos).toHaveLength(0);
+		expect(forYou.popularChannels).toHaveLength(0);
 		expect(spy).not.toHaveBeenCalled();
 		spy.mockRestore();
 	});
 
-	it('popular tab uses videos.list not search.list', async () => {
+	it('popular tab returns deduped trending channels not videos', async () => {
 		const db = new MemorySyncDb();
 		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
 		const yt = mockYt(async (path) => {
@@ -318,16 +318,61 @@ describe('browse tabs', () => {
 							thumbnails: { medium: { url: 'https://example.com/v.jpg' } },
 						},
 					},
+					{
+						id: 'vid-pop-2',
+						snippet: {
+							title: 'Another Video',
+							channelId: CHANNEL,
+							channelTitle: 'Popular Channel',
+							thumbnails: { medium: { url: 'https://example.com/v2.jpg' } },
+						},
+					},
 				],
 			};
 		});
 		vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient').mockReturnValue(yt);
 
 		const popular = await discoverBrowse(env, 'user-1', 'popular');
-		expect(popular.popularVideos).toHaveLength(1);
+		expect(popular.popularChannels).toHaveLength(1);
+		expect(popular.popularChannels[0]?.type).toBe('channel');
+		expect(popular.popularChannels[0]?.externalId).toBe(CHANNEL);
 		expect(popular.forYou).toHaveLength(0);
 		expect(yt.calls.search).toBe(0);
 		expect(yt.calls.videos).toBe(1);
+		vi.restoreAllMocks();
+	});
+
+	it('popular tab with interest returns topic channels plus global popular', async () => {
+		const db = new MemorySyncDb();
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		seedSubscribedUser(db);
+		seedStormChasingCategory(db);
+		const now = new Date('2026-08-19T12:00:00Z');
+		const { fingerprint } = await seedInterestQueryCache(db, 'user-1', now, [weatherChannel(CHANNEL_C, 'Storm Channel')]);
+
+		const yt = mockYt(async (path) => {
+			if (path !== 'videos') throw new Error(`unexpected:${path}`);
+			return {
+				items: [
+					{
+						id: 'vid-pop',
+						snippet: {
+							title: 'Trending Video',
+							channelId: CHANNEL_B,
+							channelTitle: 'Trending Channel',
+							thumbnails: { medium: { url: 'https://example.com/t.jpg' } },
+						},
+					},
+				],
+			};
+		});
+		vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient').mockReturnValue(yt);
+
+		const popular = await discoverBrowse(env, 'user-1', 'popular', { interestId: fingerprint.interestId }, now);
+		expect(popular.popularInterestChannels?.some((r) => r.externalId === CHANNEL_C)).toBe(true);
+		expect(popular.popularInterestLabel).toBe('Storm Chasing');
+		expect(popular.popularChannels.some((r) => r.externalId === CHANNEL_B)).toBe(true);
+		expect(popular.popularChannels.some((r) => r.externalId === CHANNEL_C)).toBe(false);
 		vi.restoreAllMocks();
 	});
 

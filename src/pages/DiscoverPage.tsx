@@ -118,6 +118,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [forYouMessage, setForYouMessage] = useState<string | undefined>();
 	const [forYouRefreshOffset, setForYouRefreshOffset] = useState(0);
 	const [forYouLoadingMore, setForYouLoadingMore] = useState(false);
+	const [searchMode, setSearchMode] = useState(false);
+	const [popularBrowse, setPopularBrowse] = useState<DiscoverBrowseResponse | null>(null);
+	const [popularInterestContext, setPopularInterestContext] = useState<string | undefined>();
 
 	async function loadCategories() {
 		try {
@@ -170,8 +173,30 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}
 	}
 
+	async function loadPopular(interestId?: string) {
+		setBrowseLoading(true);
+		try {
+			const params = new URLSearchParams({ tab: 'popular' });
+			if (interestId && interestId !== 'all') params.set('interest', interestId);
+			const res = await fetch(`/api/discover/browse?${params.toString()}`, { credentials: 'same-origin' });
+			if (!res.ok) return;
+			const body = (await res.json()) as DiscoverBrowseResponse;
+			setPopularBrowse(body);
+			setBrowseCache((prev) => ({ ...prev, popular: body }));
+		} catch {
+			// Browse is optional; search still works.
+		} finally {
+			setBrowseLoading(false);
+		}
+	}
+
 	async function loadBrowseTab(tab: DiscoverBrowseTab) {
 		if (tab === 'forYou') return;
+		if (tab === 'popular') {
+			if (popularBrowse && popularInterestContext === undefined) return;
+			await loadPopular(popularInterestContext);
+			return;
+		}
 		if (browseCache[tab]) return;
 		setBrowseLoading(true);
 		try {
@@ -193,10 +218,12 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	useEffect(() => {
 		if (browseTab === 'forYou') {
 			void loadForYou(forYouInterest);
+		} else if (browseTab === 'popular') {
+			void loadPopular(popularInterestContext);
 		} else {
 			void loadBrowseTab(browseTab);
 		}
-	}, [browseTab, forYouInterest]);
+	}, [browseTab, forYouInterest, popularInterestContext]);
 
 	async function loadMoreForYou() {
 		if (forYouLoadingMore || !forYouHasMore) return;
@@ -219,13 +246,23 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				next[tab] = {
 					...entry,
 					forYou: mark(entry.forYou ?? []),
-					popularVideos: mark(entry.popularVideos ?? []),
+					popularChannels: mark(entry.popularChannels ?? []),
+					popularInterestChannels: mark(entry.popularInterestChannels ?? []),
 					recentlyFollowed:
 						tab === 'recent' ? removeChannel(entry.recentlyFollowed ?? []) : mark(entry.recentlyFollowed ?? []),
 				};
 			}
 			return next;
 		});
+		setPopularBrowse((prev) =>
+			prev
+				? {
+						...prev,
+						popularChannels: mark(prev.popularChannels ?? []),
+						popularInterestChannels: mark(prev.popularInterestChannels ?? []),
+					}
+				: prev,
+		);
 	}
 
 	async function unfollowYoutube(channelId: string, title: string) {
@@ -316,6 +353,15 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			rows.filter((row) => row.externalId !== channelId && row.parentExternalId !== channelId);
 		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
 		setForYouItems((rows) => filterForYou(rows));
+		setPopularBrowse((prev) =>
+			prev
+				? {
+						...prev,
+						popularChannels: filterForYou(prev.popularChannels ?? []),
+						popularInterestChannels: filterForYou(prev.popularInterestChannels ?? []),
+					}
+				: prev,
+		);
 		setBrowseCache((prev) => {
 			const next = { ...prev };
 			for (const tab of Object.keys(next) as DiscoverBrowseTab[]) {
@@ -324,7 +370,8 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				next[tab] = {
 					...entry,
 					recentlyFollowed: mark(entry.recentlyFollowed ?? []),
-					popularVideos: mark(entry.popularVideos ?? []),
+					popularChannels: mark(entry.popularChannels ?? []),
+					popularInterestChannels: mark(entry.popularInterestChannels ?? []),
 				};
 			}
 			return next;
@@ -336,8 +383,10 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		const q = query.trim();
 		if (!q) {
 			setResponse(null);
+			setSearchMode(false);
 			return;
 		}
+		setSearchMode(true);
 		setLoading(true);
 		onError('');
 		try {
@@ -589,36 +638,44 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			return row.type === 'live';
 		}) ?? [];
 
-	const activeBrowse = browseCache[browseTab];
+	const activeBrowse = browseTab === 'popular' ? popularBrowse ?? browseCache.popular : browseCache[browseTab];
+	const popularInterestChannels = activeBrowse?.popularInterestChannels ?? [];
+	const popularChannels = activeBrowse?.popularChannels ?? [];
+	const popularInterestLabel = activeBrowse?.popularInterestLabel;
 	const browseResults =
 		browseTab === 'forYou'
 			? forYouItems
-			: browseTab === 'popular'
-				? activeBrowse?.popularVideos ?? []
-				: activeBrowse?.recentlyFollowed ?? [];
+			: browseTab === 'recent'
+				? activeBrowse?.recentlyFollowed ?? []
+				: [];
 	const showForYouSeeMore = browseTab === 'forYou' && forYouHasMore;
 	const forYouEmpty = browseTab === 'forYou' && !browseLoading && forYouItems.length === 0;
+	const popularEmpty =
+		browseTab === 'popular' && !browseLoading && popularInterestChannels.length === 0 && popularChannels.length === 0;
+	const searchActive = searchMode;
+
+	function selectBrowseTab(value: DiscoverBrowseTab) {
+		setSearchMode(false);
+		setResponse(null);
+		if (value === 'popular') {
+			setPopularInterestContext(undefined);
+			setPopularBrowse(null);
+		}
+		setBrowseTab(value);
+	}
+
+	function browsePopularFromInterest() {
+		setSearchMode(false);
+		setResponse(null);
+		setPopularInterestContext(forYouInterest !== 'all' ? forYouInterest : undefined);
+		setPopularBrowse(null);
+		setBrowseTab('popular');
+	}
 
 	return (
 		<div className="discover-shell">
 			<div className="discover-scroll">
 				<div className="discover-page">
-			{response?.cached ? <p className="muted discover-hint">Showing cached Discover results.</p> : null}
-
-			{response?.warnings.length ? (
-				<div className="status-line warning">
-					{response.warnings.map((w) => (
-						<p key={`${w.provider}-${w.message}`}>{w.message}</p>
-					))}
-				</div>
-			) : null}
-
-			{response && filtered.length === 0 && !loading ? (
-				<p className="muted discover-hint">No results found for &ldquo;{response.query}&rdquo;.</p>
-			) : null}
-
-			{filtered.length ? <ul className="discover-results">{filtered.map((result) => renderResult(result))}</ul> : null}
-
 			<section className="discover-sections">
 				<h2>Browse</h2>
 				<div className="discover-toolbar">
@@ -633,10 +690,10 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 							<button
 								key={value}
 								type="button"
-								className={browseTab === value ? 'tab active' : 'tab'}
+								className={browseTab === value && !searchActive ? 'tab active' : 'tab'}
 								role="tab"
-								aria-selected={browseTab === value}
-								onClick={() => setBrowseTab(value)}
+								aria-selected={browseTab === value && !searchActive}
+								onClick={() => selectBrowseTab(value)}
 							>
 								{label}
 							</button>
@@ -675,7 +732,31 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					</div>
 				</div>
 
-				{browseTab === 'forYou' && forYouInterests && forYouInterests.length ? (
+				{searchActive ? (
+					<div className="discover-search-results">
+						{response?.cached ? <p className="muted discover-hint">Showing cached Discover results.</p> : null}
+
+						{response?.warnings.length ? (
+							<div className="status-line warning">
+								{response.warnings.map((w) => (
+									<p key={`${w.provider}-${w.message}`}>{w.message}</p>
+								))}
+							</div>
+						) : null}
+
+						{loading ? <p className="muted discover-hint">Searching…</p> : null}
+
+						{response && filtered.length === 0 && !loading ? (
+							<p className="muted discover-hint">No results found for &ldquo;{response.query}&rdquo;.</p>
+						) : null}
+
+						{filtered.length ? (
+							<ul className="discover-results">{filtered.map((result) => renderResult(result))}</ul>
+						) : null}
+					</div>
+				) : null}
+
+				{!searchActive && browseTab === 'forYou' && forYouInterests && forYouInterests.length ? (
 					<div className="discover-interest-chips" role="tablist" aria-label="For You interests">
 						<button
 							type="button"
@@ -701,18 +782,36 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					</div>
 				) : null}
 
-				{browseLoading && !activeBrowse ? <p className="muted discover-hint">Loading browse…</p> : null}
+				{!searchActive && browseLoading && !activeBrowse ? <p className="muted discover-hint">Loading browse…</p> : null}
 
-				{browseTab === 'forYou' && forYouEmpty ? (
+				{!searchActive && browseTab === 'forYou' && forYouEmpty ? (
 					<div className="discover-section-block">
 						<p className="muted">{forYouMessage ?? 'Follow and categorize channels to improve For You.'}</p>
-						<button className="ghost tiny" type="button" onClick={() => setBrowseTab('popular')}>
+						<button className="ghost tiny" type="button" onClick={() => browsePopularFromInterest()}>
 							Browse Popular
 						</button>
 					</div>
 				) : null}
 
-				{browseResults.length ? (
+				{!searchActive && browseTab === 'popular' && popularInterestChannels.length ? (
+					<div className="discover-section-block">
+						<h3 className="discover-section-title">
+							Popular {popularInterestLabel ?? 'interest'} channels
+						</h3>
+						<ul className="discover-results">{popularInterestChannels.map((result) => renderResult(result))}</ul>
+					</div>
+				) : null}
+
+				{!searchActive && browseTab === 'popular' && popularChannels.length ? (
+					<div className="discover-section-block">
+						{popularInterestChannels.length ? (
+							<h3 className="discover-section-title">Other popular channels</h3>
+						) : null}
+						<ul className="discover-results">{popularChannels.map((result) => renderResult(result))}</ul>
+					</div>
+				) : null}
+
+				{!searchActive && browseResults.length ? (
 					<div className="discover-section-block">
 						<ul className="discover-results">{browseResults.map((result) => renderResult(result))}</ul>
 						{showForYouSeeMore ? (
@@ -732,12 +831,12 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					</div>
 				) : null}
 
-				{!browseLoading && activeBrowse && browseResults.length === 0 && browseTab !== 'forYou' ? (
-					<p className="muted">
-						{browseTab === 'recent'
-							? 'Add channels in VortiQuest to see them here.'
-							: 'Popular videos refresh every few hours.'}
-					</p>
+				{!searchActive && !browseLoading && activeBrowse && browseResults.length === 0 && browseTab === 'recent' ? (
+					<p className="muted">Add channels in VortiQuest to see them here.</p>
+				) : null}
+
+				{!searchActive && popularEmpty ? (
+					<p className="muted">Popular channels refresh every few hours.</p>
 				) : null}
 				</section>
 				</div>

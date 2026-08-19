@@ -38,7 +38,9 @@ export interface DiscoverBrowseResponse {
 	forYouMessage?: string;
 	forYouMetrics?: ForYouMetrics;
 	forYouDebug?: CandidateScoreDebug[];
-	popularVideos: DiscoveryResult[];
+	popularChannels: DiscoveryResult[];
+	popularInterestChannels?: DiscoverRecommendation[];
+	popularInterestLabel?: string;
 	recentlyFollowed: DiscoveryResult[];
 	refreshedAt: string;
 }
