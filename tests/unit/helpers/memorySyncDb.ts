@@ -473,6 +473,7 @@ export class MemorySyncDb {
 					row.provider === bound[4] &&
 					row.external_id === bound[5],
 			);
+			const extended = bound.length >= 18;
 			if (existing) {
 				existing.channel_title = bound[6];
 				existing.channel_thumbnail = bound[7];
@@ -481,6 +482,14 @@ export class MemorySyncDb {
 				existing.recommendation_reason = bound[10];
 				existing.interest_label = bound[3];
 				existing.dismissed_at = null;
+				if (extended) {
+					existing.originating_query = bound[12];
+					existing.matched_concepts_json = bound[13];
+					existing.base_relevance_score = bound[14];
+					existing.discovered_at = bound[15];
+					existing.inactive_reason = null;
+					existing.acted_at = null;
+				}
 				return 1;
 			}
 			this.discoverInterestCandidates.push({
@@ -496,15 +505,66 @@ export class MemorySyncDb {
 				source: bound[9],
 				recommendation_reason: bound[10],
 				dismissed_at: null,
-				created_at: bound[11],
+				created_at: extended ? bound[11] : bound[11],
+				originating_query: extended ? bound[12] : '',
+				matched_concepts_json: extended ? bound[13] : '[]',
+				base_relevance_score: extended ? bound[14] : 0,
+				discovered_at: extended ? bound[15] : bound[11],
+				last_presented_at: null,
+				acted_at: null,
+				inactive_reason: null,
 			});
 			return 1;
 		}
+		if (normalized.includes('UPDATE discover_interest_candidates') && normalized.includes("inactive_reason = 'relevance_drift'")) {
+			const dismissedAt = bound[0];
+			const userId = String(bound[2]);
+			const candidateId = String(bound[3]);
+			let changes = 0;
+			for (const row of this.discoverInterestCandidates) {
+				if (row.user_id === userId && row.id === candidateId && row.dismissed_at == null) {
+					row.dismissed_at = dismissedAt;
+					row.acted_at = dismissedAt;
+					row.inactive_reason = 'relevance_drift';
+					changes += 1;
+				}
+			}
+			return changes;
+		}
+		if (normalized.includes('UPDATE discover_interest_candidates') && normalized.includes('last_presented_at')) {
+			const presentedAt = bound[0];
+			const userId = String(bound[1]);
+			const ids = bound.slice(2).map(String);
+			let changes = 0;
+			for (const row of this.discoverInterestCandidates) {
+				if (row.user_id === userId && ids.includes(String(row.id))) {
+					row.last_presented_at = presentedAt;
+					changes += 1;
+				}
+			}
+			return changes;
+		}
+		if (normalized.includes('UPDATE discover_interest_candidates') && normalized.includes('inactive_reason = NULL')) {
+			const userId = String(bound[0]);
+			const provider = String(bound[1]);
+			const externalId = String(bound[2]);
+			let changes = 0;
+			for (const row of this.discoverInterestCandidates) {
+				if (row.user_id === userId && row.provider === provider && row.external_id === externalId) {
+					row.dismissed_at = null;
+					row.acted_at = null;
+					row.inactive_reason = null;
+					changes += 1;
+				}
+			}
+			return changes;
+		}
 		if (normalized.includes('UPDATE discover_interest_candidates') && normalized.includes('dismissed_at')) {
 			const dismissedAt = bound[0];
-			const userId = String(bound[1]);
-			const provider = String(bound[2]);
-			const externalId = String(bound[3]);
+			const userId = String(bound[3]);
+			const provider = String(bound[4]);
+			const externalId = String(bound[5]);
+			const reason = bound.length >= 7 ? bound[2] : 'user_action';
 			let changes = 0;
 			for (const row of this.discoverInterestCandidates) {
 				if (
@@ -514,6 +574,8 @@ export class MemorySyncDb {
 					row.dismissed_at == null
 				) {
 					row.dismissed_at = dismissedAt;
+					row.acted_at = dismissedAt;
+					row.inactive_reason = reason;
 					changes += 1;
 				}
 			}
@@ -998,6 +1060,16 @@ export class MemorySyncDb {
 				},
 			];
 		}
+		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('WHERE id = ? AND user_id = ?')) {
+			const id = String(bound[0]);
+			const userId = String(bound[1]);
+			const row = this.recommendationFeedback.find((item) => item.id === id && item.user_id === userId);
+			if (!row) return [];
+			if (normalized.includes('provider, external_id')) {
+				return [row];
+			}
+			return [{ id: row.id, restored_at: row.restored_at ?? null }];
+		}
 		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('channel_title')) {
 			const userId = String(bound[0]);
 			let rows = this.recommendationFeedback.filter((row) => row.user_id === userId);
@@ -1044,12 +1116,6 @@ export class MemorySyncDb {
 					)
 					.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 			}
-		}
-		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('WHERE id = ? AND user_id = ?')) {
-			const id = String(bound[0]);
-			const userId = String(bound[1]);
-			const row = this.recommendationFeedback.find((item) => item.id === id && item.user_id === userId);
-			return row ? [{ id: row.id, restored_at: row.restored_at ?? null }] : [];
 		}
 		if (normalized.includes('FROM discover_interest_candidates')) {
 			const userId = String(bound[0]);

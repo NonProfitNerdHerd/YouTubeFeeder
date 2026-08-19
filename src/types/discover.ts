@@ -36,8 +36,10 @@ export interface DiscoverBrowseResponse {
 	forYouInterests?: DiscoverInterest[];
 	forYouEmpty?: boolean;
 	forYouMessage?: string;
+	forYouSupportingMessage?: string;
 	forYouMetrics?: ForYouMetrics;
 	forYouDebug?: CandidateScoreDebug[];
+	forYouPipelineDebug?: ForYouPipelineDebug[];
 	popularChannels: DiscoveryResult[];
 	popularInterestChannels?: DiscoverRecommendation[];
 	popularInterestLabel?: string;
@@ -59,6 +61,28 @@ export interface ForYouMetrics {
 	accepted: number;
 	interestsRepresented: number;
 	searchCalls: number;
+	persistedActive?: number;
+	persistedRetired?: number;
+	cacheHits?: number;
+	newlyPersisted?: number;
+}
+
+export interface ForYouPipelineDebug {
+	interestId: string;
+	interestLabel: string;
+	channelCount: number;
+	videosSampled: number;
+	fingerprint: Array<{ text: string; weight: number; channelCoverage?: number }>;
+	clusters: Array<{ id: string; confidence: number; phrases: string[] }>;
+	queries: string[];
+	cacheHits: number;
+	liveSearches: number;
+	rawCandidates: number;
+	rejected: number;
+	accepted: number;
+	persistedActive: number;
+	feedbackSuppressed: number;
+	returned: number;
 }
 
 export interface CandidateScoreDebug {

@@ -152,7 +152,7 @@ describe('topic discovery cache', () => {
 		spy.mockRestore();
 	});
 
-	it('uses at most two search.list calls on cold cache when budget allows', async () => {
+	it('does not live-search on For You page load when cache is cold', async () => {
 		const db = new MemorySyncDb();
 		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const yt = mockYt(async (path, params) => {
@@ -179,7 +179,44 @@ describe('topic discovery cache', () => {
 		db.channelCategories.push({ user_id: 'user-1', channel_id: 'ch-1', category_id: 'cat-tech' });
 
 		const result = await buildForYouRecommendations(env, 'user-1');
-		expect(yt.calls.search).toBeLessThanOrEqual(2);
+		expect(yt.calls.search).toBe(0);
+		expect(result.metrics.searchCalls).toBe(0);
+		vi.restoreAllMocks();
+	});
+
+	it('serves cached cluster results on For You page load without live search', async () => {
+		const db = new MemorySyncDb();
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
+		const now = new Date('2026-08-19T12:00:00Z');
+		seedSubscribedUser(db);
+		seedStormChasingCategory(db);
+
+		const fps = await buildInterestFingerprints(db as unknown as D1Database, 'user-1');
+		const query = fps[0]?.queries?.[0]?.cacheKey ?? normalizeTopic('storm chasing');
+		await db
+			.prepare(
+				`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
+			)
+			.bind(
+				query,
+				JSON.stringify([
+					{
+						provider: 'youtube',
+						type: 'channel',
+						externalId: CHANNEL,
+						title: 'Storm Chaser Live',
+						description: 'storm chasing tornado severe weather meteorology supercells',
+					},
+				]),
+				now.toISOString(),
+				new Date(now.getTime() + 60_000).toISOString(),
+			)
+			.run();
+
+		const yt = mockYt(async () => ({ items: [] }));
+		vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient').mockReturnValue(yt);
+		const result = await buildForYouRecommendations(env, 'user-1', undefined, now);
+		expect(yt.calls.search).toBe(0);
 		expect(result.forYou.length).toBeGreaterThan(0);
 		vi.restoreAllMocks();
 	});

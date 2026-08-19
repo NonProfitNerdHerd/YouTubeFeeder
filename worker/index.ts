@@ -478,7 +478,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		return json({
 			channels: result.channels,
 			interestLabel: result.interestLabel,
-			usedGlobalFallback: result.usedGlobalFallback,
 			fromPersisted: result.fromPersisted,
 		});
 	}

@@ -47,8 +47,14 @@ export const STOP_WORDS = new Set([
 	'com',
 	'watch',
 	'full',
-	'episode',
-	'episodes',
+	'install',
+	'guide',
+	'learn',
+	'update',
+	'review',
+	'tips',
+	'trick',
+	'tricks',
 ]);
 
 export const AMBIGUOUS_UNIGRAMS = new Set([
@@ -129,9 +135,32 @@ function ngrams(tokens: string[], n: number): string[] {
 	return out;
 }
 
+export const GENERIC_BROAD_TERMS = new Set([
+	'technology',
+	'technologies',
+	'software',
+	'computer',
+	'computers',
+	'digital',
+	'online',
+	'internet',
+	'content',
+	'creator',
+	'creators',
+]);
+
 export interface WeightedPhrase {
 	text: string;
 	weight: number;
+}
+
+export interface WeightedPhraseWithCoverage extends WeightedPhrase {
+	channelCoverage: number;
+}
+
+export interface ChannelDocumentInput {
+	channelId: string;
+	text: string;
 }
 
 export interface WeightedTerm {
@@ -169,6 +198,82 @@ export function extractPhrasesFromDocuments(documents: string[], protectedPhrase
 			weight: count * 3 + (docHits.get(text) ?? 0) * 5,
 		}))
 		.filter((row) => row.text.split(' ').length >= 2)
+		.sort((a, b) => b.weight - a.weight || a.text.localeCompare(b.text));
+}
+
+export function extractPhrasesFromChannelDocuments(
+	channelDocuments: ChannelDocumentInput[],
+	protectedPhrases: string[] = [],
+): WeightedPhraseWithCoverage[] {
+	const counts = new Map<string, number>();
+	const channelHits = new Map<string, Set<string>>();
+
+	for (const doc of channelDocuments) {
+		const tokens = tokenizeWords(doc.text);
+		const seenInChannel = new Set<string>();
+		for (const phrase of [...ngrams(tokens, 2), ...ngrams(tokens, 3)]) {
+			counts.set(phrase, (counts.get(phrase) ?? 0) + 1);
+			seenInChannel.add(phrase);
+		}
+		for (const phrase of seenInChannel) {
+			const channels = channelHits.get(phrase) ?? new Set<string>();
+			channels.add(doc.channelId);
+			channelHits.set(phrase, channels);
+		}
+	}
+
+	for (const raw of protectedPhrases) {
+		const phrase = normalizeText(raw);
+		if (!phrase || phrase.split(' ').length < 2) continue;
+		counts.set(phrase, (counts.get(phrase) ?? 0) + 10);
+		const channels = channelHits.get(phrase) ?? new Set<string>();
+		for (const doc of channelDocuments) channels.add(doc.channelId);
+		channelHits.set(phrase, channels);
+	}
+
+	return [...counts.entries()]
+		.map(([text, count]) => {
+			const coverage = channelHits.get(text)?.size ?? 0;
+			const wordCount = text.split(' ').length;
+			const specificityBoost = wordCount >= 3 ? 1.4 : wordCount === 2 ? 1.2 : 1;
+			const coverageBoost = coverage >= 3 ? 2.5 : coverage === 2 ? 1.8 : 1;
+			let weight = count * 3 * coverageBoost * specificityBoost + coverage * 12;
+			if (GENERIC_BROAD_TERMS.has(text)) weight *= 0.25;
+			return { text, weight, channelCoverage: coverage };
+		})
+		.filter((row) => row.text.split(' ').length >= 2 && row.weight >= 4)
+		.sort((a, b) => b.weight - a.weight || a.text.localeCompare(b.text));
+}
+
+export function extractTermsFromChannelDocuments(channelDocuments: ChannelDocumentInput[]): WeightedTerm[] {
+	const counts = new Map<string, number>();
+	const channelHits = new Map<string, Set<string>>();
+
+	for (const doc of channelDocuments) {
+		const tokens = tokenizeWords(doc.text);
+		const seen = new Set(tokens);
+		for (const token of tokens) {
+			counts.set(token, (counts.get(token) ?? 0) + 1);
+		}
+		for (const token of seen) {
+			const channels = channelHits.get(token) ?? new Set<string>();
+			channels.add(doc.channelId);
+			channelHits.set(token, channels);
+		}
+	}
+
+	return [...counts.entries()]
+		.map(([text, count]) => {
+			const coverage = channelHits.get(text)?.size ?? 0;
+			let weight = count + coverage * 4;
+			if (GENERIC_BROAD_TERMS.has(text)) weight *= 0.2;
+			return {
+				text,
+				weight,
+				ambiguous: AMBIGUOUS_UNIGRAMS.has(text),
+			};
+		})
+		.filter((row) => row.weight >= 2 && !GENERIC_BROAD_TERMS.has(row.text))
 		.sort((a, b) => b.weight - a.weight || a.text.localeCompare(b.text));
 }
 

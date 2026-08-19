@@ -131,11 +131,19 @@ export async function restoreRecommendationFeedback(
 	userId: string,
 	feedbackId: string,
 	now = new Date(),
-): Promise<{ ok: true; restoredAt: string } | { ok: false; reason: 'not_found' | 'already_restored' }> {
+): Promise<
+	| { ok: true; restoredAt: string; row: RecommendationFeedbackRow }
+	| { ok: false; reason: 'not_found' | 'already_restored' }
+> {
 	const row = await db
-		.prepare(`SELECT id, restored_at FROM recommendation_feedback WHERE id = ? AND user_id = ?`)
+		.prepare(
+			`SELECT id, user_id, provider, external_id, channel_title, channel_thumbnail,
+			        interest_id, interest_label, action, matched_concepts_json,
+			        recommendation_reason, base_score, created_at, restored_at
+			 FROM recommendation_feedback WHERE id = ? AND user_id = ?`,
+		)
 		.bind(feedbackId, userId)
-		.first<{ id: string; restored_at: string | null }>();
+		.first<RecommendationFeedbackRow>();
 	if (!row) return { ok: false, reason: 'not_found' };
 	if (row.restored_at) return { ok: false, reason: 'already_restored' };
 	const restoredAt = now.toISOString();
@@ -143,7 +151,7 @@ export async function restoreRecommendationFeedback(
 		.prepare(`UPDATE recommendation_feedback SET restored_at = ? WHERE id = ? AND user_id = ?`)
 		.bind(restoredAt, feedbackId, userId)
 		.run();
-	return { ok: true, restoredAt };
+	return { ok: true, restoredAt, row };
 }
 
 export async function listRecommendationHistory(

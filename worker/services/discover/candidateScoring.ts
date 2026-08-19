@@ -9,8 +9,18 @@ import {
 import type { InterestFingerprint } from './interestFingerprint';
 
 export const MIN_ACCEPT_SCORE = 55;
+/** Persisted candidates remain active while current score stays at or above this floor. */
+export const MIN_RETAIN_SCORE = 45;
 /** Weaker matches shown only after user clicks "See more". */
 export const MIN_EXPAND_SCORE = 42;
+
+export function shouldPersistNewCandidate(score: number): boolean {
+	return score >= MIN_ACCEPT_SCORE;
+}
+
+export function shouldRetainPersistedCandidate(currentScore: number): boolean {
+	return currentScore >= MIN_RETAIN_SCORE;
+}
 
 export interface CandidateScoreDebug {
 	candidateTitle: string;

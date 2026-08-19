@@ -7,7 +7,15 @@ import {
 	type RecommendationFeedbackRow,
 	type RecommendationHistoryOpts,
 } from '../../db/recommendationFeedback';
-import { dismissInterestCandidate } from '../../db/discoverInterestCandidates';
+import {
+	dismissInterestCandidate,
+	reactivateInterestCandidate,
+} from '../../db/discoverInterestCandidates';
+import { buildInterestFingerprints } from './interestFingerprint';
+import {
+	shouldRetainPersistedCandidate,
+	scoreCandidateAgainstFingerprint,
+} from './candidateScoring';
 import {
 	mintRecommendationToken,
 	verifyRecommendationToken,
@@ -126,12 +134,50 @@ export async function restoreFeedback(
 	env: Env,
 	userId: string,
 	feedbackId: string,
-): Promise<{ ok: true; restoredAt: string } | { ok: false; code: string }> {
+): Promise<{ ok: true; restoredAt: string; candidateReactivated: boolean } | { ok: false; code: string }> {
 	const result = await restoreRecommendationFeedback(env.DB, userId, feedbackId);
 	if (!result.ok) {
 		return { ok: false, code: result.reason === 'already_restored' ? 'already_restored' : 'not_found' };
 	}
-	return { ok: true, restoredAt: result.restoredAt };
+
+	const row = result.row;
+	let candidateReactivated = false;
+	const fingerprints = await buildInterestFingerprints(env.DB, userId);
+	const fingerprint =
+		fingerprints.find((fp) => fp.interestId === row.interest_id) ??
+		fingerprints.find((fp) => fp.label === row.interest_label) ??
+		null;
+
+	let eligible = true;
+	if (fingerprint) {
+		const scored = scoreCandidateAgainstFingerprint(
+			{
+				provider: row.provider as 'youtube',
+				type: 'channel',
+				externalId: row.external_id,
+				title: row.channel_title,
+				description: '',
+				imageUrl: row.channel_thumbnail,
+				publisher: row.channel_title,
+				subscribed: false,
+				watchUrl: `https://www.youtube.com/channel/${row.external_id}`,
+			},
+			fingerprint,
+		);
+		eligible = shouldRetainPersistedCandidate(scored.score);
+	}
+
+	if (eligible) {
+		candidateReactivated = await reactivateInterestCandidate(
+			env.DB,
+			userId,
+			row.provider,
+			row.external_id,
+			row.interest_id ?? undefined,
+		);
+	}
+
+	return { ok: true, restoredAt: result.restoredAt, candidateReactivated };
 }
 
 export async function getRecommendationHistory(env: Env, userId: string, opts?: RecommendationHistoryOpts) {

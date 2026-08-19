@@ -217,8 +217,10 @@ export async function discoverBrowse(
 			forYouInterests: forYouResult.forYouInterests,
 			forYouEmpty: forYouResult.forYouEmpty,
 			forYouMessage: forYouResult.forYouMessage,
+			forYouSupportingMessage: forYouResult.forYouSupportingMessage,
 			forYouMetrics: opts?.includeDebug ? forYouResult.metrics : undefined,
 			forYouDebug: opts?.includeDebug ? forYouResult.debug : undefined,
+			forYouPipelineDebug: opts?.includeDebug ? forYouResult.pipelineDebug : undefined,
 		};
 	}
 

@@ -1,7 +1,13 @@
 import { randomToken } from '../auth/crypto';
 import type { DiscoverRecommendation } from '../../src/types/discover';
 
-export type DiscoverInterestCandidateSource = 'browse_popular' | 'global_fallback';
+export type DiscoverInterestCandidateSource = 'discovered' | 'browse_popular' | 'global_fallback';
+
+export type InactiveReason =
+	| 'user_action'
+	| 'relevance_drift'
+	| 'global_fallback_cleanup'
+	| 'explicit_refresh';
 
 export interface DiscoverInterestCandidateRow {
 	id: string;
@@ -17,6 +23,13 @@ export interface DiscoverInterestCandidateRow {
 	recommendation_reason: string;
 	dismissed_at: string | null;
 	created_at: string;
+	originating_query: string;
+	matched_concepts_json: string;
+	base_relevance_score: number;
+	discovered_at: string | null;
+	last_presented_at: string | null;
+	acted_at: string | null;
+	inactive_reason: InactiveReason | null;
 }
 
 export interface DiscoverInterestCandidateInsert {
@@ -29,18 +42,25 @@ export interface DiscoverInterestCandidateInsert {
 	channelDescription: string;
 	source: DiscoverInterestCandidateSource;
 	recommendationReason: string;
+	originatingQuery: string;
+	matchedConceptsJson: string;
+	baseRelevanceScore: number;
 }
 
 export const FOR_YOU_GLOBAL_INTEREST_ID = '__global__';
+
+const SELECT_COLUMNS = `id, user_id, interest_id, interest_label, provider, external_id,
+	channel_title, channel_thumbnail, channel_description, source,
+	recommendation_reason, dismissed_at, created_at,
+	originating_query, matched_concepts_json, base_relevance_score,
+	discovered_at, last_presented_at, acted_at, inactive_reason`;
 
 export async function loadActiveInterestCandidates(
 	db: D1Database,
 	userId: string,
 	interestId?: string,
 ): Promise<DiscoverInterestCandidateRow[]> {
-	let sql = `SELECT id, user_id, interest_id, interest_label, provider, external_id,
-	                  channel_title, channel_thumbnail, channel_description, source,
-	                  recommendation_reason, dismissed_at, created_at
+	let sql = `SELECT ${SELECT_COLUMNS}
 	           FROM discover_interest_candidates
 	           WHERE user_id = ? AND dismissed_at IS NULL`;
 	const binds: unknown[] = [userId];
@@ -48,7 +68,7 @@ export async function loadActiveInterestCandidates(
 		sql += ` AND interest_id = ?`;
 		binds.push(interestId);
 	}
-	sql += ` ORDER BY created_at ASC`;
+	sql += ` ORDER BY discovered_at ASC, created_at ASC`;
 	const rows = await db.prepare(sql).bind(...binds).all<DiscoverInterestCandidateRow>();
 	return rows.results ?? [];
 }
@@ -82,15 +102,22 @@ export async function upsertInterestCandidates(
 				`INSERT INTO discover_interest_candidates (
 					id, user_id, interest_id, interest_label, provider, external_id,
 					channel_title, channel_thumbnail, channel_description, source,
-					recommendation_reason, dismissed_at, created_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+					recommendation_reason, dismissed_at, created_at,
+					originating_query, matched_concepts_json, base_relevance_score,
+					discovered_at, last_presented_at, acted_at, inactive_reason
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL)
 				ON CONFLICT(user_id, interest_id, provider, external_id) DO UPDATE SET
 					channel_title = excluded.channel_title,
 					channel_thumbnail = excluded.channel_thumbnail,
 					channel_description = excluded.channel_description,
 					source = excluded.source,
 					recommendation_reason = excluded.recommendation_reason,
+					originating_query = excluded.originating_query,
+					matched_concepts_json = excluded.matched_concepts_json,
+					base_relevance_score = excluded.base_relevance_score,
 					dismissed_at = NULL,
+					inactive_reason = NULL,
+					acted_at = NULL,
 					interest_label = excluded.interest_label`,
 			)
 			.bind(
@@ -106,6 +133,10 @@ export async function upsertInterestCandidates(
 				input.source,
 				input.recommendationReason,
 				createdAt,
+				input.originatingQuery,
+				input.matchedConceptsJson,
+				input.baseRelevanceScore,
+				createdAt,
 			)
 			.run();
 	}
@@ -117,15 +148,71 @@ export async function dismissInterestCandidate(
 	provider: string,
 	externalId: string,
 	now = new Date(),
+	reason: InactiveReason = 'user_action',
 ): Promise<void> {
 	const dismissedAt = now.toISOString();
 	await db
 		.prepare(
 			`UPDATE discover_interest_candidates
-			 SET dismissed_at = ?
+			 SET dismissed_at = ?, acted_at = ?, inactive_reason = ?
 			 WHERE user_id = ? AND provider = ? AND external_id = ? AND dismissed_at IS NULL`,
 		)
-		.bind(dismissedAt, userId, provider, externalId)
+		.bind(dismissedAt, dismissedAt, reason, userId, provider, externalId)
+		.run();
+}
+
+export async function retireInterestCandidateByRelevance(
+	db: D1Database,
+	userId: string,
+	candidateId: string,
+	now = new Date(),
+): Promise<void> {
+	const dismissedAt = now.toISOString();
+	await db
+		.prepare(
+			`UPDATE discover_interest_candidates
+			 SET dismissed_at = ?, acted_at = ?, inactive_reason = 'relevance_drift'
+			 WHERE user_id = ? AND id = ? AND dismissed_at IS NULL`,
+		)
+		.bind(dismissedAt, dismissedAt, userId, candidateId)
+		.run();
+}
+
+export async function reactivateInterestCandidate(
+	db: D1Database,
+	userId: string,
+	provider: string,
+	externalId: string,
+	interestId?: string,
+): Promise<boolean> {
+	let sql = `UPDATE discover_interest_candidates
+	           SET dismissed_at = NULL, acted_at = NULL, inactive_reason = NULL
+	           WHERE user_id = ? AND provider = ? AND external_id = ?`;
+	const binds: unknown[] = [userId, provider, externalId];
+	if (interestId) {
+		sql += ` AND interest_id = ?`;
+		binds.push(interestId);
+	}
+	const result = await db.prepare(sql).bind(...binds).run();
+	return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function markInterestCandidatesPresented(
+	db: D1Database,
+	userId: string,
+	candidateIds: string[],
+	now = new Date(),
+): Promise<void> {
+	if (!candidateIds.length) return;
+	const presentedAt = now.toISOString();
+	const placeholders = candidateIds.map(() => '?').join(', ');
+	await db
+		.prepare(
+			`UPDATE discover_interest_candidates
+			 SET last_presented_at = ?
+			 WHERE user_id = ? AND id IN (${placeholders})`,
+		)
+		.bind(presentedAt, userId, ...candidateIds)
 		.run();
 }
 

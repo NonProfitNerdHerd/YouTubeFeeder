@@ -8,9 +8,11 @@ import {
 import { recordYoutubeCalls } from '../websub';
 import { createYoutubeApiKeyClient } from '../youtube';
 import { normalizeDiscoverQuery, searchYoutubeChannels } from './youtube';
+import { canonicalizeClusterQueryKey } from './clusterQueries';
 
 export function normalizeTopic(topic: string): string {
-	return normalizeDiscoverQuery(topic);
+	const canonical = canonicalizeClusterQueryKey(topic);
+	return canonical || normalizeDiscoverQuery(topic);
 }
 
 export async function getTopicCandidates(

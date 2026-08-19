@@ -54,8 +54,11 @@ describe('discover interest candidates', () => {
 				channelTitle: '3D Print Channel',
 				channelThumbnail: 'https://img.example/thumb.jpg',
 				channelDescription: '3d printing tutorials',
-				source: 'browse_popular',
-				recommendationReason: 'Popular in 3D Printing',
+				source: 'discovered',
+				recommendationReason: 'Related to 3d Printing',
+				originatingQuery: '3d printing',
+				matchedConceptsJson: '[]',
+				baseRelevanceScore: 60,
 			},
 		]);
 		const rows = await loadActiveInterestCandidates(db as unknown as D1Database, USER, 'cat-3d');
@@ -92,8 +95,11 @@ describe('discover interest candidates', () => {
 				channelTitle: '3D Print Channel',
 				channelThumbnail: '',
 				channelDescription: '3d printing maker tutorials',
-				source: 'browse_popular',
-				recommendationReason: 'Popular in 3D Printing',
+				source: 'discovered',
+				recommendationReason: 'Related to 3d Printing',
+				originatingQuery: '3d printing',
+				matchedConceptsJson: '[]',
+				baseRelevanceScore: 65,
 			},
 		]);
 
@@ -112,34 +118,28 @@ describe('discover interest candidates', () => {
 		seedSubscribedUser(db);
 		seed3dCategory(db);
 
-		const fps = await buildInterestFingerprints(db as unknown as D1Database, USER);
-		const cacheKey = normalizeTopic(buildInterestSearchQuery(fps[0]!));
-		await db
-			.prepare(
-				`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
-			)
-			.bind(
-				cacheKey,
-				JSON.stringify([
-					{
-						provider: 'youtube',
-						type: 'channel',
-						externalId: CHANNEL,
-						title: 'Cached 3D Channel',
-						description: '3d printing tutorials',
-					},
-				]),
-				now.toISOString(),
-				new Date(now.getTime() + 60_000).toISOString(),
-			)
-			.run();
+		await upsertInterestCandidates(db as unknown as D1Database, USER, [
+			{
+				interestId: 'cat-3d',
+				interestLabel: '3D Printing',
+				provider: 'youtube',
+				externalId: CHANNEL,
+				channelTitle: 'Cached 3D Channel',
+				channelThumbnail: '',
+				channelDescription: '3d printing tutorials maker bot',
+				source: 'discovered',
+				recommendationReason: 'Related to 3d Printing',
+				originatingQuery: '3d printing',
+				matchedConceptsJson: '[]',
+				baseRelevanceScore: 70,
+			},
+		]);
 
-		const first = await loadAndPersistInterestPopular(env, USER, 'cat-3d', now);
-		expect(first.fromPersisted).toBe(false);
-		expect(first.channels.length).toBeGreaterThan(0);
-
-		const second = await loadAndPersistInterestPopular(env, USER, 'cat-3d', now);
-		expect(second.fromPersisted).toBe(true);
-		expect(second.channels.length).toBe(first.channels.length);
+		const spy = vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient');
+		const result = await loadAndPersistInterestPopular(env, USER, 'cat-3d', now);
+		expect(result.fromPersisted).toBe(true);
+		expect(result.channels.length).toBe(1);
+		expect(spy).not.toHaveBeenCalled();
+		spy.mockRestore();
 	});
 });

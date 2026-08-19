@@ -2,6 +2,8 @@ import type { DiscoverRecommendation, DiscoveryResult } from '../../../src/types
 import {
 	candidateRowToRecommendation,
 	loadActiveInterestCandidates,
+	markInterestCandidatesPresented,
+	upsertInterestCandidates,
 	type DiscoverInterestCandidateRow,
 } from '../../db/discoverInterestCandidates';
 import { loadActiveFeedbackRows, loadActiveSuppressions } from '../../db/recommendationFeedback';
@@ -9,24 +11,29 @@ import { getSubscribedChannelIds } from '../../db/queries';
 import {
 	MIN_ACCEPT_SCORE,
 	MIN_EXPAND_SCORE,
+	MIN_RETAIN_SCORE,
+	shouldPersistNewCandidate,
+	shouldRetainPersistedCandidate,
 	scoreCandidateAgainstFingerprint,
 	type CandidateScoreDebug,
 	type ScoredCandidate,
 } from './candidateScoring';
 import { buildFeedbackAdjustmentIndex, computeFeedbackAdjustment } from './feedbackScoring';
 import { buildInterestFingerprints, isInterestFingerprintEmpty, type InterestFingerprint } from './interestFingerprint';
-import { buildInterestSearchQuery } from './queryConstruction';
-import { mintTokenForScoredCandidate } from './recommendationFeedbackService';
+import { buildInterestSearchQueries } from './clusterQueries';
+import { mintTokenForScoredCandidate, matchedConceptsFromDebug } from './recommendationFeedbackService';
+import {
+	evaluatePersistedCandidates,
+	type InterestDiscoveryDebug,
+} from './interestDiscovery';
 import {
 	fetchNextInterestPage,
 	getInterestNextPageToken,
-	getTopicCandidates,
 	loadCachedQueryResults,
-	refreshQueryCaches,
+	normalizeTopic,
 } from './topicDiscovery';
 
 export const FOR_YOU_PAGE_SIZE = 25;
-const INTERESTS_FOR_REFRESH = 2;
 const INTERESTS_TO_MERGE = 12;
 
 export interface ForYouMetrics {
@@ -35,6 +42,10 @@ export interface ForYouMetrics {
 	accepted: number;
 	interestsRepresented: number;
 	searchCalls: number;
+	persistedActive?: number;
+	persistedRetired?: number;
+	cacheHits?: number;
+	newlyPersisted?: number;
 }
 
 export interface ForYouInterest {
@@ -52,6 +63,11 @@ export interface ForYouBuildOpts {
 	refreshOffset?: number;
 }
 
+export interface ForYouPipelineDebug extends InterestDiscoveryDebug {
+	feedbackSuppressed: number;
+	returned: number;
+}
+
 export interface ForYouResult {
 	forYou: DiscoverRecommendation[];
 	forYouTotal: number;
@@ -59,54 +75,14 @@ export interface ForYouResult {
 	forYouInterests: ForYouInterest[];
 	forYouEmpty: boolean;
 	forYouMessage?: string;
+	forYouSupportingMessage?: string;
 	metrics: ForYouMetrics;
 	debug?: CandidateScoreDebug[];
+	pipelineDebug?: ForYouPipelineDebug[];
 }
 
 function suppressionKey(provider: string, externalId: string): string {
 	return `${provider}:${externalId}`;
-}
-
-function fingerprintForPersistedCandidate(
-	row: DiscoverInterestCandidateRow,
-	fingerprintByInterest: Map<string, InterestFingerprint>,
-): InterestFingerprint | null {
-	const existing = fingerprintByInterest.get(row.interest_id);
-	if (existing) return existing;
-	const label = row.interest_label.trim();
-	if (!label) return null;
-	return {
-		interestId: row.interest_id,
-		label: row.interest_label,
-		phrases: [{ text: label.toLowerCase(), weight: 10 }],
-		terms: [],
-		negativeHints: [],
-		channelCount: 0,
-		confidence: 0,
-	};
-}
-
-function persistedCandidatesToPoolEntries(
-	rows: DiscoverInterestCandidateRow[],
-	fingerprintByInterest: Map<string, InterestFingerprint>,
-	subscribed: Set<string>,
-	suppressions: Set<string>,
-	excludeIds: Set<string>,
-): Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> {
-	const out: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> = [];
-	for (const row of rows) {
-		if (subscribed.has(row.external_id)) continue;
-		if (suppressions.has(suppressionKey(row.provider, row.external_id))) continue;
-		if (excludeIds.has(row.external_id)) continue;
-		const fingerprint = fingerprintForPersistedCandidate(row, fingerprintByInterest);
-		if (!fingerprint) continue;
-		const candidate: DiscoveryResult = candidateRowToRecommendation(row);
-		out.push({
-			row: scoreCandidateAgainstFingerprint(candidate, fingerprint),
-			fingerprint,
-		});
-	}
-	return out;
 }
 
 function dedupeScored(scored: ScoredCandidate[]): ScoredCandidate[] {
@@ -169,28 +145,17 @@ function applyFeedbackToCandidate(
 	return adjusted;
 }
 
-function scoreFingerprintCandidates(
+function scoredPersistedRow(
+	row: DiscoverInterestCandidateRow,
 	fingerprint: InterestFingerprint,
-	candidates: DiscoveryResult[],
 	feedbackIndex: ReturnType<typeof buildFeedbackAdjustmentIndex>,
-	debugRows: CandidateScoreDebug[] | undefined,
 	includeDebug: boolean,
-): { primary: ScoredCandidate[]; extended: ScoredCandidate[]; retrieved: number; rejected: number } {
-	const scored = candidates.map((candidate) =>
-		applyFeedbackToCandidate(candidate, fingerprint, feedbackIndex, includeDebug, debugRows),
-	);
-	const primary = scored
-		.filter((row) => row.score >= MIN_ACCEPT_SCORE)
-		.sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
-	const extended = scored
-		.filter((row) => row.score >= MIN_EXPAND_SCORE && row.score < MIN_ACCEPT_SCORE)
-		.sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
-	return {
-		primary,
-		extended,
-		retrieved: candidates.length,
-		rejected: candidates.length - primary.length - extended.length,
-	};
+	debugRows: CandidateScoreDebug[] | undefined,
+): ScoredCandidate | null {
+	const candidate = candidateRowToRecommendation(row);
+	const adjusted = applyFeedbackToCandidate(candidate, fingerprint, feedbackIndex, includeDebug, debugRows);
+	if (!shouldRetainPersistedCandidate(adjusted.score)) return null;
+	return adjusted;
 }
 
 export async function buildForYouRecommendations(
@@ -240,34 +205,20 @@ export async function buildForYouRecommendations(
 			forYouHasMore: false,
 			forYouInterests: interests,
 			forYouEmpty: true,
-			forYouMessage: 'No recommendations for this interest yet.',
+			forYouMessage: 'No high-confidence recommendations yet.',
+			forYouSupportingMessage: 'VortiQuest is still learning from the channels in this category.',
 			metrics: emptyMetrics,
 		};
 	}
 
 	let searchCalls = 0;
-	const refreshOffset = Math.max(0, opts?.refreshOffset ?? 0);
-
-	if (opts?.interestId && activeFingerprints[0]) {
-		const fp = activeFingerprints[0];
-		const query = buildInterestSearchQuery(fp);
-		if (opts.loadMore) {
+	if (opts?.loadMore && opts.interestId && activeFingerprints[0]) {
+		const queries = buildInterestSearchQueries(activeFingerprints[0]);
+		const query = queries[0]?.query;
+		if (query) {
 			const next = await fetchNextInterestPage(env, query, now);
 			searchCalls += next.searchCalls;
-		} else {
-			const refreshed = await getTopicCandidates(env, query, now);
-			if (refreshed.refreshed) searchCalls += 1;
 		}
-	} else if (opts?.loadMore) {
-		const refreshSlice = mergeFingerprints.slice(refreshOffset, refreshOffset + INTERESTS_FOR_REFRESH);
-		const refreshTargets = refreshSlice.length ? refreshSlice : mergeFingerprints.slice(0, INTERESTS_FOR_REFRESH);
-		const refreshQueries = refreshTargets.map((fp) => buildInterestSearchQuery(fp));
-		const refreshed = await refreshQueryCaches(env, refreshQueries, now, INTERESTS_FOR_REFRESH);
-		searchCalls += refreshed.searchCalls;
-	} else {
-		const refreshQueries = mergeFingerprints.slice(0, INTERESTS_FOR_REFRESH).map((fp) => buildInterestSearchQuery(fp));
-		const refreshed = await refreshQueryCaches(env, refreshQueries, now, INTERESTS_FOR_REFRESH);
-		searchCalls += refreshed.searchCalls;
 	}
 
 	const [subscribed, suppressions, feedbackRows] = await Promise.all([
@@ -277,70 +228,151 @@ export async function buildForYouRecommendations(
 	]);
 	const feedbackIndex = buildFeedbackAdjustmentIndex(feedbackRows);
 	const debugRows: CandidateScoreDebug[] = [];
+	const pipelineDebug: ForYouPipelineDebug[] = [];
+
 	let retrieved = 0;
 	let rejected = 0;
-	const allPrimary: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> = [];
-	const allExtended: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> = [];
+	let persistedRetired = 0;
+	let cacheHits = 0;
+	let newlyPersisted = 0;
+	const poolEntries: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint; candidateId?: string }> = [];
+	const seenIds = new Set<string>();
 
 	for (const fingerprint of activeFingerprints) {
-		const query = buildInterestSearchQuery(fingerprint);
-		const candidates = (await loadCachedQueryResults(env, query, now)).filter(
-			(row) =>
-				!subscribed.has(row.externalId) &&
-				!suppressions.has(suppressionKey(row.provider, row.externalId)),
-		);
-		const scored = scoreFingerprintCandidates(
+		let feedbackSuppressed = 0;
+		const persistedRows = await loadActiveInterestCandidates(env.DB, userId, fingerprint.interestId);
+		const { active: activePersisted, retired } = await evaluatePersistedCandidates(
+			env.DB,
+			userId,
 			fingerprint,
-			candidates,
-			feedbackIndex,
-			opts?.includeDebug ? debugRows : undefined,
-			Boolean(opts?.includeDebug),
+			persistedRows,
 		);
-		retrieved += scored.retrieved;
-		rejected += scored.rejected;
-		for (const row of scored.primary) allPrimary.push({ row, fingerprint });
-		for (const row of scored.extended) allExtended.push({ row, fingerprint });
+		persistedRetired += retired;
+
+		for (const row of activePersisted) {
+			if (subscribed.has(row.external_id)) continue;
+			if (suppressions.has(suppressionKey(row.provider, row.external_id))) {
+				feedbackSuppressed += 1;
+				continue;
+			}
+			const scored = scoredPersistedRow(
+				row,
+				fingerprint,
+				feedbackIndex,
+				Boolean(opts?.includeDebug),
+				opts?.includeDebug ? debugRows : undefined,
+			);
+			if (!scored || scored.score < MIN_ACCEPT_SCORE) continue;
+			if (seenIds.has(row.external_id)) continue;
+			seenIds.add(row.external_id);
+			poolEntries.push({ row: scored, fingerprint, candidateId: row.id });
+		}
+
+		const queries = buildInterestSearchQueries(fingerprint);
+		const toPersist: Parameters<typeof upsertInterestCandidates>[2] = [];
+
+		for (const clusterQuery of queries) {
+			const cached = await loadCachedQueryResults(env, clusterQuery.query, now);
+			if (cached.length) cacheHits += 1;
+			const filtered = cached.filter(
+				(row) =>
+					!subscribed.has(row.externalId) &&
+					!suppressions.has(suppressionKey(row.provider, row.externalId)) &&
+					!seenIds.has(row.externalId),
+			);
+			retrieved += filtered.length;
+
+			for (const candidate of filtered) {
+				const scored = applyFeedbackToCandidate(
+					candidate,
+					fingerprint,
+					feedbackIndex,
+					Boolean(opts?.includeDebug),
+					opts?.includeDebug ? debugRows : undefined,
+				);
+				if (scored.score >= MIN_ACCEPT_SCORE) {
+					if (!seenIds.has(candidate.externalId)) {
+						seenIds.add(candidate.externalId);
+						poolEntries.push({ row: scored, fingerprint });
+					}
+					if (shouldPersistNewCandidate(scored.score)) {
+						toPersist.push({
+							interestId: fingerprint.interestId,
+							interestLabel: fingerprint.label,
+							provider: candidate.provider,
+							externalId: candidate.externalId,
+							channelTitle: candidate.title,
+							channelThumbnail: candidate.imageUrl ?? '',
+							channelDescription: candidate.description ?? '',
+							source: 'discovered',
+							recommendationReason: scored.recommendationReason,
+							originatingQuery: normalizeTopic(clusterQuery.query),
+							matchedConceptsJson: JSON.stringify(matchedConceptsFromDebug(scored.debug, fingerprint)),
+							baseRelevanceScore: scored.score,
+						});
+					}
+				} else if (scored.score >= MIN_EXPAND_SCORE) {
+					if (!seenIds.has(candidate.externalId)) {
+						seenIds.add(candidate.externalId);
+						poolEntries.push({ row: scored, fingerprint });
+					}
+				} else {
+					rejected += 1;
+				}
+			}
+		}
+
+		if (toPersist.length) {
+			await upsertInterestCandidates(env.DB, userId, toPersist, now);
+			newlyPersisted += toPersist.length;
+		}
+
+		if (opts?.includeDebug) {
+			pipelineDebug.push({
+				interestId: fingerprint.interestId,
+				interestLabel: fingerprint.label,
+				channelCount: fingerprint.channelCount,
+				videosSampled: fingerprint.videosSampled ?? 0,
+				fingerprint: fingerprint.phrases.slice(0, 12).map((row) => ({ text: row.text, weight: row.weight })),
+				clusters: (fingerprint.clusters ?? []).map((cluster) => ({
+					id: cluster.id,
+					confidence: cluster.confidence,
+					phrases: cluster.phrases.map((row) => row.text),
+				})),
+				queries: queries.map((row) => row.query),
+				cacheHits,
+				liveSearches: searchCalls,
+				rawCandidates: retrieved,
+				rejected,
+				accepted: poolEntries.filter((entry) => entry.row.interestId === fingerprint.interestId).length,
+				persistedActive: activePersisted.length,
+				feedbackSuppressed,
+				returned: 0,
+			});
+		}
 	}
 
-	const primaryDeduped = dedupeScored(allPrimary.map((entry) => entry.row));
-	const primaryIds = new Set(primaryDeduped.map((row) => row.result.externalId));
-	const fingerprintByInterest = new Map(activeFingerprints.map((fp) => [fp.interestId, fp]));
-	const extendedDeduped = dedupeScored(allExtended.map((entry) => entry.row)).filter(
-		(row) => !primaryIds.has(row.result.externalId),
+	poolEntries.sort(
+		(a, b) => b.row.score - a.row.score || a.row.result.title.localeCompare(b.row.result.title),
 	);
-	const poolEntries = [
-		...primaryDeduped.map((row) => ({ row, fingerprint: fingerprintByInterest.get(row.interestId)! })),
-		...extendedDeduped.map((row) => ({ row, fingerprint: fingerprintByInterest.get(row.interestId)! })),
-	];
-	const poolIds = new Set(poolEntries.map((entry) => entry.row.result.externalId));
-	const persistedRows = await loadActiveInterestCandidates(
-		env.DB,
-		userId,
-		opts?.interestId,
-	);
-	const persistedEntries = persistedCandidatesToPoolEntries(
-		persistedRows,
-		fingerprintByInterest,
-		subscribed,
-		suppressions,
-		poolIds,
-	);
-	poolEntries.push(...persistedEntries);
 
-	const pageSlice = poolEntries.slice(offset, offset + limit);
+	const pageEntries = poolEntries.slice(offset, offset + limit);
 	const secret = env.SESSION_SECRET;
 	const page: DiscoverRecommendation[] = [];
-	for (const entry of pageSlice) {
+	const presentedIds: string[] = [];
+	for (const entry of pageEntries) {
 		page.push(await toRecommendation(secret, userId, entry.row, entry.fingerprint));
+		if (entry.candidateId) presentedIds.push(entry.candidateId);
+	}
+	if (presentedIds.length) {
+		await markInterestCandidatesPresented(env.DB, userId, presentedIds, now);
 	}
 
 	let forYouHasMore = offset + page.length < poolEntries.length;
 	if (!forYouHasMore && opts?.interestId && activeFingerprints[0]) {
-		const query = buildInterestSearchQuery(activeFingerprints[0]);
-		const nextToken = await getInterestNextPageToken(env, query, now);
+		const queries = buildInterestSearchQueries(activeFingerprints[0]);
+		const nextToken = await getInterestNextPageToken(env, queries[0]?.query ?? '', now);
 		forYouHasMore = Boolean(nextToken);
-	} else if (!forYouHasMore && !opts?.interestId) {
-		forYouHasMore = refreshOffset + INTERESTS_FOR_REFRESH < mergeFingerprints.length;
 	}
 
 	const metrics: ForYouMetrics = {
@@ -349,24 +381,45 @@ export async function buildForYouRecommendations(
 		accepted: poolEntries.length,
 		interestsRepresented: new Set(poolEntries.map((entry) => entry.row.interestId).filter(Boolean)).size,
 		searchCalls,
+		persistedActive: poolEntries.filter((entry) => entry.candidateId).length,
+		persistedRetired,
+		cacheHits,
+		newlyPersisted,
 	};
 
 	if (env.DISCOVER_RELEVANCE_DEBUG === 'true') {
 		console.log(
-			`ForYou metrics: Retrieved=${metrics.retrieved} Rejected=${metrics.rejected} Accepted=${metrics.accepted} Page=${page.length} offset=${offset} search.list=${metrics.searchCalls}`,
+			`ForYou metrics: Retrieved=${metrics.retrieved} Rejected=${metrics.rejected} Accepted=${metrics.accepted} Retired=${persistedRetired} Page=${page.length} search.list=${metrics.searchCalls}`,
 		);
 	}
 
+	const isInterestScoped = Boolean(opts?.interestId);
 	return {
 		forYou: page,
 		forYouTotal: poolEntries.length,
 		forYouHasMore,
 		forYouInterests: interests,
 		forYouEmpty: poolEntries.length === 0,
-		forYouMessage: poolEntries.length === 0 ? 'No strong matches yet. Follow and categorize more channels to improve For You.' : undefined,
+		forYouMessage:
+			poolEntries.length === 0
+				? isInterestScoped
+					? 'No high-confidence recommendations yet.'
+					: 'No high-confidence recommendations yet.'
+				: undefined,
+		forYouSupportingMessage:
+			poolEntries.length === 0
+				? 'VortiQuest is still learning from the channels in this category.'
+				: undefined,
 		metrics,
 		debug: opts?.includeDebug ? debugRows : undefined,
+		pipelineDebug: opts?.includeDebug ? pipelineDebug : undefined,
 	};
 }
 
-export { scoreCandidateAgainstFingerprint } from './candidateScoring';
+export {
+	scoreCandidateAgainstFingerprint,
+	MIN_ACCEPT_SCORE,
+	MIN_RETAIN_SCORE,
+	shouldPersistNewCandidate,
+	shouldRetainPersistedCandidate,
+} from './candidateScoring';
