@@ -23,14 +23,30 @@ export interface RecommendationTokenPayload {
 	expiresAt: number;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = '';
+	for (const b of bytes) binary += String.fromCharCode(b);
+	return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+	const padded = value.replace(/-/g, '+').replace(/_/g, '/');
+	const withPad = padded + '='.repeat((4 - (padded.length % 4)) % 4);
+	const binary = atob(withPad);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
 function encodePayload(payload: RecommendationTokenPayload): string {
-	return `${TOKEN_PREFIX}${btoa(JSON.stringify(payload))}`;
+	const bytes = new TextEncoder().encode(JSON.stringify(payload));
+	return `${TOKEN_PREFIX}${bytesToBase64(bytes)}`;
 }
 
 function decodePayload(value: string): RecommendationTokenPayload | null {
 	if (!value.startsWith(TOKEN_PREFIX)) return null;
 	try {
-		const json = atob(value.slice(TOKEN_PREFIX.length));
+		const json = new TextDecoder().decode(base64ToBytes(value.slice(TOKEN_PREFIX.length)));
 		const parsed = JSON.parse(json) as RecommendationTokenPayload;
 		if (
 			!parsed ||

@@ -358,6 +358,23 @@ describe('recommendation feedback', () => {
 		spy.mockRestore();
 	});
 
+	it('mints recommendation tokens for unicode channel titles', async () => {
+		const token = await mintRecommendationToken(SESSION_SECRET, {
+			userId: USER_A,
+			provider: 'youtube',
+			externalId: CHANNEL,
+			channelTitle: 'Storm Chasing — Live 🌪️',
+			channelThumbnail: '',
+			interestId: 'cat-storm',
+			interestLabel: 'Storm Chasing',
+			baseScore: 60,
+			matchedConcepts: [{ text: 'storm chasing', ambiguous: false }],
+			recommendationReason: 'Related to Storm Chasing',
+		});
+		const verified = await verifyRecommendationToken(SESSION_SECRET, token, USER_A);
+		expect(verified?.channelTitle).toBe('Storm Chasing — Live 🌪️');
+	});
+
 	it('forYou recommendations include server-minted recommendationToken', async () => {
 		const db = new MemorySyncDb();
 		const env = asEnv(db, { SESSION_SECRET, YOUTUBE_API_KEY: 'test-key' });
@@ -369,7 +386,7 @@ describe('recommendation feedback', () => {
 		await seedTopicCache(
 			db,
 			cacheKey,
-			[weatherChannel(CHANNEL, 'For You Channel', 'storm chasing tornado severe weather')],
+			[weatherChannel(CHANNEL, 'For You Channel — Live', 'storm chasing tornado severe weather')],
 			now,
 		);
 
