@@ -30,9 +30,18 @@ export interface DiscoverSearchResponse {
 }
 
 export interface DiscoverBrowseResponse {
-	recentlyFollowed: DiscoveryResult[];
+	forYou: DiscoverRecommendation[];
+	forYouEmpty?: boolean;
+	forYouMessage?: string;
 	popularVideos: DiscoveryResult[];
+	recentlyFollowed: DiscoveryResult[];
 	refreshedAt: string;
+}
+
+export type DiscoverBrowseTab = 'forYou' | 'popular' | 'recent';
+
+export interface DiscoverRecommendation extends DiscoveryResult {
+	recommendationReason?: string;
 }
 
 export interface PodcastSubscriptionRecord {

@@ -1322,6 +1322,19 @@
 	font-weight: 500;
 }
 
+.discover-browse-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 12px 0 16px;
+}
+
+.discover-reason {
+	margin: 4px 0 0;
+	font-size: 0.82rem;
+	color: var(--muted);
+}
+
 .badge.podcast {
 	background: #5b4d8a;
 	color: #fff;

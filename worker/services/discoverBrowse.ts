@@ -1,10 +1,11 @@
-import type { DiscoverBrowseResponse, DiscoveryResult } from '../../src/types/discover';
+import type { DiscoverBrowseResponse, DiscoverBrowseTab, DiscoveryResult } from '../../src/types/discover';
 import {
 	DISCOVER_BROWSE_POPULAR_TTL_MS,
 	getDiscoverBrowseCache,
 	putDiscoverBrowseCache,
 } from '../db/discoverCache';
-import { getSubscribedChannelIds, listRecentlyDiscoverFollowed } from '../db/queries';
+import { getSubscribedChannelIds, listRecentlyFollowedChannels } from '../db/queries';
+import { buildForYouRecommendations } from './discover/forYou';
 import { recordYoutubeCalls } from './websub';
 import { createYoutubeApiKeyClient } from './youtube';
 
@@ -88,10 +89,8 @@ function recentlyFollowedToResults(
 	}));
 }
 
-export async function discoverBrowse(env: Env, userId: string, now = new Date()): Promise<DiscoverBrowseResponse> {
+async function browsePopular(env: Env, userId: string, now: Date): Promise<DiscoveryResult[]> {
 	const subscribed = await getSubscribedChannelIds(env.DB, userId);
-	const recentlyFollowed = recentlyFollowedToResults(await listRecentlyDiscoverFollowed(env.DB, userId, 12), subscribed);
-
 	let popularVideos: DiscoveryResult[] = [];
 	const cachedPopular = await getDiscoverBrowseCache<PopularVideoRow[]>(env.DB, POPULAR_SECTION_KEY, now);
 	if (cachedPopular && !cachedPopular.stale) {
@@ -113,10 +112,47 @@ export async function discoverBrowse(env: Env, userId: string, now = new Date())
 	} else if (cachedPopular) {
 		popularVideos = popularToDiscoveryResults(cachedPopular.payload, subscribed);
 	}
+	return popularVideos;
+}
+
+async function browseRecent(env: Env, userId: string): Promise<DiscoveryResult[]> {
+	const subscribed = await getSubscribedChannelIds(env.DB, userId);
+	return recentlyFollowedToResults(await listRecentlyFollowedChannels(env.DB, userId, 12), subscribed);
+}
+
+export async function discoverBrowse(
+	env: Env,
+	userId: string,
+	tab: DiscoverBrowseTab = 'forYou',
+	now = new Date(),
+): Promise<DiscoverBrowseResponse> {
+	const refreshedAt = now.toISOString();
+	const empty: DiscoverBrowseResponse = {
+		forYou: [],
+		popularVideos: [],
+		recentlyFollowed: [],
+		refreshedAt,
+	};
+
+	if (tab === 'forYou') {
+		const forYouResult = await buildForYouRecommendations(env, userId, now);
+		return {
+			...empty,
+			forYou: forYouResult.forYou,
+			forYouEmpty: forYouResult.forYouEmpty,
+			forYouMessage: forYouResult.forYouMessage,
+		};
+	}
+
+	if (tab === 'popular') {
+		return {
+			...empty,
+			popularVideos: await browsePopular(env, userId, now),
+		};
+	}
 
 	return {
-		recentlyFollowed,
-		popularVideos,
-		refreshedAt: now.toISOString(),
+		...empty,
+		recentlyFollowed: await browseRecent(env, userId),
 	};
 }

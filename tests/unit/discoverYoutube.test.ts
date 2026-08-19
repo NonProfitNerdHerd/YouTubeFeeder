@@ -233,6 +233,10 @@ describe('Discover UI wiring', () => {
 		expect(source).toContain('discover-shell');
 		expect(source).toContain('discover-scroll');
 		expect(source).toContain('/api/discover/follow/youtube');
-		expect(source).toContain('/api/discover/browse');
+		expect(source).toContain('/api/discover/browse?tab=');
+		expect(source).toContain('discover-browse-tabs');
+		expect(source).toContain("'forYou'");
+		expect(source).toContain('For You');
+		expect(source).toContain('discover-reason');
 	});
 });

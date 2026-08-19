@@ -1,5 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { DiscoverBrowseResponse, DiscoverFilter, DiscoverSearchResponse, DiscoveryResult } from '../types/discover';
+import type {
+	DiscoverBrowseResponse,
+	DiscoverBrowseTab,
+	DiscoverFilter,
+	DiscoverRecommendation,
+	DiscoverSearchResponse,
+	DiscoveryResult,
+} from '../types/discover';
 
 function IconSearch() {
 	return (
@@ -38,37 +45,57 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [filter, setFilter] = useState<DiscoverFilter>('all');
 	const [loading, setLoading] = useState(false);
 	const [response, setResponse] = useState<DiscoverSearchResponse | null>(null);
-	const [browse, setBrowse] = useState<DiscoverBrowseResponse | null>(null);
+	const [browseTab, setBrowseTab] = useState<DiscoverBrowseTab>('forYou');
+	const [browseLoading, setBrowseLoading] = useState(false);
+	const [browseCache, setBrowseCache] = useState<Partial<Record<DiscoverBrowseTab, DiscoverBrowseResponse>>>({});
 	const [subscribing, setSubscribing] = useState<string | null>(null);
 	const [following, setFollowing] = useState<string | null>(null);
 
+	async function loadBrowseTab(tab: DiscoverBrowseTab) {
+		if (browseCache[tab]) return;
+		setBrowseLoading(true);
+		try {
+			const res = await fetch(`/api/discover/browse?tab=${tab}`, { credentials: 'same-origin' });
+			if (!res.ok) return;
+			const body = (await res.json()) as DiscoverBrowseResponse;
+			setBrowseCache((prev) => ({ ...prev, [tab]: body }));
+		} catch {
+			// Browse is optional; search still works.
+		} finally {
+			setBrowseLoading(false);
+		}
+	}
+
 	useEffect(() => {
-		void (async () => {
-			try {
-				const res = await fetch('/api/discover/browse', { credentials: 'same-origin' });
-				if (!res.ok) return;
-				setBrowse((await res.json()) as DiscoverBrowseResponse);
-			} catch {
-				// Browse is optional; search still works.
-			}
-		})();
+		void loadBrowseTab('forYou');
 	}, []);
+
+	useEffect(() => {
+		void loadBrowseTab(browseTab);
+	}, [browseTab]);
 
 	function markSubscribed(channelId: string) {
 		const mark = (rows: DiscoveryResult[]) =>
 			rows.map((row) =>
 				row.externalId === channelId || row.parentExternalId === channelId ? { ...row, subscribed: true } : row,
 			);
+		const filterForYou = (rows: DiscoverRecommendation[]) =>
+			rows.filter((row) => row.externalId !== channelId && row.parentExternalId !== channelId);
 		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
-		setBrowse((prev) =>
-			prev
-				? {
-						...prev,
-						recentlyFollowed: mark(prev.recentlyFollowed),
-						popularVideos: mark(prev.popularVideos),
-					}
-				: prev,
-		);
+		setBrowseCache((prev) => {
+			const next = { ...prev };
+			for (const tab of Object.keys(next) as DiscoverBrowseTab[]) {
+				const entry = next[tab];
+				if (!entry) continue;
+				next[tab] = {
+					...entry,
+					forYou: tab === 'forYou' ? filterForYou(entry.forYou ?? []) : entry.forYou,
+					recentlyFollowed: mark(entry.recentlyFollowed ?? []),
+					popularVideos: mark(entry.popularVideos ?? []),
+				};
+			}
+			return next;
+		});
 	}
 
 	async function runSearch(event?: FormEvent) {
@@ -238,8 +265,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		return null;
 	}
 
-	function renderResult(result: DiscoveryResult) {
+	function renderResult(result: DiscoveryResult | DiscoverRecommendation) {
 		const isChannel = result.type === 'channel';
+		const reason = 'recommendationReason' in result ? result.recommendationReason : undefined;
 		return (
 			<li
 				key={`${result.provider}-${result.type}-${result.externalId}`}
@@ -257,6 +285,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					<strong className="video-title">{result.title}</strong>
 					{result.publisher && result.type !== 'channel' ? <small className="muted">{result.publisher}</small> : null}
 					{result.description ? <p className="muted discover-desc">{result.description}</p> : null}
+					{reason ? <p className="discover-reason">{reason}</p> : null}
 					{result.parentTitle ? <small className="muted">From {result.parentTitle}</small> : null}
 				</div>
 				<div className="discover-result-actions">{renderActions(result)}</div>
@@ -271,6 +300,14 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			if (filter === 'youtube') return row.provider === 'youtube';
 			return row.type === 'live';
 		}) ?? [];
+
+	const activeBrowse = browseCache[browseTab];
+	const browseResults =
+		browseTab === 'forYou'
+			? activeBrowse?.forYou ?? []
+			: browseTab === 'popular'
+				? activeBrowse?.popularVideos ?? []
+				: activeBrowse?.recentlyFollowed ?? [];
 
 	return (
 		<div className="discover-shell">
@@ -327,20 +364,50 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 			<section className="discover-sections">
 				<h2>Browse</h2>
-				{browse?.recentlyFollowed.length ? (
+				<div className="discover-browse-tabs" role="tablist" aria-label="Browse tabs">
+					{(
+						[
+							['forYou', 'For You'],
+							['popular', 'Popular'],
+							['recent', 'Recently Followed'],
+						] as const
+					).map(([value, label]) => (
+						<button
+							key={value}
+							type="button"
+							className={browseTab === value ? 'tab active' : 'tab'}
+							role="tab"
+							aria-selected={browseTab === value}
+							onClick={() => setBrowseTab(value)}
+						>
+							{label}
+						</button>
+					))}
+				</div>
+
+				{browseLoading && !activeBrowse ? <p className="muted discover-hint">Loading browse…</p> : null}
+
+				{browseTab === 'forYou' && activeBrowse?.forYouEmpty ? (
 					<div className="discover-section-block">
-						<h3>Recently followed in VortiQuest</h3>
-						<ul className="discover-results">{browse.recentlyFollowed.map((result) => renderResult(result))}</ul>
+						<p className="muted">{activeBrowse.forYouMessage ?? 'Follow and categorize channels to improve For You.'}</p>
+						<button className="ghost tiny" type="button" onClick={() => setBrowseTab('popular')}>
+							Browse Popular
+						</button>
 					</div>
 				) : null}
-				{browse?.popularVideos.length ? (
+
+				{browseResults.length ? (
 					<div className="discover-section-block">
-						<h3>Popular on YouTube</h3>
-						<ul className="discover-results">{browse.popularVideos.map((result) => renderResult(result))}</ul>
+						<ul className="discover-results">{browseResults.map((result) => renderResult(result))}</ul>
 					</div>
 				) : null}
-				{!browse?.recentlyFollowed.length && !browse?.popularVideos.length ? (
-					<p className="muted">Follow channels from search to see them here. Popular videos refresh every few hours.</p>
+
+				{!browseLoading && activeBrowse && browseResults.length === 0 && browseTab !== 'forYou' ? (
+					<p className="muted">
+						{browseTab === 'recent'
+							? 'Add channels in VortiQuest to see them here.'
+							: 'Popular videos refresh every few hours.'}
+					</p>
 				) : null}
 				</section>
 				</div>

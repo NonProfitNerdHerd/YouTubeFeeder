@@ -25,6 +25,9 @@ export class MemorySyncDb {
 	ingest: Row[] = [];
 	discoverSearchCache = new Map<string, Row>();
 	discoverBrowseCache = new Map<string, Row>();
+	topicDiscoveryCache = new Map<string, Row>();
+	categories = new Map<string, Row>();
+	channelCategories: Row[] = [];
 	failFanout = false;
 
 	prepare(sql: string) {
@@ -436,6 +439,15 @@ export class MemorySyncDb {
 				section_key: bound[0],
 				payload_json: bound[1],
 				refreshed_at: bound[2],
+				expires_at: bound[3],
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO topic_discovery_cache')) {
+			this.topicDiscoveryCache.set(String(bound[0]), {
+				normalized_topic: bound[0],
+				results_json: bound[1],
+				searched_at: bound[2],
 				expires_at: bound[3],
 			});
 			return 1;
@@ -871,12 +883,72 @@ export class MemorySyncDb {
 		}
 		if (normalized.includes('SELECT search_calls FROM api_quota_daily')) {
 			const day = String(bound[0]);
-			const row = this.quota.find((item) => item.day === day && item.endpoint === 'search.list');
+			const endpoint = bound.length > 1 ? String(bound[1]) : 'search.list';
+			const row = this.quota.find((item) => item.day === day && item.endpoint === endpoint);
 			return row ? [{ search_calls: row.search_calls ?? 0 }] : [];
 		}
 		if (normalized.includes('FROM discover_search_cache WHERE cache_key = ?')) {
 			const row = this.discoverSearchCache.get(String(bound[0]));
 			return row ? [row] : [];
+		}
+		if (normalized.includes('FROM topic_discovery_cache WHERE normalized_topic = ?')) {
+			const row = this.topicDiscoveryCache.get(String(bound[0]));
+			return row ? [row] : [];
+		}
+		if (normalized.includes('FROM discover_browse_cache WHERE section_key = ?')) {
+			const row = this.discoverBrowseCache.get(String(bound[0]));
+			return row ? [row] : [];
+		}
+		if (normalized.includes('SELECT c.name, COUNT(cc.channel_id) AS channel_count')) {
+			const userId = String(bound[0]);
+			const counts = new Map<string, number>();
+			for (const row of this.channelCategories) {
+				if (row.user_id !== userId) continue;
+				const cat = this.categories.get(String(row.category_id));
+				if (!cat) continue;
+				const pref = this.prefs.get(prefKey(userId, String(row.channel_id)));
+				if (!pref || pref.is_subscribed !== 1) continue;
+				counts.set(String(cat.name), (counts.get(String(cat.name)) ?? 0) + 1);
+			}
+			return [...counts.entries()].map(([name, channel_count]) => ({ name, channel_count }));
+		}
+		if (normalized.includes('FROM inbox_state i') && normalized.includes('JOIN videos v ON v.video_id = i.video_id')) {
+			const userId = String(bound[0]);
+			const limit = Number(bound[1] ?? 50);
+			return [...this.inbox.values()]
+				.filter((row) => row.user_id === userId && row.hidden !== 1)
+				.map((row) => {
+					const video = this.videos.get(String(row.video_id));
+					return { title: video?.title ?? '', published_at: video?.published_at ?? '' };
+				})
+				.filter((row) => row.title)
+				.sort((a, b) => String(b.published_at).localeCompare(String(a.published_at)))
+				.slice(0, limit)
+				.map((row) => ({ title: row.title }));
+		}
+		if (normalized.includes('FROM channel_prefs p') && normalized.includes('JOIN channels c ON c.channel_id = p.channel_id') && normalized.includes('p.is_subscribed = 1')) {
+			const userId = String(bound[0]);
+			return [...this.prefs.values()]
+				.filter((p) => p.user_id === userId && p.is_subscribed === 1)
+				.map((p) => {
+					const ch = this.channels.get(String(p.channel_id));
+					return {
+						channel_id: p.channel_id,
+						title: ch?.title ?? p.channel_id,
+						description: ch?.description ?? '',
+						thumbnail_url: ch?.thumbnail_url ?? '',
+						uploads_playlist_id: ch?.uploads_playlist_id ?? null,
+						subscribed: 1,
+						last_synchronized_at: ch?.last_synchronized_at ?? null,
+						follow_in_inbox: p.follow_in_inbox ?? 1,
+						max_videos_to_pull: p.max_videos_to_pull ?? 0,
+					};
+				})
+				.sort((a, b) => String(a.title).localeCompare(String(b.title)));
+		}
+		if (normalized.includes('SELECT channel_id, category_id FROM channel_categories WHERE user_id = ?')) {
+			const userId = String(bound[0]);
+			return this.channelCategories.filter((row) => row.user_id === userId);
 		}
 		if (normalized.includes('SELECT channel_id FROM channel_prefs WHERE user_id = ? AND is_subscribed = 1')) {
 			const userId = String(bound[0]);
@@ -884,10 +956,13 @@ export class MemorySyncDb {
 				.filter((p) => p.user_id === userId && p.is_subscribed === 1)
 				.map((p) => ({ channel_id: p.channel_id }));
 		}
-		if (normalized.includes("p.follow_source = 'discover'")) {
+		if (normalized.includes('ORDER BY p.subscription_seen_at DESC')) {
 			const userId = String(bound[0]);
+			const limit = Number(bound[1] ?? 12);
 			return [...this.prefs.values()]
-				.filter((p) => p.user_id === userId && p.is_subscribed === 1 && p.follow_source === 'discover')
+				.filter((p) => p.user_id === userId && p.is_subscribed === 1)
+				.sort((a, b) => String(b.subscription_seen_at ?? '').localeCompare(String(a.subscription_seen_at ?? '')))
+				.slice(0, limit)
 				.map((p) => {
 					const ch = this.channels.get(String(p.channel_id));
 					return {

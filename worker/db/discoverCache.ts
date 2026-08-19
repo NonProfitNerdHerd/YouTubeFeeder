@@ -2,6 +2,7 @@ import type { DiscoveryResult } from '../../src/types/discover';
 
 export const DISCOVER_SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;
 export const DISCOVER_BROWSE_POPULAR_TTL_MS = 6 * 60 * 60 * 1000;
+export const DISCOVER_TOPIC_CACHE_TTL_MS = 60 * 60 * 1000;
 
 export function discoverSearchCacheKey(provider: string, normalizedQuery: string): string {
 	return `${provider}:${normalizedQuery}`;
@@ -88,5 +89,47 @@ export async function putDiscoverBrowseCache<T>(
 				expires_at = excluded.expires_at`,
 		)
 		.bind(sectionKey, JSON.stringify(payload), refreshedAt, expiresAt)
+		.run();
+}
+
+export async function getTopicDiscoveryCache(
+	db: D1Database,
+	normalizedTopic: string,
+	now = new Date(),
+): Promise<{ results: DiscoveryResult[]; searchedAt: string; stale: boolean } | null> {
+	const row = await db
+		.prepare(`SELECT results_json, searched_at, expires_at FROM topic_discovery_cache WHERE normalized_topic = ?`)
+		.bind(normalizedTopic)
+		.first<{ results_json: string; searched_at: string; expires_at: string }>();
+	if (!row) return null;
+	let results: DiscoveryResult[] = [];
+	try {
+		results = JSON.parse(row.results_json) as DiscoveryResult[];
+	} catch {
+		return null;
+	}
+	const fresh = row.expires_at > now.toISOString();
+	return { results, searchedAt: row.searched_at, stale: !fresh };
+}
+
+export async function putTopicDiscoveryCache(
+	db: D1Database,
+	normalizedTopic: string,
+	results: DiscoveryResult[],
+	ttlMs = DISCOVER_TOPIC_CACHE_TTL_MS,
+	now = new Date(),
+): Promise<void> {
+	const searchedAt = now.toISOString();
+	const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+	await db
+		.prepare(
+			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(normalized_topic) DO UPDATE SET
+				results_json = excluded.results_json,
+				searched_at = excluded.searched_at,
+				expires_at = excluded.expires_at`,
+		)
+		.bind(normalizedTopic, JSON.stringify(results), searchedAt, expiresAt)
 		.run();
 }

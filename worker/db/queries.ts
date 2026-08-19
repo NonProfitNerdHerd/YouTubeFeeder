@@ -680,7 +680,7 @@ export async function getSubscribedChannelIds(db: D1Database, userId: string): P
 	return new Set((rows.results ?? []).map((row) => row.channel_id));
 }
 
-export async function listRecentlyDiscoverFollowed(
+export async function listRecentlyFollowedChannels(
 	db: D1Database,
 	userId: string,
 	limit = 12,
@@ -690,7 +690,7 @@ export async function listRecentlyDiscoverFollowed(
 			`SELECT c.channel_id, c.title, c.thumbnail_url, c.description, p.subscription_seen_at
 			 FROM channel_prefs p
 			 JOIN channels c ON c.channel_id = p.channel_id
-			 WHERE p.user_id = ? AND p.is_subscribed = 1 AND p.follow_source = 'discover'
+			 WHERE p.user_id = ? AND p.is_subscribed = 1
 			 ORDER BY p.subscription_seen_at DESC
 			 LIMIT ?`,
 		)
@@ -709,4 +709,37 @@ export async function listRecentlyDiscoverFollowed(
 		description: row.description,
 		followedAt: row.subscription_seen_at ?? '',
 	}));
+}
+
+export async function listCategoryChannelCounts(
+	db: D1Database,
+	userId: string,
+): Promise<Array<{ name: string; channelCount: number }>> {
+	const rows = await db
+		.prepare(
+			`SELECT c.name, COUNT(cc.channel_id) AS channel_count
+			 FROM channel_categories cc
+			 JOIN categories c ON c.id = cc.category_id AND c.user_id = cc.user_id
+			 JOIN channel_prefs p ON p.user_id = cc.user_id AND p.channel_id = cc.channel_id AND p.is_subscribed = 1
+			 WHERE cc.user_id = ?
+			 GROUP BY c.id, c.name`,
+		)
+		.bind(userId)
+		.all<{ name: string; channel_count: number }>();
+	return (rows.results ?? []).map((row) => ({ name: row.name, channelCount: row.channel_count }));
+}
+
+export async function listRecentInboxVideoTitles(db: D1Database, userId: string, limit = 50): Promise<string[]> {
+	const rows = await db
+		.prepare(
+			`SELECT v.title
+			 FROM inbox_state i
+			 JOIN videos v ON v.video_id = i.video_id
+			 WHERE i.user_id = ? AND i.hidden = 0
+			 ORDER BY v.published_at DESC
+			 LIMIT ?`,
+		)
+		.bind(userId, limit)
+		.all<{ title: string }>();
+	return (rows.results ?? []).map((row) => row.title).filter(Boolean);
 }
