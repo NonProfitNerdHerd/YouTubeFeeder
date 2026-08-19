@@ -4,10 +4,10 @@ import { getSubscribedChannelIds } from '../../db/queries';
 import { buildInterestProfile, isInterestProfileEmpty, type InterestTopic } from './interestProfile';
 import { normalizeTopic, refreshTopicCaches } from './topicDiscovery';
 
-const MAX_FOR_YOU = 20;
-const MAX_PER_TOPIC = 4;
+const MAX_FOR_YOU = 30;
+const MAX_PER_TOPIC = 8;
 const TOPICS_FOR_REFRESH = 2;
-const TOPICS_TO_MERGE = 5;
+const TOPICS_TO_MERGE = 6;
 
 function recommendationReason(topic: InterestTopic): string {
 	if (topic.source === 'category') return `Because you follow ${topic.reasonLabel}`;

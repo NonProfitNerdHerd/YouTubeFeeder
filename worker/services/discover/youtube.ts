@@ -33,7 +33,7 @@ export function mapChannelSearchItems(items: SearchListChannelItem[]): Discovery
 			type: 'channel',
 			externalId: channelId,
 			title: item.snippet?.title ?? 'YouTube channel',
-			description: item.snippet?.description?.slice(0, 300),
+			description: item.snippet?.description?.slice(0, 500),
 			imageUrl:
 				item.snippet?.thumbnails?.medium?.url ??
 				item.snippet?.thumbnails?.default?.url ??
@@ -61,7 +61,7 @@ export async function searchYoutubeChannels(
 		part: 'snippet',
 		q: query,
 		type: 'channel',
-		maxResults: '10',
+		maxResults: '15',
 	});
 	return mapChannelSearchItems(page.items ?? []);
 }

@@ -1,4 +1,4 @@
-import { enqueueHubSubscriptions } from './websub';
+import { enqueueHubSubscriptions, unsubscribeIfOrphaned } from './websub';
 import { createYoutubeApiKeyClient, fetchUploadsPlaylistIds, YoutubeApiError } from './youtube';
 
 export interface FollowYoutubeInput {
@@ -79,4 +79,33 @@ export async function followYoutubeChannel(
 	}
 
 	return { ok: true, channelId, created: true, alreadyFollowing: false };
+}
+
+export async function unfollowYoutubeChannel(
+	env: Env,
+	userId: string,
+	channelId: string,
+): Promise<{ ok: true; channelId: string; wasFollowing: boolean }> {
+	const id = channelId.trim();
+	if (!id) throw new Error('invalid_channel');
+
+	const existing = await env.DB.prepare(
+		`SELECT is_subscribed FROM channel_prefs WHERE user_id = ? AND channel_id = ? AND is_subscribed = 1`,
+	)
+		.bind(userId, id)
+		.first<{ is_subscribed: number }>();
+	if (!existing) {
+		return { ok: true, channelId: id, wasFollowing: false };
+	}
+
+	const now = new Date().toISOString();
+	await env.DB.prepare(
+		`UPDATE channel_prefs SET is_subscribed = 0, unsubscribed_at = ? WHERE user_id = ? AND channel_id = ?`,
+	)
+		.bind(now, userId, id)
+		.run();
+
+	await unsubscribeIfOrphaned(env, [id]);
+
+	return { ok: true, channelId: id, wasFollowing: true };
 }

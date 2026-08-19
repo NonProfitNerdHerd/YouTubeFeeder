@@ -30,7 +30,7 @@ import {
 	updatePodcastPrefs,
 } from './db/podcasts';
 import { discoverBrowse, discoverSearch, discoverSubscribePodcast } from './services/discover';
-import { followYoutubeChannel } from './services/discoverFollow';
+import { followYoutubeChannel, unfollowYoutubeChannel } from './services/discoverFollow';
 import { catchUpPodcast } from './services/podcastCatchup';
 import {
 	applyLiveLayout,
@@ -434,6 +434,20 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			const msg = err instanceof Error ? err.message : 'follow_failed';
 			if (msg === 'invalid_channel') return apiError(400, 'invalid_channel', 'Invalid channel.');
 			return apiError(500, 'follow_failed', msg);
+		}
+	}
+
+	if (path === '/api/discover/unfollow/youtube' && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const body = await readJson<{ channelId?: string }>(request);
+		if (!body?.channelId) return apiError(400, 'invalid_channel', 'Missing channelId.');
+		try {
+			return json(await unfollowYoutubeChannel(env, user.id, body.channelId));
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : 'unfollow_failed';
+			if (msg === 'invalid_channel') return apiError(400, 'invalid_channel', 'Invalid channel.');
+			return apiError(500, 'unfollow_failed', msg);
 		}
 	}
 

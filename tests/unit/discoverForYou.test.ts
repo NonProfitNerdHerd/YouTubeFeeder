@@ -253,7 +253,7 @@ describe('For You assembly', () => {
 		const result = await buildForYouRecommendations(env, 'user-1', now);
 		expect(spy).not.toHaveBeenCalled();
 		const stormReason = result.forYou.filter((r) => r.recommendationReason?.includes('Storm Chasing'));
-		expect(stormReason.length).toBeLessThanOrEqual(4);
+		expect(stormReason.length).toBeLessThanOrEqual(8);
 		spy.mockRestore();
 	});
 

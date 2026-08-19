@@ -196,6 +196,16 @@ export class MemorySyncDb {
 			for (const row of this.channels.values()) row.subscribed = 0;
 			return this.channels.size;
 		}
+		if (normalized.startsWith('UPDATE channel_prefs') && normalized.includes('is_subscribed = 0') && normalized.includes('channel_id = ?')) {
+			const seenAt = String(bound[0]);
+			const userId = String(bound[1]);
+			const channelId = String(bound[2]);
+			const pref = this.prefs.get(prefKey(userId, channelId));
+			if (!pref || pref.is_subscribed !== 1) return 0;
+			pref.is_subscribed = 0;
+			pref.unsubscribed_at = seenAt;
+			return 1;
+		}
 		if (normalized.startsWith('UPDATE channel_prefs') && normalized.includes('is_subscribed = 0')) {
 			const seenAt = String(bound[0]);
 			const userId = String(bound[1]);

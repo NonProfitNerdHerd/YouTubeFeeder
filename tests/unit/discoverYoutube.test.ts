@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { asEnv, MemorySyncDb } from './helpers/memorySyncDb';
 import { discoverSearch } from '../../worker/services/discover';
-import { followYoutubeChannel } from '../../worker/services/discoverFollow';
+import { followYoutubeChannel, unfollowYoutubeChannel } from '../../worker/services/discoverFollow';
 import * as podcastIndex from '../../worker/services/discover/podcastIndex';
 import {
 	mapChannelSearchItems,
@@ -166,6 +166,29 @@ describe('Follow in VortiQuest', () => {
 		expect([...db.prefs.values()].filter((p) => p.channel_id === CHANNEL)).toHaveLength(1);
 	});
 
+	it('unfollows a discover channel without affecting other users', async () => {
+		const db = new MemorySyncDb();
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'key', PUBLIC_ORIGIN: 'https://example.com', SESSION_SECRET: 'secret' });
+		await followYoutubeChannel(env, 'user-1', { channelId: CHANNEL, title: 'Keith Olbermann' });
+		db.prefs.set(`user-2:${CHANNEL}`, {
+			user_id: 'user-2',
+			channel_id: CHANNEL,
+			is_subscribed: 1,
+			follow_source: 'discover',
+		});
+		const result = await unfollowYoutubeChannel(env, 'user-1', CHANNEL);
+		expect(result.wasFollowing).toBe(true);
+		expect(db.prefs.get(`user-1:${CHANNEL}`)?.is_subscribed).toBe(0);
+		expect(db.prefs.get(`user-2:${CHANNEL}`)?.is_subscribed).toBe(1);
+	});
+
+	it('is idempotent when channel is not followed', async () => {
+		const db = new MemorySyncDb();
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'key' });
+		const result = await unfollowYoutubeChannel(env, 'user-1', CHANNEL);
+		expect(result.wasFollowing).toBe(false);
+	});
+
 	it('preserves discover follows during YouTube subscription sync unsubscribe pass', async () => {
 		const db = new MemorySyncDb();
 		db.prefs.set('user-1:discover-ch', {
@@ -233,10 +256,13 @@ describe('Discover UI wiring', () => {
 		expect(source).toContain('discover-shell');
 		expect(source).toContain('discover-scroll');
 		expect(source).toContain('/api/discover/follow/youtube');
+		expect(source).toContain('/api/discover/unfollow/youtube');
+		expect(source).toContain('Unfollow in VortiQuest');
 		expect(source).toContain('/api/discover/browse?tab=');
 		expect(source).toContain('discover-browse-tabs');
 		expect(source).toContain("'forYou'");
 		expect(source).toContain('For You');
 		expect(source).toContain('discover-reason');
+		expect(source).toContain('discover-badge-link');
 	});
 });

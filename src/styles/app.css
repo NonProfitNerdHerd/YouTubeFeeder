@@ -1183,26 +1183,93 @@
 
 .discover-search {
 	display: flex;
-	align-items: center;
-	gap: 10px;
-	margin-bottom: 12px;
-	max-width: 720px;
+	align-items: stretch;
+	gap: 12px;
+	margin-bottom: 18px;
+	max-width: 760px;
 }
 
-.discover-search input {
+.discover-search-field {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+	min-height: 48px;
+	padding: 0 18px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--panel) 88%, #111827);
+	transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.discover-search-field:focus-within {
+	border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.discover-search-field svg {
+	flex-shrink: 0;
+	color: var(--muted);
+}
+
+.discover-search-field input {
 	flex: 1;
 	min-width: 0;
+	border: none;
+	background: transparent;
+	padding: 12px 0;
+	font-size: 1rem;
+	line-height: 1.35;
+	color: var(--text);
+}
+
+.discover-search-field input:focus {
+	outline: none;
+}
+
+.discover-search-field input::placeholder {
+	color: color-mix(in srgb, var(--muted) 88%, transparent);
+}
+
+.discover-search-submit {
+	align-self: stretch;
+	border-radius: 999px;
+	padding: 0 22px;
+	font-size: 0.95rem;
+	font-weight: 500;
+	min-height: 48px;
+	white-space: nowrap;
 }
 
 .discover-filters {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 8px;
-	margin-bottom: 16px;
+	gap: 10px;
+	margin-bottom: 20px;
+}
+
+.discover-filters .tab,
+.discover-browse-tabs .tab {
+	border-radius: 999px;
+	padding: 10px 18px;
+	font-size: 0.94rem;
+	font-weight: 500;
+	line-height: 1.2;
+	min-height: 42px;
+	cursor: pointer;
+	transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.discover-filters .tab.active,
+.discover-browse-tabs .tab.active {
+	background: #243044;
+	border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
 .discover-hint {
 	margin: 16px 0;
+	font-size: 0.95rem;
 }
 
 .discover-results {
@@ -1210,7 +1277,7 @@
 	padding: 0;
 	margin: 0 0 24px;
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 	gap: 16px;
 }
 
@@ -1278,6 +1345,32 @@
 	overflow: hidden;
 }
 
+.discover-result-channel .discover-desc {
+	display: block;
+	overflow: visible;
+	font-size: 0.9rem;
+	line-height: 1.5;
+	color: color-mix(in srgb, var(--text) 78%, var(--muted));
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.discover-badge-link {
+	text-decoration: none;
+	display: inline-block;
+	align-self: flex-start;
+	transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.discover-badge-link:hover {
+	filter: brightness(1.12);
+}
+
+.discover-badge-link:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--accent) 65%, white);
+	outline-offset: 2px;
+}
+
 .discover-result-actions {
 	padding: 10px 12px 12px;
 	display: flex;
@@ -1300,6 +1393,14 @@
 	text-align: center;
 }
 
+.discover-unfollow {
+	border-color: color-mix(in srgb, #c45 40%, var(--border));
+}
+
+.discover-unfollow:hover:not(:disabled) {
+	background: color-mix(in srgb, #c45 12%, transparent);
+}
+
 .discover-section-block {
 	margin-top: 20px;
 }
@@ -1312,26 +1413,27 @@
 
 .discover-sections {
 	border-top: 1px solid var(--border);
-	padding-top: 20px;
-	margin-top: 8px;
+	padding-top: 24px;
+	margin-top: 12px;
 }
 
 .discover-sections h2 {
-	margin: 0 0 4px;
-	font-size: 1.1rem;
-	font-weight: 500;
+	margin: 0 0 8px;
+	font-size: 1.2rem;
+	font-weight: 600;
 }
 
 .discover-browse-tabs {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 8px;
-	margin: 12px 0 16px;
+	gap: 10px;
+	margin: 4px 0 20px;
+	padding: 2px 0;
 }
 
 .discover-reason {
 	margin: 4px 0 0;
-	font-size: 0.82rem;
+	font-size: 0.88rem;
 	color: var(--muted);
 }
 
