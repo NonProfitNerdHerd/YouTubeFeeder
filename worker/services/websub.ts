@@ -167,6 +167,15 @@ export async function dailyQuotaUsed(db: D1Database, endpoint: string): Promise<
 	return row?.general_units ?? 0;
 }
 
+export async function dailySearchCallsUsed(db: D1Database): Promise<number> {
+	const day = new Date().toISOString().slice(0, 10);
+	const row = await db
+		.prepare(`SELECT search_calls FROM api_quota_daily WHERE day = ? AND endpoint = ?`)
+		.bind(day, 'search.list')
+		.first<{ search_calls: number }>();
+	return Number(row?.search_calls ?? 0);
+}
+
 export type IngestSource = 'websub' | 'reconcile' | 'catchup' | 'backfill';
 
 export async function recordIngest(db: D1Database, source: IngestSource, videosAdded: number): Promise<void> {

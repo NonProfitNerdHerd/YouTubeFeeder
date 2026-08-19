@@ -23,6 +23,8 @@ export class MemorySyncDb {
 	reconcileState: Row | null = null;
 	jobs = new Map<string, Row>();
 	ingest: Row[] = [];
+	discoverSearchCache = new Map<string, Row>();
+	discoverBrowseCache = new Map<string, Row>();
 	failFanout = false;
 
 	prepare(sql: string) {
@@ -198,6 +200,7 @@ export class MemorySyncDb {
 			let n = 0;
 			for (const pref of this.prefs.values()) {
 				if (pref.user_id !== userId || pref.is_subscribed !== 1) continue;
+				if (pref.follow_source && pref.follow_source !== 'youtube_sync') continue;
 				if (pref.last_subscription_sync_id != null && pref.last_subscription_sync_id === syncId) continue;
 				pref.is_subscribed = 0;
 				pref.unsubscribed_at = seenAt;
@@ -279,10 +282,13 @@ export class MemorySyncDb {
 		if (normalized.startsWith('INSERT OR IGNORE INTO inbox_state') && normalized.includes('SELECT p.user_id')) {
 			if (this.failFanout) throw new Error('fanout_failed');
 			const videoId = String(bound[0]);
-			const channelId = String(bound[1]);
+			const channelId = String(bound[2] ?? bound[1]);
+			const video = this.videos.get(videoId);
 			let n = 0;
 			for (const pref of this.prefs.values()) {
 				if (pref.channel_id !== channelId || pref.is_subscribed !== 1 || pref.follow_in_inbox !== 1) continue;
+				const watermark = pref.newest_seen_published_at as string | null | undefined;
+				if (watermark && video?.published_at && String(video.published_at) <= watermark) continue;
 				const key = `${pref.user_id}:${videoId}`;
 				if (!this.inbox.has(key)) {
 					this.inbox.set(key, {
@@ -416,6 +422,24 @@ export class MemorySyncDb {
 			}
 			return 1;
 		}
+		if (normalized.includes('INSERT INTO discover_search_cache')) {
+			this.discoverSearchCache.set(String(bound[0]), {
+				cache_key: bound[0],
+				results_json: bound[1],
+				searched_at: bound[2],
+				expires_at: bound[3],
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO discover_browse_cache')) {
+			this.discoverBrowseCache.set(String(bound[0]), {
+				section_key: bound[0],
+				payload_json: bound[1],
+				refreshed_at: bound[2],
+				expires_at: bound[3],
+			});
+			return 1;
+		}
 		if (normalized.startsWith('INSERT INTO feed_reconcile_state') || normalized.includes('ON CONFLICT(id) DO UPDATE SET')) {
 			if (normalized.includes('feed_reconcile_state')) {
 				this.reconcileState = {
@@ -448,6 +472,22 @@ export class MemorySyncDb {
 				is_subscribed: 1,
 				last_subscription_sync_id: bound[2],
 				subscription_seen_at: bound[3],
+				unsubscribed_at: null,
+				follow_source: 'youtube_sync',
+			});
+			return 1;
+		}
+		if (normalized.includes("follow_source = 'discover'") && normalized.startsWith('INSERT INTO channel_prefs')) {
+			const key = prefKey(String(bound[0]), String(bound[1]));
+			this.prefs.set(key, {
+				user_id: bound[0],
+				channel_id: bound[1],
+				follow_in_inbox: 1,
+				max_videos_to_pull: 0,
+				is_subscribed: 1,
+				subscription_seen_at: bound[2],
+				newest_seen_published_at: bound[3],
+				follow_source: 'discover',
 				unsubscribed_at: null,
 			});
 			return 1;
@@ -736,6 +776,7 @@ export class MemorySyncDb {
 					(p) =>
 						p.user_id === userId &&
 						p.is_subscribed === 1 &&
+						p.follow_source === 'youtube_sync' &&
 						(p.last_subscription_sync_id == null || p.last_subscription_sync_id !== syncId),
 				)
 				.map((p) => ({ channel_id: p.channel_id }));
@@ -827,6 +868,45 @@ export class MemorySyncDb {
 					return !seen;
 				})
 				.slice(0, limit);
+		}
+		if (normalized.includes('SELECT search_calls FROM api_quota_daily')) {
+			const day = String(bound[0]);
+			const row = this.quota.find((item) => item.day === day && item.endpoint === 'search.list');
+			return row ? [{ search_calls: row.search_calls ?? 0 }] : [];
+		}
+		if (normalized.includes('FROM discover_search_cache WHERE cache_key = ?')) {
+			const row = this.discoverSearchCache.get(String(bound[0]));
+			return row ? [row] : [];
+		}
+		if (normalized.includes('SELECT channel_id FROM channel_prefs WHERE user_id = ? AND is_subscribed = 1')) {
+			const userId = String(bound[0]);
+			return [...this.prefs.values()]
+				.filter((p) => p.user_id === userId && p.is_subscribed === 1)
+				.map((p) => ({ channel_id: p.channel_id }));
+		}
+		if (normalized.includes("p.follow_source = 'discover'")) {
+			const userId = String(bound[0]);
+			return [...this.prefs.values()]
+				.filter((p) => p.user_id === userId && p.is_subscribed === 1 && p.follow_source === 'discover')
+				.map((p) => {
+					const ch = this.channels.get(String(p.channel_id));
+					return {
+						channel_id: p.channel_id,
+						title: ch?.title ?? 'Channel',
+						thumbnail_url: ch?.thumbnail_url ?? '',
+						description: ch?.description ?? '',
+						subscription_seen_at: p.subscription_seen_at ?? null,
+					};
+				});
+		}
+		if (normalized.includes('SELECT is_subscribed FROM channel_prefs WHERE user_id = ? AND channel_id = ?')) {
+			const key = prefKey(String(bound[0]), String(bound[1]));
+			const pref = this.prefs.get(key);
+			return pref && pref.is_subscribed === 1 ? [{ is_subscribed: 1 }] : [];
+		}
+		if (normalized.includes('SELECT uploads_playlist_id FROM channels WHERE channel_id = ?')) {
+			const ch = this.channels.get(String(bound[0]));
+			return ch ? [{ uploads_playlist_id: ch.uploads_playlist_id ?? null }] : [];
 		}
 		return [];
 	}

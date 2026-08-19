@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from 'react';
-import type { DiscoverFilter, DiscoverSearchResponse, DiscoveryResult } from '../types/discover';
+import { useEffect, useState, type FormEvent } from 'react';
+import type { DiscoverBrowseResponse, DiscoverFilter, DiscoverSearchResponse, DiscoveryResult } from '../types/discover';
 
 function IconSearch() {
 	return (
@@ -21,6 +21,12 @@ function typeLabel(result: DiscoveryResult): string {
 	return result.type;
 }
 
+function badgeClass(result: DiscoveryResult): string {
+	if (result.provider === 'youtube') return 'badge video';
+	if (result.type === 'live') return 'badge live';
+	return 'badge podcast';
+}
+
 interface DiscoverPageProps {
 	onSubscribed: () => void;
 	onError: (message: string) => void;
@@ -32,7 +38,38 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [filter, setFilter] = useState<DiscoverFilter>('all');
 	const [loading, setLoading] = useState(false);
 	const [response, setResponse] = useState<DiscoverSearchResponse | null>(null);
+	const [browse, setBrowse] = useState<DiscoverBrowseResponse | null>(null);
 	const [subscribing, setSubscribing] = useState<string | null>(null);
+	const [following, setFollowing] = useState<string | null>(null);
+
+	useEffect(() => {
+		void (async () => {
+			try {
+				const res = await fetch('/api/discover/browse', { credentials: 'same-origin' });
+				if (!res.ok) return;
+				setBrowse((await res.json()) as DiscoverBrowseResponse);
+			} catch {
+				// Browse is optional; search still works.
+			}
+		})();
+	}, []);
+
+	function markSubscribed(channelId: string) {
+		const mark = (rows: DiscoveryResult[]) =>
+			rows.map((row) =>
+				row.externalId === channelId || row.parentExternalId === channelId ? { ...row, subscribed: true } : row,
+			);
+		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
+		setBrowse((prev) =>
+			prev
+				? {
+						...prev,
+						recentlyFollowed: mark(prev.recentlyFollowed),
+						popularVideos: mark(prev.popularVideos),
+					}
+				: prev,
+		);
+	}
 
 	async function runSearch(event?: FormEvent) {
 		event?.preventDefault();
@@ -98,6 +135,125 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}
 	}
 
+	async function followYoutube(result: DiscoveryResult) {
+		const channelId = result.type === 'channel' ? result.externalId : result.parentExternalId;
+		if (!channelId) return;
+		setFollowing(channelId);
+		onError('');
+		try {
+			const res = await fetch('/api/discover/follow/youtube', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({
+					channelId,
+					title: result.type === 'channel' ? result.title : result.parentTitle ?? result.publisher,
+					description: result.description,
+					thumbnailUrl: result.type === 'channel' ? result.imageUrl : undefined,
+				}),
+			});
+			const body = (await res.json()) as { error?: { message: string }; alreadyFollowing?: boolean };
+			if (!res.ok) throw new Error(body.error?.message ?? 'Follow failed.');
+			onStatus(body.alreadyFollowing ? `Already following ${result.title}.` : `Now following ${result.title} in VortiQuest.`);
+			markSubscribed(channelId);
+			onSubscribed();
+		} catch (err: unknown) {
+			onError(err instanceof Error ? err.message : 'Follow failed.');
+		} finally {
+			setFollowing(null);
+		}
+	}
+
+	function renderActions(result: DiscoveryResult) {
+		if (result.type === 'podcast') {
+			return result.subscribed ? (
+				<span className="muted">Subscribed ✓</span>
+			) : (
+				<button
+					className="ghost tiny"
+					type="button"
+					disabled={subscribing === result.externalId}
+					onClick={() => void subscribePodcast(result)}
+				>
+					{subscribing === result.externalId ? 'Subscribing…' : 'Subscribe'}
+				</button>
+			);
+		}
+		if (result.type === 'episode' && result.parentExternalId) {
+			return (
+				<button
+					className="ghost tiny"
+					type="button"
+					disabled={subscribing === result.parentExternalId || result.subscribed}
+					onClick={() =>
+						void subscribePodcast({
+							...result,
+							type: 'podcast',
+							externalId: result.parentExternalId!,
+							title: result.parentTitle ?? result.publisher ?? result.title,
+						})
+					}
+				>
+					{result.subscribed ? 'Subscribed ✓' : subscribing === result.parentExternalId ? 'Subscribing…' : 'Subscribe to podcast'}
+				</button>
+			);
+		}
+		if (result.provider === 'youtube' && result.type === 'channel') {
+			return result.subscribed ? (
+				<span className="muted">Following ✓</span>
+			) : (
+				<button
+					className="ghost tiny"
+					type="button"
+					disabled={following === result.externalId}
+					onClick={() => void followYoutube(result)}
+				>
+					{following === result.externalId ? 'Following…' : 'Follow in VortiQuest'}
+				</button>
+			);
+		}
+		if (result.provider === 'youtube' && result.type === 'video' && result.parentExternalId) {
+			return (
+				<div className="discover-action-stack">
+					{result.watchUrl ? (
+						<a className="ghost tiny" href={result.watchUrl} target="_blank" rel="noreferrer">
+							Watch
+						</a>
+					) : null}
+					{result.subscribed ? (
+						<span className="muted">Following ✓</span>
+					) : (
+						<button
+							className="ghost tiny"
+							type="button"
+							disabled={following === result.parentExternalId}
+							onClick={() => void followYoutube(result)}
+						>
+							{following === result.parentExternalId ? 'Following…' : 'Follow channel'}
+						</button>
+					)}
+				</div>
+			);
+		}
+		return null;
+	}
+
+	function renderResult(result: DiscoveryResult) {
+		return (
+			<li key={`${result.provider}-${result.type}-${result.externalId}`} className="discover-result">
+				{result.imageUrl ? <img src={result.imageUrl} alt="" className="discover-thumb" /> : <span className="discover-thumb placeholder" />}
+				<div className="discover-result-body">
+					<span className={badgeClass(result)}>{typeLabel(result)}</span>
+					<strong className="video-title">{result.title}</strong>
+					{result.publisher && result.type !== 'channel' ? <small className="muted">{result.publisher}</small> : null}
+					{result.description ? <p className="muted discover-desc">{result.description}</p> : null}
+					{result.parentTitle ? <small className="muted">From {result.parentTitle}</small> : null}
+				</div>
+				<div className="discover-result-actions">{renderActions(result)}</div>
+			</li>
+		);
+	}
+
 	const filtered =
 		response?.results.filter((row) => {
 			if (filter === 'all') return true;
@@ -138,13 +294,15 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			</div>
 
 			{!response && !loading ? (
-				<p className="muted discover-hint">Search for podcasts, YouTube channels, videos, and live sources.</p>
+				<p className="muted discover-hint">Search for podcasts and YouTube channels. Submit search to query providers.</p>
 			) : null}
+
+			{response?.cached ? <p className="muted discover-hint">Showing cached Discover results.</p> : null}
 
 			{response?.warnings.length ? (
 				<div className="status-line warning">
 					{response.warnings.map((w) => (
-						<p key={w.provider}>{w.message}</p>
+						<p key={`${w.provider}-${w.message}`}>{w.message}</p>
 					))}
 				</div>
 			) : null}
@@ -153,58 +311,25 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				<p className="muted discover-hint">No results found for &ldquo;{response.query}&rdquo;.</p>
 			) : null}
 
-			<ul className="discover-results">
-				{filtered.map((result) => (
-					<li key={`${result.provider}-${result.type}-${result.externalId}`} className="discover-result">
-						{result.imageUrl ? <img src={result.imageUrl} alt="" className="discover-thumb" /> : <span className="discover-thumb placeholder" />}
-						<div className="discover-result-body">
-							<span className="badge podcast">{typeLabel(result)}</span>
-							<strong className="video-title">{result.title}</strong>
-							{result.publisher ? <small className="muted">{result.publisher}</small> : null}
-							{result.description ? <p className="muted discover-desc">{result.description}</p> : null}
-							{result.parentTitle ? (
-								<small className="muted">From {result.parentTitle}</small>
-							) : null}
-						</div>
-						<div className="discover-result-actions">
-							{result.type === 'podcast' ? (
-								result.subscribed ? (
-									<span className="muted">Subscribed ✓</span>
-								) : (
-									<button
-										className="ghost tiny"
-										type="button"
-										disabled={subscribing === result.externalId}
-										onClick={() => void subscribePodcast(result)}
-									>
-										{subscribing === result.externalId ? 'Subscribing…' : 'Subscribe'}
-									</button>
-								)
-							) : result.type === 'episode' && result.parentExternalId ? (
-								<button
-									className="ghost tiny"
-									type="button"
-									disabled={subscribing === result.parentExternalId || result.subscribed}
-									onClick={() =>
-										void subscribePodcast({
-											...result,
-											type: 'podcast',
-											externalId: result.parentExternalId!,
-											title: result.parentTitle ?? result.publisher ?? result.title,
-										})
-									}
-								>
-									{result.subscribed ? 'Subscribed ✓' : subscribing === result.parentExternalId ? 'Subscribing…' : 'Subscribe to podcast'}
-								</button>
-							) : null}
-						</div>
-					</li>
-				))}
-			</ul>
+			<ul className="discover-results">{filtered.map((result) => renderResult(result))}</ul>
 
-			<section className="discover-sections muted">
+			<section className="discover-sections">
 				<h2>Browse</h2>
-				<p>Podcasts, YouTube, Live, Categories, Popular, and Recently Added sections will appear here as providers are connected.</p>
+				{browse?.recentlyFollowed.length ? (
+					<div className="discover-section-block">
+						<h3>Recently followed in VortiQuest</h3>
+						<ul className="discover-results">{browse.recentlyFollowed.map((result) => renderResult(result))}</ul>
+					</div>
+				) : null}
+				{browse?.popularVideos.length ? (
+					<div className="discover-section-block">
+						<h3>Popular on YouTube</h3>
+						<ul className="discover-results">{browse.popularVideos.map((result) => renderResult(result))}</ul>
+					</div>
+				) : null}
+				{!browse?.recentlyFollowed.length && !browse?.popularVideos.length ? (
+					<p className="muted">Follow channels from search to see them here. Popular videos refresh every few hours.</p>
+				) : null}
 			</section>
 		</div>
 	);

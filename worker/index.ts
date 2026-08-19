@@ -29,7 +29,8 @@ import {
 	updatePodcastInboxNotes,
 	updatePodcastPrefs,
 } from './db/podcasts';
-import { discoverSearch, discoverSubscribePodcast } from './services/discover';
+import { discoverBrowse, discoverSearch, discoverSubscribePodcast } from './services/discover';
+import { followYoutubeChannel } from './services/discoverFollow';
 import { catchUpPodcast } from './services/podcastCatchup';
 import {
 	applyLiveLayout,
@@ -399,6 +400,38 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const q = url.searchParams.get('q') ?? '';
 		const filter = url.searchParams.get('filter');
 		return json(await discoverSearch(env, user.id, q, filter));
+	}
+
+	if (path === '/api/discover/browse' && request.method === 'GET') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		return json(await discoverBrowse(env, user.id));
+	}
+
+	if (path === '/api/discover/follow/youtube' && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const body = await readJson<{
+			channelId?: string;
+			title?: string;
+			description?: string;
+			thumbnailUrl?: string;
+		}>(request);
+		if (!body?.channelId) return apiError(400, 'invalid_channel', 'Missing channelId.');
+		try {
+			return json(
+				await followYoutubeChannel(env, user.id, {
+					channelId: body.channelId,
+					title: body.title,
+					description: body.description,
+					thumbnailUrl: body.thumbnailUrl,
+				}),
+			);
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : 'follow_failed';
+			if (msg === 'invalid_channel') return apiError(400, 'invalid_channel', 'Invalid channel.');
+			return apiError(500, 'follow_failed', msg);
+		}
 	}
 
 	if (path === '/api/discover/subscribe/podcast' && request.method === 'POST') {

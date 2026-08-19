@@ -29,6 +29,12 @@ export interface DiscoverSearchResponse {
 	searchedAt: string;
 }
 
+export interface DiscoverBrowseResponse {
+	recentlyFollowed: DiscoveryResult[];
+	popularVideos: DiscoveryResult[];
+	refreshedAt: string;
+}
+
 export interface PodcastSubscriptionRecord {
 	podcastId: string;
 	externalFeedId: number;

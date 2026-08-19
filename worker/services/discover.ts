@@ -1,16 +1,15 @@
-import type { DiscoverFilter, DiscoverSearchResponse, DiscoveryResult } from '../../src/types/discover';
+import type { DiscoverFilter, DiscoverBrowseResponse, DiscoverSearchResponse, DiscoveryResult } from '../../src/types/discover';
 import {
 	getSubscribedFeedIds,
 	listPodcastSubscriptions,
 	mockDiscoveryResults,
 	subscribePodcast,
 } from '../db/podcasts';
+import { discoverBrowse } from './discoverBrowse';
+import { followYoutubeChannel } from './discoverFollow';
 import { getPodcastFeedById, searchPodcastIndex } from './discover/podcastIndex';
+import { normalizeDiscoverQuery, searchYoutubeDiscover } from './discover/youtube';
 import { catchUpPodcast } from './podcastCatchup';
-
-function normalizeQuery(query: string): string {
-	return query.trim().replace(/\s+/g, ' ').toLowerCase();
-}
 
 function parseFilter(raw: string | null): DiscoverFilter {
 	if (raw === 'podcasts' || raw === 'youtube' || raw === 'live') return raw;
@@ -68,7 +67,7 @@ export async function discoverSearch(
 	filterParam: string | null,
 ): Promise<DiscoverSearchResponse> {
 	const filter = parseFilter(filterParam);
-	const normalized = normalizeQuery(query);
+	const normalized = normalizeDiscoverQuery(query);
 	if (!normalized) {
 		return { query: '', filter, results: [], warnings: [], cached: false, searchedAt: new Date().toISOString() };
 	}
@@ -76,6 +75,8 @@ export async function discoverSearch(
 	const subscribed = await getSubscribedFeedIds(env.DB, userId);
 	const warnings: DiscoverSearchResponse['warnings'] = [];
 	let results: DiscoveryResult[] = [];
+	let cached = false;
+	let searchedAt = new Date().toISOString();
 
 	if (filter === 'all' || filter === 'podcasts') {
 		if (env.MOCK_DATA === 'true' || !env.PODCAST_INDEX_KEY) {
@@ -93,13 +94,30 @@ export async function discoverSearch(
 		}
 	}
 
+	if (filter === 'all' || filter === 'youtube') {
+		try {
+			const youtube = await searchYoutubeDiscover(env, userId, query);
+			results.push(...youtube.results);
+			cached = youtube.cached;
+			searchedAt = youtube.searchedAt;
+			if (youtube.warning) {
+				warnings.push({ provider: 'youtube', message: youtube.warning });
+			}
+		} catch (err: unknown) {
+			warnings.push({
+				provider: 'youtube',
+				message: err instanceof Error ? err.message : 'YouTube search failed.',
+			});
+		}
+	}
+
 	return {
 		query: query.trim(),
 		filter,
 		results: filterResults(results, filter),
 		warnings,
-		cached: false,
-		searchedAt: new Date().toISOString(),
+		cached,
+		searchedAt,
 	};
 }
 
@@ -145,3 +163,5 @@ export async function listSubscriptions(env: Env, userId: string) {
 	const podcasts = await listPodcastSubscriptions(env.DB, userId);
 	return { podcasts };
 }
+
+export { discoverBrowse };

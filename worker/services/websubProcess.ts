@@ -26,7 +26,9 @@ const VIDEO_UPSERT = `INSERT INTO videos (
 const FANOUT_INBOX = `INSERT OR IGNORE INTO inbox_state (user_id, video_id, unread, starred, archived, hidden)
 	SELECT p.user_id, ?, 1, 0, 0, 0
 	FROM channel_prefs p
-	WHERE p.channel_id = ? AND p.is_subscribed = 1 AND p.follow_in_inbox = 1`;
+	JOIN videos v ON v.video_id = ?
+	WHERE p.channel_id = ? AND p.is_subscribed = 1 AND p.follow_in_inbox = 1
+	AND (p.newest_seen_published_at IS NULL OR v.published_at > p.newest_seen_published_at)`;
 
 export interface VideoDetails {
 	id?: string;
@@ -79,7 +81,7 @@ export async function upsertGlobalVideo(db: D1Database, video: VideoDetails): Pr
 }
 
 export async function fanoutInbox(db: D1Database, videoId: string, channelId: string): Promise<void> {
-	await db.prepare(FANOUT_INBOX).bind(videoId, channelId).run();
+	await db.prepare(FANOUT_INBOX).bind(videoId, videoId, channelId).run();
 }
 
 export const WEBSUB_EVENT_MAX_ATTEMPTS = 8;

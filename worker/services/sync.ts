@@ -216,13 +216,14 @@ export async function syncSubscriptions(
 			await env.DB.batch(
 				group.map((channelId) =>
 					env.DB.prepare(
-						`INSERT INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull, is_subscribed, last_subscription_sync_id, subscription_seen_at, unsubscribed_at)
-						 VALUES (?, ?, 1, 0, 1, ?, ?, NULL)
+						`INSERT INTO channel_prefs (user_id, channel_id, follow_in_inbox, max_videos_to_pull, is_subscribed, last_subscription_sync_id, subscription_seen_at, unsubscribed_at, follow_source)
+						 VALUES (?, ?, 1, 0, 1, ?, ?, NULL, 'youtube_sync')
 						 ON CONFLICT(user_id, channel_id) DO UPDATE SET
 							is_subscribed = 1,
 							last_subscription_sync_id = excluded.last_subscription_sync_id,
 							subscription_seen_at = excluded.subscription_seen_at,
-							unsubscribed_at = NULL`,
+							unsubscribed_at = NULL,
+							follow_source = 'youtube_sync'`,
 					).bind(userId, channelId, syncId, seenAt),
 				),
 			);
@@ -231,7 +232,8 @@ export async function syncSubscriptions(
 		await env.DB.prepare(
 			`UPDATE channel_prefs
 			 SET is_subscribed = 0, unsubscribed_at = ?
-			 WHERE user_id = ? AND is_subscribed = 1 AND (last_subscription_sync_id IS NULL OR last_subscription_sync_id != ?)`,
+			 WHERE user_id = ? AND is_subscribed = 1 AND follow_source = 'youtube_sync'
+			 AND (last_subscription_sync_id IS NULL OR last_subscription_sync_id != ?)`,
 		)
 			.bind(seenAt, userId, syncId)
 			.run();

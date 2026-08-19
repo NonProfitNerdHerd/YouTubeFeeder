@@ -671,3 +671,42 @@ export async function updateChannelPrefs(
 			.run();
 	}
 }
+
+export async function getSubscribedChannelIds(db: D1Database, userId: string): Promise<Set<string>> {
+	const rows = await db
+		.prepare(`SELECT channel_id FROM channel_prefs WHERE user_id = ? AND is_subscribed = 1`)
+		.bind(userId)
+		.all<{ channel_id: string }>();
+	return new Set((rows.results ?? []).map((row) => row.channel_id));
+}
+
+export async function listRecentlyDiscoverFollowed(
+	db: D1Database,
+	userId: string,
+	limit = 12,
+): Promise<Array<{ channelId: string; title: string; thumbnailUrl: string; description: string; followedAt: string }>> {
+	const rows = await db
+		.prepare(
+			`SELECT c.channel_id, c.title, c.thumbnail_url, c.description, p.subscription_seen_at
+			 FROM channel_prefs p
+			 JOIN channels c ON c.channel_id = p.channel_id
+			 WHERE p.user_id = ? AND p.is_subscribed = 1 AND p.follow_source = 'discover'
+			 ORDER BY p.subscription_seen_at DESC
+			 LIMIT ?`,
+		)
+		.bind(userId, limit)
+		.all<{
+			channel_id: string;
+			title: string;
+			thumbnail_url: string;
+			description: string;
+			subscription_seen_at: string | null;
+		}>();
+	return (rows.results ?? []).map((row) => ({
+		channelId: row.channel_id,
+		title: row.title,
+		thumbnailUrl: row.thumbnail_url,
+		description: row.description,
+		followedAt: row.subscription_seen_at ?? '',
+	}));
+}
