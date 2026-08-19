@@ -17,6 +17,7 @@ interface Env {
 	YOUTUBE_BACKFILL_CUTOFF?: string;
 	PODCAST_INDEX_KEY?: string;
 	PODCAST_INDEX_SECRET?: string;
+	DISCOVER_RELEVANCE_DEBUG?: string;
 }
 
 interface ExecutionContext {

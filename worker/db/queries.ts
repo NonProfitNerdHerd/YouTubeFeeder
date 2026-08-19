@@ -743,3 +743,84 @@ export async function listRecentInboxVideoTitles(db: D1Database, userId: string,
 		.all<{ title: string }>();
 	return (rows.results ?? []).map((row) => row.title).filter(Boolean);
 }
+
+export async function listInterestCategories(
+	db: D1Database,
+	userId: string,
+	minChannelCount = 2,
+): Promise<Array<{ id: string; name: string; channelCount: number }>> {
+	const rows = await db
+		.prepare(
+			`SELECT c.id, c.name, COUNT(cc.channel_id) AS channel_count
+			 FROM channel_categories cc
+			 JOIN categories c ON c.id = cc.category_id AND c.user_id = cc.user_id
+			 JOIN channel_prefs p ON p.user_id = cc.user_id AND p.channel_id = cc.channel_id AND p.is_subscribed = 1
+			 WHERE cc.user_id = ?
+			 GROUP BY c.id, c.name
+			 HAVING channel_count >= ?
+			 ORDER BY channel_count DESC, c.name COLLATE NOCASE`,
+		)
+		.bind(userId, minChannelCount)
+		.all<{ id: string; name: string; channel_count: number }>();
+	return (rows.results ?? []).map((row) => ({
+		id: row.id,
+		name: row.name,
+		channelCount: row.channel_count,
+	}));
+}
+
+export async function listCategoryChannelCorpus(
+	db: D1Database,
+	userId: string,
+	categoryId: string,
+): Promise<Array<{ channelId: string; title: string; description: string }>> {
+	const rows = await db
+		.prepare(
+			`SELECT ch.channel_id, ch.title, ch.description
+			 FROM channel_categories cc
+			 JOIN channel_prefs p ON p.user_id = cc.user_id AND p.channel_id = cc.channel_id AND p.is_subscribed = 1
+			 JOIN channels ch ON ch.channel_id = cc.channel_id
+			 WHERE cc.user_id = ? AND cc.category_id = ?`,
+		)
+		.bind(userId, categoryId)
+		.all<{ channel_id: string; title: string; description: string }>();
+	return (rows.results ?? []).map((row) => ({
+		channelId: row.channel_id,
+		title: row.title,
+		description: row.description ?? '',
+	}));
+}
+
+export async function listRecentInboxContentForChannels(
+	db: D1Database,
+	userId: string,
+	channelIds: string[],
+	limitPerChannel = 15,
+): Promise<Array<{ channelId: string; title: string; descriptionExcerpt: string }>> {
+	if (!channelIds.length) return [];
+	const placeholders = channelIds.map(() => '?').join(', ');
+	const rows = await db
+		.prepare(
+			`SELECT v.channel_id, v.title, v.description_excerpt, v.published_at
+			 FROM inbox_state i
+			 JOIN videos v ON v.video_id = i.video_id
+			 WHERE i.user_id = ? AND i.hidden = 0 AND v.channel_id IN (${placeholders})
+			 ORDER BY v.published_at DESC`,
+		)
+		.bind(userId, ...channelIds)
+		.all<{ channel_id: string; title: string; description_excerpt: string; published_at: string | null }>();
+
+	const counts = new Map<string, number>();
+	const out: Array<{ channelId: string; title: string; descriptionExcerpt: string }> = [];
+	for (const row of rows.results ?? []) {
+		const n = counts.get(row.channel_id) ?? 0;
+		if (n >= limitPerChannel) continue;
+		counts.set(row.channel_id, n + 1);
+		out.push({
+			channelId: row.channel_id,
+			title: row.title,
+			descriptionExcerpt: row.description_excerpt ?? '',
+		});
+	}
+	return out;
+}

@@ -124,6 +124,7 @@ export async function discoverBrowse(
 	env: Env,
 	userId: string,
 	tab: DiscoverBrowseTab = 'forYou',
+	opts?: { interestId?: string; includeDebug?: boolean },
 	now = new Date(),
 ): Promise<DiscoverBrowseResponse> {
 	const refreshedAt = now.toISOString();
@@ -135,12 +136,15 @@ export async function discoverBrowse(
 	};
 
 	if (tab === 'forYou') {
-		const forYouResult = await buildForYouRecommendations(env, userId, now);
+		const forYouResult = await buildForYouRecommendations(env, userId, opts, now);
 		return {
 			...empty,
 			forYou: forYouResult.forYou,
+			forYouInterests: forYouResult.forYouInterests,
 			forYouEmpty: forYouResult.forYouEmpty,
 			forYouMessage: forYouResult.forYouMessage,
+			forYouMetrics: opts?.includeDebug ? forYouResult.metrics : undefined,
+			forYouDebug: opts?.includeDebug ? forYouResult.debug : undefined,
 		};
 	}
 

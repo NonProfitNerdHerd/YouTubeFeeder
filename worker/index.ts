@@ -405,10 +405,13 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 	if (path === '/api/discover/browse' && request.method === 'GET') {
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
-		const tabParam = new URL(request.url).searchParams.get('tab');
+		const url = new URL(request.url);
+		const tabParam = url.searchParams.get('tab');
 		const tab =
 			tabParam === 'popular' || tabParam === 'recent' || tabParam === 'forYou' ? tabParam : 'forYou';
-		return json(await discoverBrowse(env, user.id, tab));
+		const interestId = url.searchParams.get('interest') ?? undefined;
+		const includeDebug = url.searchParams.get('debug') === '1' && env.DISCOVER_RELEVANCE_DEBUG === 'true';
+		return json(await discoverBrowse(env, user.id, tab, { interestId, includeDebug }));
 	}
 
 	if (path === '/api/discover/follow/youtube' && request.method === 'POST') {

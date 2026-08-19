@@ -69,6 +69,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [following, setFollowing] = useState<string | null>(null);
 	const [unfollowing, setUnfollowing] = useState<string | null>(null);
 	const [unfollowConfirm, setUnfollowConfirm] = useState<{ channelId: string; title: string } | null>(null);
+	const [forYouInterest, setForYouInterest] = useState<string>('all');
 
 	async function loadBrowseTab(tab: DiscoverBrowseTab) {
 		if (browseCache[tab]) return;
@@ -384,9 +385,13 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}) ?? [];
 
 	const activeBrowse = browseCache[browseTab];
+	const forYouInterests = activeBrowse?.forYouInterests ?? [];
+	const allForYou = activeBrowse?.forYou ?? [];
 	const browseResults =
 		browseTab === 'forYou'
-			? activeBrowse?.forYou ?? []
+			? forYouInterest === 'all'
+				? allForYou
+				: allForYou.filter((row) => row.interestId === forYouInterest)
 			: browseTab === 'popular'
 				? activeBrowse?.popularVideos ?? []
 				: activeBrowse?.recentlyFollowed ?? [];
@@ -464,6 +469,32 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 						</button>
 					))}
 				</div>
+
+				{browseTab === 'forYou' && forYouInterests.length ? (
+					<div className="discover-interest-chips" role="tablist" aria-label="For You interests">
+						<button
+							type="button"
+							className={forYouInterest === 'all' ? 'tab active' : 'tab'}
+							role="tab"
+							aria-selected={forYouInterest === 'all'}
+							onClick={() => setForYouInterest('all')}
+						>
+							All
+						</button>
+						{forYouInterests.map((interest) => (
+							<button
+								key={interest.id}
+								type="button"
+								className={forYouInterest === interest.id ? 'tab active' : 'tab'}
+								role="tab"
+								aria-selected={forYouInterest === interest.id}
+								onClick={() => setForYouInterest(interest.id)}
+							>
+								{interest.label}
+							</button>
+						))}
+					</div>
+				) : null}
 
 				{browseLoading && !activeBrowse ? <p className="muted discover-hint">Loading browse…</p> : null}
 

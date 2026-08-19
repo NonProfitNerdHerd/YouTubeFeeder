@@ -7,3 +7,5 @@ YOUTUBE_API_KEY=
 PODCAST_INDEX_KEY=
 PODCAST_INDEX_SECRET=
 MOCK_DATA=true
+# Set to true locally to log For You relevance metrics and enable ?debug=1 on browse API
+DISCOVER_RELEVANCE_DEBUG=false

@@ -1250,7 +1250,8 @@
 }
 
 .discover-filters .tab,
-.discover-browse-tabs .tab {
+.discover-browse-tabs .tab,
+.discover-interest-chips .tab {
 	border-radius: 999px;
 	padding: 10px 18px;
 	font-size: 0.94rem;
@@ -1262,7 +1263,8 @@
 }
 
 .discover-filters .tab.active,
-.discover-browse-tabs .tab.active {
+.discover-browse-tabs .tab.active,
+.discover-interest-chips .tab.active {
 	background: #243044;
 	border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
@@ -1433,6 +1435,14 @@
 	flex-wrap: wrap;
 	gap: 10px;
 	margin: 4px 0 20px;
+	padding: 2px 0;
+}
+
+.discover-interest-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin: 0 0 20px;
 	padding: 2px 0;
 }
 

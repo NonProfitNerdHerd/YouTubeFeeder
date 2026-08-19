@@ -31,8 +31,11 @@ export interface DiscoverSearchResponse {
 
 export interface DiscoverBrowseResponse {
 	forYou: DiscoverRecommendation[];
+	forYouInterests?: DiscoverInterest[];
 	forYouEmpty?: boolean;
 	forYouMessage?: string;
+	forYouMetrics?: ForYouMetrics;
+	forYouDebug?: CandidateScoreDebug[];
 	popularVideos: DiscoveryResult[];
 	recentlyFollowed: DiscoveryResult[];
 	refreshedAt: string;
@@ -40,8 +43,35 @@ export interface DiscoverBrowseResponse {
 
 export type DiscoverBrowseTab = 'forYou' | 'popular' | 'recent';
 
+export interface DiscoverInterest {
+	id: string;
+	label: string;
+	confidence: number;
+}
+
+export interface ForYouMetrics {
+	retrieved: number;
+	rejected: number;
+	accepted: number;
+	interestsRepresented: number;
+	searchCalls: number;
+}
+
+export interface CandidateScoreDebug {
+	candidateTitle: string;
+	candidateId: string;
+	interestId: string;
+	interestLabel: string;
+	positive: string[];
+	negative: string[];
+	score: number;
+	threshold: number;
+	result: 'ACCEPT' | 'REJECT';
+}
+
 export interface DiscoverRecommendation extends DiscoveryResult {
 	recommendationReason?: string;
+	interestId?: string;
 }
 
 export interface PodcastSubscriptionRecord {

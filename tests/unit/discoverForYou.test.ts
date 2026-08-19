@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { asEnv, MemorySyncDb } from './helpers/memorySyncDb';
 import { buildForYouRecommendations } from '../../worker/services/discover/forYou';
 import { buildInterestProfile } from '../../worker/services/discover/interestProfile';
+import { buildInterestFingerprints } from '../../worker/services/discover/interestFingerprint';
+import { buildInterestSearchQuery } from '../../worker/services/discover/queryConstruction';
 import { getTopicCandidates, normalizeTopic } from '../../worker/services/discover/topicDiscovery';
 import { discoverBrowse } from '../../worker/services/discoverBrowse';
 import {
@@ -12,17 +14,31 @@ import {
 import * as youtubeModule from '../../worker/services/youtube';
 import type { YoutubeClient } from '../../worker/services/youtube';
 
-async function seedTopicCache(db: MemorySyncDb, topic: string, results: unknown[], now: Date) {
+async function seedTopicCache(db: MemorySyncDb, cacheKey: string, results: unknown[], now: Date) {
 	await db.prepare(
 		`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
 	)
-		.bind(normalizeTopic(topic), JSON.stringify(results), now.toISOString(), new Date(now.getTime() + 60_000).toISOString())
+		.bind(cacheKey, JSON.stringify(results), now.toISOString(), new Date(now.getTime() + 60_000).toISOString())
 		.run();
 }
 
-async function seedStormTopicCaches(db: MemorySyncDb, now: Date, results: unknown[]) {
-	await seedTopicCache(db, 'storm', results, now);
-	await seedTopicCache(db, 'chasing', results, now);
+async function seedInterestQueryCache(db: MemorySyncDb, userId: string, now: Date, results: unknown[]) {
+	const fps = await buildInterestFingerprints(db as unknown as D1Database, userId);
+	expect(fps.length).toBeGreaterThan(0);
+	const fp = fps[0]!;
+	const cacheKey = normalizeTopic(buildInterestSearchQuery(fp));
+	await seedTopicCache(db, cacheKey, results, now);
+	return { cacheKey, fingerprint: fp };
+}
+
+function weatherChannel(externalId: string, title: string) {
+	return {
+		provider: 'youtube',
+		type: 'channel',
+		externalId,
+		title,
+		description: 'Storm chasing tornado severe weather meteorology supercells forecasting intercepts',
+	};
 }
 
 const CHANNEL = 'UCxxxxxxxxxxxxxxxxxxxxxx';
@@ -53,9 +69,9 @@ function mockYt(handler: YoutubeClient['getJson']): YoutubeClient {
 function seedSubscribedUser(db: MemorySyncDb, userId = 'user-1') {
 	db.seedUser(userId);
 	for (const [id, title, description] of [
-		['ch-1', 'Storm Chasing Daily', 'Tornado and weather chase footage'],
-		['ch-2', 'Tech Review Hub', 'Technology gadgets and reviews'],
-		['ch-3', 'Auto Enthusiast', 'Cars and automotive content'],
+		['ch-1', 'Storm Chasing Daily', 'Tornado and severe weather chase footage from tornado alley'],
+		['ch-2', 'Meteorology Hub', 'Technology gadgets and severe weather forecasting reviews'],
+		['ch-3', 'Supercell Tracker', 'Storm chasing supercells and convective meteorology'],
 	] as const) {
 		db.channels.set(id, {
 			channel_id: id,
@@ -81,17 +97,23 @@ function seedStormChasingCategory(db: MemorySyncDb, userId = 'user-1') {
 }
 
 describe('interest profile', () => {
-	it('weights categories highest and strips stop words', async () => {
+	it('weights categories highest and preserves multi-word phrases', async () => {
 		const db = new MemorySyncDb();
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
 		db.inbox.set('user-1:vid-1', { user_id: 'user-1', video_id: 'vid-1', hidden: 0 });
-		db.videos.set('vid-1', { video_id: 'vid-1', channel_id: 'ch-1', title: 'Live tornado chase video today', published_at: '2026-08-19T00:00:00Z' });
+		db.videos.set('vid-1', {
+			video_id: 'vid-1',
+			channel_id: 'ch-1',
+			title: 'Live tornado chase video today',
+			published_at: '2026-08-19T00:00:00Z',
+		});
 
 		const topics = await buildInterestProfile(db as unknown as D1Database, 'user-1');
-		expect(topics.length).toBeGreaterThanOrEqual(2);
-		const storm = topics.find((t) => t.topic === 'storm' || t.reasonLabel === 'Storm Chasing');
+		expect(topics.length).toBeGreaterThanOrEqual(1);
+		const storm = topics.find((t) => t.reasonLabel === 'Storm Chasing');
 		expect(storm?.source).toBe('category');
+		expect(storm?.topic).toMatch(/storm|tornado|weather|meteorology|supercell/);
 		expect(storm?.score).toBeGreaterThan(3);
 		expect(topics.some((t) => t.topic === 'video')).toBe(false);
 	});
@@ -137,7 +159,16 @@ describe('topic discovery cache', () => {
 			if (path !== 'search') throw new Error(`unexpected:${path}`);
 			const q = String(params?.q ?? '');
 			return {
-				items: [{ id: { channelId: `${q}-ch` }, snippet: { title: `${q} Channel`, thumbnails: {} } }],
+				items: [
+					{
+						id: { channelId: `${q.slice(0, 8)}-ch` },
+						snippet: {
+							title: 'Storm Chaser Live',
+							description: 'Storm chasing tornado severe weather meteorology supercells',
+							thumbnails: {},
+						},
+					},
+				],
 			};
 		});
 		vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient').mockReturnValue(yt);
@@ -205,55 +236,38 @@ describe('For You assembly', () => {
 		const now = new Date('2026-08-19T12:00:00Z');
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
-		db.prefs.set('user-1:ch-1', { user_id: 'user-1', channel_id: 'ch-1', is_subscribed: 1, follow_in_inbox: 1 });
 
-		const dupChannel = { provider: 'youtube', type: 'channel', externalId: CHANNEL_B, title: 'Dup Channel' };
-		await db.prepare(
-			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
-		)
-			.bind(
-				normalizeTopic('storm'),
-				JSON.stringify([dupChannel, dupChannel, { ...dupChannel, title: 'Dup Channel Alt' }]),
-				now.toISOString(),
-				new Date(now.getTime() + 60_000).toISOString(),
-			)
-			.run();
-		await db.prepare(
-			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
-		)
-			.bind(
-				normalizeTopic('chasing'),
-				JSON.stringify([{ provider: 'youtube', type: 'channel', externalId: CHANNEL_B, title: 'Dup Channel Stronger' }]),
-				now.toISOString(),
-				new Date(now.getTime() + 60_000).toISOString(),
-			)
-			.run();
+		const dupChannel = weatherChannel(CHANNEL_B, 'Dup Channel');
+		await seedInterestQueryCache(db, 'user-1', now, [dupChannel, dupChannel, { ...dupChannel, title: 'Dup Channel Alt' }]);
 
-		const result = await buildForYouRecommendations(env, 'user-1', now);
+		const result = await buildForYouRecommendations(env, 'user-1', undefined, now);
 		expect(result.forYou.some((r) => r.externalId === 'ch-1')).toBe(false);
 		expect(result.forYou.filter((r) => r.externalId === CHANNEL_B)).toHaveLength(1);
 	});
 
-	it('caps diversity at four recommendations per topic', async () => {
+	it('rejects weak matches and caps accepted results per interest', async () => {
 		const db = new MemorySyncDb();
 		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
 		const now = new Date('2026-08-19T12:00:00Z');
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
 
-		const many = Array.from({ length: 8 }, (_, i) => ({
+		const many = Array.from({ length: 8 }, (_, i) => weatherChannel(`UCtopic${i}`, `Storm Channel ${i}`));
+		const weak = {
 			provider: 'youtube',
 			type: 'channel',
-			externalId: `UCtopic${i}`,
-			title: `Storm Channel ${i}`,
-		}));
-		await seedStormTopicCaches(db, now, many);
+			externalId: 'UCweak',
+			title: 'STORM Records',
+			description: 'Music producer records songs and studio sessions',
+		};
+		await seedInterestQueryCache(db, 'user-1', now, [...many, weak]);
 
 		const spy = vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient');
-		const result = await buildForYouRecommendations(env, 'user-1', now);
+		const result = await buildForYouRecommendations(env, 'user-1', undefined, now);
 		expect(spy).not.toHaveBeenCalled();
-		const stormReason = result.forYou.filter((r) => r.recommendationReason?.includes('Storm Chasing'));
-		expect(stormReason.length).toBeLessThanOrEqual(8);
+		expect(result.forYou.some((r) => r.externalId === 'UCweak')).toBe(false);
+		expect(result.forYou.length).toBeLessThanOrEqual(8);
+		expect(result.metrics.rejected).toBeGreaterThan(0);
 		spy.mockRestore();
 	});
 
@@ -277,13 +291,12 @@ describe('browse tabs', () => {
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
 		const now = new Date('2026-08-19T12:00:00Z');
-		await seedStormTopicCaches(db, now, [
-			{ provider: 'youtube', type: 'channel', externalId: CHANNEL_C, title: 'For You Channel' },
-		]);
+		await seedInterestQueryCache(db, 'user-1', now, [weatherChannel(CHANNEL_C, 'For You Channel')]);
 
 		const spy = vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient');
-		const forYou = await discoverBrowse(env, 'user-1', 'forYou', now);
+		const forYou = await discoverBrowse(env, 'user-1', 'forYou', undefined, now);
 		expect(forYou.forYou.some((r) => r.externalId === CHANNEL_C)).toBe(true);
+		expect(forYou.forYouInterests?.some((i) => i.label === 'Storm Chasing')).toBe(true);
 		expect(forYou.popularVideos).toHaveLength(0);
 		expect(spy).not.toHaveBeenCalled();
 		spy.mockRestore();

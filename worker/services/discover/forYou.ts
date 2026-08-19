@@ -1,46 +1,68 @@
 import type { DiscoverRecommendation } from '../../../src/types/discover';
-import { getTopicDiscoveryCache } from '../../db/discoverCache';
 import { getSubscribedChannelIds } from '../../db/queries';
-import { buildInterestProfile, isInterestProfileEmpty, type InterestTopic } from './interestProfile';
-import { normalizeTopic, refreshTopicCaches } from './topicDiscovery';
+import {
+	scoreCandidateAgainstFingerprint,
+	scoreCandidatesForInterest,
+	type CandidateScoreDebug,
+	type ScoredCandidate,
+} from './candidateScoring';
+import { buildInterestFingerprints, isInterestFingerprintEmpty } from './interestFingerprint';
+import { buildInterestSearchQuery, interestQueryCacheKey } from './queryConstruction';
+import { loadCachedQueryResults, refreshQueryCaches } from './topicDiscovery';
 
 const MAX_FOR_YOU = 30;
-const MAX_PER_TOPIC = 8;
-const TOPICS_FOR_REFRESH = 2;
-const TOPICS_TO_MERGE = 6;
+const MAX_PER_INTEREST = 8;
+const INTERESTS_FOR_REFRESH = 2;
+const INTERESTS_TO_MERGE = 6;
 
-function recommendationReason(topic: InterestTopic): string {
-	if (topic.source === 'category') return `Because you follow ${topic.reasonLabel}`;
-	return `Related to ${topic.reasonLabel}`;
+export interface ForYouMetrics {
+	retrieved: number;
+	rejected: number;
+	accepted: number;
+	interestsRepresented: number;
+	searchCalls: number;
 }
 
-function dedupeCandidates(
-	candidates: Array<{ result: DiscoverRecommendation; topicScore: number; topicKey: string }>,
-): Array<{ result: DiscoverRecommendation; topicKey: string }> {
-	const byId = new Map<string, { result: DiscoverRecommendation; topicScore: number; topicKey: string }>();
-	for (const candidate of candidates) {
-		const existing = byId.get(candidate.result.externalId);
-		if (!existing || candidate.topicScore > existing.topicScore) {
-			byId.set(candidate.result.externalId, candidate);
+export interface ForYouInterest {
+	id: string;
+	label: string;
+	confidence: number;
+}
+
+export interface ForYouResult {
+	forYou: DiscoverRecommendation[];
+	forYouInterests: ForYouInterest[];
+	forYouEmpty: boolean;
+	forYouMessage?: string;
+	metrics: ForYouMetrics;
+	debug?: CandidateScoreDebug[];
+}
+
+function dedupeScored(scored: ScoredCandidate[]): ScoredCandidate[] {
+	const byId = new Map<string, ScoredCandidate>();
+	for (const row of scored) {
+		const existing = byId.get(row.result.externalId);
+		if (!existing || row.score > existing.score) {
+			byId.set(row.result.externalId, row);
 		}
 	}
-	return [...byId.values()].map(({ result, topicKey }) => ({ result, topicKey }));
+	return [...byId.values()].sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
 }
 
-function diversifyByTopic(
+function diversifyByInterest(
 	grouped: Map<string, DiscoverRecommendation[]>,
 	maxTotal = MAX_FOR_YOU,
-	maxPerTopic = MAX_PER_TOPIC,
+	maxPerInterest = MAX_PER_INTEREST,
 ): DiscoverRecommendation[] {
-	const topicKeys = [...grouped.keys()];
+	const keys = [...grouped.keys()];
 	const picked: DiscoverRecommendation[] = [];
 	const counts = new Map<string, number>();
 
 	while (picked.length < maxTotal) {
 		let added = false;
-		for (const key of topicKeys) {
+		for (const key of keys) {
 			const count = counts.get(key) ?? 0;
-			if (count >= maxPerTopic) continue;
+			if (count >= maxPerInterest) continue;
 			const list = grouped.get(key) ?? [];
 			const next = list[count];
 			if (!next) continue;
@@ -55,67 +77,115 @@ function diversifyByTopic(
 	return picked;
 }
 
-export interface ForYouResult {
-	forYou: DiscoverRecommendation[];
-	forYouEmpty: boolean;
-	forYouMessage?: string;
+function toRecommendation(row: ScoredCandidate): DiscoverRecommendation {
+	return {
+		...row.result,
+		subscribed: false,
+		recommendationReason: row.recommendationReason,
+		interestId: row.interestId,
+	};
 }
 
-export async function buildForYouRecommendations(env: Env, userId: string, now = new Date()): Promise<ForYouResult> {
-	const topics = await buildInterestProfile(env.DB, userId);
-	if (isInterestProfileEmpty(topics)) {
+export async function buildForYouRecommendations(
+	env: Env,
+	userId: string,
+	opts?: { interestId?: string; includeDebug?: boolean },
+	now = new Date(),
+): Promise<ForYouResult> {
+	const fingerprints = await buildInterestFingerprints(env.DB, userId);
+	const emptyMetrics: ForYouMetrics = {
+		retrieved: 0,
+		rejected: 0,
+		accepted: 0,
+		interestsRepresented: 0,
+		searchCalls: 0,
+	};
+
+	if (isInterestFingerprintEmpty(fingerprints)) {
 		return {
 			forYou: [],
+			forYouInterests: [],
 			forYouEmpty: true,
 			forYouMessage: 'Follow and categorize channels to improve For You.',
+			metrics: emptyMetrics,
 		};
 	}
 
+	const interests: ForYouInterest[] = fingerprints.map((fp) => ({
+		id: fp.interestId,
+		label: fp.label,
+		confidence: fp.confidence,
+	}));
+
+	const mergeFingerprints = fingerprints.slice(0, INTERESTS_TO_MERGE);
+	const refreshQueries = mergeFingerprints.slice(0, INTERESTS_FOR_REFRESH).map((fp) => buildInterestSearchQuery(fp));
+	const { cacheByKey, searchCalls } = await refreshQueryCaches(env, refreshQueries, now, INTERESTS_FOR_REFRESH);
+
 	const subscribed = await getSubscribedChannelIds(env.DB, userId);
-	const refreshTopics = topics.slice(0, TOPICS_FOR_REFRESH).map((t) => t.topic);
-	const mergeTopics = topics.slice(0, TOPICS_TO_MERGE);
+	const debugRows: CandidateScoreDebug[] = [];
+	let retrieved = 0;
+	let rejected = 0;
+	const allAccepted: ScoredCandidate[] = [];
 
-	const cacheByTopic = await refreshTopicCaches(env, refreshTopics, now);
-	for (const topic of mergeTopics.slice(TOPICS_FOR_REFRESH)) {
-		const normalized = normalizeTopic(topic.topic);
-		if (!normalized || cacheByTopic.has(normalized)) continue;
-		const cached = await getTopicDiscoveryCache(env.DB, normalized, now);
-		cacheByTopic.set(normalized, cached?.results ?? []);
-	}
+	for (const fingerprint of mergeFingerprints) {
+		if (opts?.interestId && fingerprint.interestId !== opts.interestId) continue;
 
-	const rawCandidates: Array<{ result: DiscoverRecommendation; topicScore: number; topicKey: string }> = [];
-
-	for (const topic of mergeTopics) {
-		const normalized = normalizeTopic(topic.topic);
-		const results = cacheByTopic.get(normalized) ?? [];
-		for (const row of results) {
-			if (subscribed.has(row.externalId)) continue;
-			rawCandidates.push({
-				result: {
-					...row,
-					subscribed: false,
-					recommendationReason: recommendationReason(topic),
-				},
-				topicScore: topic.score,
-				topicKey: normalized,
-			});
+		const query = buildInterestSearchQuery(fingerprint);
+		const cacheKey = interestQueryCacheKey(fingerprint);
+		let candidates = cacheByKey.get(cacheKey) ?? [];
+		if (!candidates.length) {
+			candidates = await loadCachedQueryResults(env, query, now);
 		}
+
+		const filtered = candidates.filter((row) => !subscribed.has(row.externalId));
+		retrieved += filtered.length;
+
+		if (opts?.includeDebug) {
+			for (const candidate of filtered) {
+				const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
+				debugRows.push(scored.debug);
+			}
+		}
+
+		const scored = scoreCandidatesForInterest(filtered, fingerprint);
+		rejected += filtered.length - scored.length;
+		allAccepted.push(...scored);
 	}
 
-	const deduped = dedupeCandidates(rawCandidates);
+	const deduped = dedupeScored(allAccepted);
 	const grouped = new Map<string, DiscoverRecommendation[]>();
-
-	for (const entry of deduped) {
-		const list = grouped.get(entry.topicKey) ?? [];
-		list.push(entry.result);
-		grouped.set(entry.topicKey, list);
+	for (const row of deduped) {
+		const list = grouped.get(row.interestId) ?? [];
+		list.push(toRecommendation(row));
+		grouped.set(row.interestId, list);
 	}
 
-	const forYou = diversifyByTopic(grouped);
+	const forYou = opts?.interestId
+		? deduped.filter((row) => row.interestId === opts.interestId).map(toRecommendation)
+		: diversifyByInterest(grouped);
+
+	const metrics: ForYouMetrics = {
+		retrieved,
+		rejected,
+		accepted: forYou.length,
+		interestsRepresented: new Set(forYou.map((row) => row.interestId).filter(Boolean)).size,
+		searchCalls,
+	};
+
+	if (env.DISCOVER_RELEVANCE_DEBUG === 'true') {
+		console.log(
+			`ForYou metrics: Retrieved=${metrics.retrieved} Rejected=${metrics.rejected} Accepted=${metrics.accepted} Interests=${metrics.interestsRepresented} search.list=${metrics.searchCalls}`,
+		);
+	}
 
 	return {
 		forYou,
+		forYouInterests: interests,
 		forYouEmpty: forYou.length === 0,
-		forYouMessage: forYou.length === 0 ? 'Follow and categorize channels to improve For You.' : undefined,
+		forYouMessage: forYou.length === 0 ? 'No strong matches yet. Follow and categorize more channels to improve For You.' : undefined,
+		metrics,
+		debug: opts?.includeDebug ? debugRows : undefined,
 	};
 }
+
+export { scoreCandidateAgainstFingerprint } from './candidateScoring';

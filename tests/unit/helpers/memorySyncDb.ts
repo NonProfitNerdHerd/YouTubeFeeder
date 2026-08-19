@@ -922,7 +922,65 @@ export class MemorySyncDb {
 			}
 			return [...counts.entries()].map(([name, channel_count]) => ({ name, channel_count }));
 		}
-		if (normalized.includes('FROM inbox_state i') && normalized.includes('JOIN videos v ON v.video_id = i.video_id')) {
+		if (normalized.includes('SELECT c.id, c.name, COUNT(cc.channel_id) AS channel_count')) {
+			const userId = String(bound[0]);
+			const minCount = Number(bound[1] ?? 2);
+			const counts = new Map<string, { id: string; name: string; channel_count: number }>();
+			for (const row of this.channelCategories) {
+				if (row.user_id !== userId) continue;
+				const cat = this.categories.get(String(row.category_id));
+				if (!cat) continue;
+				const pref = this.prefs.get(prefKey(userId, String(row.channel_id)));
+				if (!pref || pref.is_subscribed !== 1) continue;
+				const key = String(cat.id);
+				const existing = counts.get(key) ?? { id: key, name: String(cat.name), channel_count: 0 };
+				existing.channel_count += 1;
+				counts.set(key, existing);
+			}
+			return [...counts.values()].filter((row) => row.channel_count >= minCount);
+		}
+		if (normalized.includes('FROM channel_categories cc') && normalized.includes('cc.category_id = ?')) {
+			const userId = String(bound[0]);
+			const categoryId = String(bound[1]);
+			return this.channelCategories
+				.filter((row) => row.user_id === userId && row.category_id === categoryId)
+				.map((row) => {
+					const ch = this.channels.get(String(row.channel_id));
+					const pref = this.prefs.get(prefKey(userId, String(row.channel_id)));
+					if (!pref || pref.is_subscribed !== 1 || !ch) return null;
+					return {
+						channel_id: row.channel_id,
+						title: ch.title ?? row.channel_id,
+						description: ch.description ?? '',
+					};
+				})
+				.filter(Boolean);
+		}
+		if (normalized.includes('FROM inbox_state i') && normalized.includes('description_excerpt')) {
+			const userId = String(bound[0]);
+			const channelIds = bound.slice(1).map(String);
+			const allowed = new Set(channelIds);
+			const counts = new Map<string, number>();
+			return [...this.inbox.values()]
+				.filter((row) => row.user_id === userId && row.hidden !== 1)
+				.map((row) => {
+					const video = this.videos.get(String(row.video_id));
+					if (!video || !allowed.has(String(video.channel_id))) return null;
+					const channelId = String(video.channel_id);
+					const n = counts.get(channelId) ?? 0;
+					if (n >= 15) return null;
+					counts.set(channelId, n + 1);
+					return {
+						channel_id: channelId,
+						title: video.title ?? '',
+						description_excerpt: video.description_excerpt ?? '',
+						published_at: video.published_at ?? '',
+					};
+				})
+				.filter(Boolean)
+				.sort((a, b) => String((b as Row).published_at).localeCompare(String((a as Row).published_at)));
+		}
+		if (normalized.includes('FROM inbox_state i') && normalized.includes('JOIN videos v ON v.video_id = i.video_id') && normalized.includes('LIMIT ?')) {
 			const userId = String(bound[0]);
 			const limit = Number(bound[1] ?? 50);
 			return [...this.inbox.values()]
