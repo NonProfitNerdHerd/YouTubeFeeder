@@ -1,15 +1,17 @@
 import type { DiscoverRecommendation, DiscoveryResult } from '../../../src/types/discover';
+import { loadActiveFeedbackRows, loadActiveSuppressions } from '../../db/recommendationFeedback';
 import { getSubscribedChannelIds } from '../../db/queries';
 import {
 	MIN_ACCEPT_SCORE,
 	MIN_EXPAND_SCORE,
 	scoreCandidateAgainstFingerprint,
-	scoreCandidatesForInterest,
 	type CandidateScoreDebug,
 	type ScoredCandidate,
 } from './candidateScoring';
+import { buildFeedbackAdjustmentIndex, computeFeedbackAdjustment } from './feedbackScoring';
 import { buildInterestFingerprints, isInterestFingerprintEmpty, type InterestFingerprint } from './interestFingerprint';
-import { buildInterestSearchQuery, interestQueryCacheKey } from './queryConstruction';
+import { buildInterestSearchQuery } from './queryConstruction';
+import { mintTokenForScoredCandidate } from './recommendationFeedbackService';
 import {
 	fetchNextInterestPage,
 	getInterestNextPageToken,
@@ -56,6 +58,10 @@ export interface ForYouResult {
 	debug?: CandidateScoreDebug[];
 }
 
+function suppressionKey(provider: string, externalId: string): string {
+	return `${provider}:${externalId}`;
+}
+
 function dedupeScored(scored: ScoredCandidate[]): ScoredCandidate[] {
 	const byId = new Map<string, ScoredCandidate>();
 	for (const row of scored) {
@@ -67,36 +73,76 @@ function dedupeScored(scored: ScoredCandidate[]): ScoredCandidate[] {
 	return [...byId.values()].sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
 }
 
-function toRecommendation(row: ScoredCandidate): DiscoverRecommendation {
-	return {
+async function toRecommendation(
+	secret: string | undefined,
+	userId: string,
+	row: ScoredCandidate,
+	fingerprint: InterestFingerprint,
+): Promise<DiscoverRecommendation> {
+	const base: DiscoverRecommendation = {
 		...row.result,
 		subscribed: false,
 		recommendationReason: row.recommendationReason,
 		interestId: row.interestId,
+		interestLabel: row.interestLabel,
 	};
+	if (secret) {
+		base.recommendationToken = await mintTokenForScoredCandidate(secret, userId, row, fingerprint);
+	}
+	return base;
+}
+
+function applyFeedbackToCandidate(
+	candidate: DiscoveryResult,
+	fingerprint: InterestFingerprint,
+	feedbackIndex: ReturnType<typeof buildFeedbackAdjustmentIndex>,
+	includeDebug: boolean,
+	debugRows: CandidateScoreDebug[] | undefined,
+): ScoredCandidate {
+	const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
+	const adjustment = computeFeedbackAdjustment(scored.debug, feedbackIndex);
+	const finalScore = scored.score + adjustment.total;
+	const adjusted: ScoredCandidate = {
+		...scored,
+		score: finalScore,
+		debug: {
+			...scored.debug,
+			score: finalScore,
+			baseScore: scored.score,
+			feedbackPositive: adjustment.positive,
+			feedbackNegative: adjustment.negative,
+			finalScore,
+			contributingFeedbackIds: adjustment.contributingFeedbackIds,
+			result: finalScore >= MIN_ACCEPT_SCORE ? 'ACCEPT' : 'REJECT',
+		},
+	};
+	if (includeDebug && debugRows) {
+		debugRows.push(adjusted.debug);
+	}
+	return adjusted;
 }
 
 function scoreFingerprintCandidates(
 	fingerprint: InterestFingerprint,
 	candidates: DiscoveryResult[],
+	feedbackIndex: ReturnType<typeof buildFeedbackAdjustmentIndex>,
 	debugRows: CandidateScoreDebug[] | undefined,
 	includeDebug: boolean,
 ): { primary: ScoredCandidate[]; extended: ScoredCandidate[]; retrieved: number; rejected: number } {
-	const filtered = candidates;
-	if (includeDebug && debugRows) {
-		for (const candidate of filtered) {
-			debugRows.push(scoreCandidateAgainstFingerprint(candidate, fingerprint).debug);
-		}
-	}
-	const primary = scoreCandidatesForInterest(filtered, fingerprint, { minScore: MIN_ACCEPT_SCORE });
-	const extended = scoreCandidatesForInterest(filtered, fingerprint, { minScore: MIN_EXPAND_SCORE }).filter(
-		(row) => row.score < MIN_ACCEPT_SCORE,
+	const scored = candidates.map((candidate) =>
+		applyFeedbackToCandidate(candidate, fingerprint, feedbackIndex, includeDebug, debugRows),
 	);
+	const primary = scored
+		.filter((row) => row.score >= MIN_ACCEPT_SCORE)
+		.sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
+	const extended = scored
+		.filter((row) => row.score >= MIN_EXPAND_SCORE && row.score < MIN_ACCEPT_SCORE)
+		.sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
 	return {
 		primary,
 		extended,
-		retrieved: filtered.length,
-		rejected: filtered.length - primary.length - extended.length,
+		retrieved: candidates.length,
+		rejected: candidates.length - primary.length - extended.length,
 	};
 }
 
@@ -177,35 +223,56 @@ export async function buildForYouRecommendations(
 		searchCalls += refreshed.searchCalls;
 	}
 
-	const subscribed = await getSubscribedChannelIds(env.DB, userId);
+	const [subscribed, suppressions, feedbackRows] = await Promise.all([
+		getSubscribedChannelIds(env.DB, userId),
+		loadActiveSuppressions(env.DB, userId),
+		loadActiveFeedbackRows(env.DB, userId),
+	]);
+	const feedbackIndex = buildFeedbackAdjustmentIndex(feedbackRows);
 	const debugRows: CandidateScoreDebug[] = [];
 	let retrieved = 0;
 	let rejected = 0;
-	const allPrimary: ScoredCandidate[] = [];
-	const allExtended: ScoredCandidate[] = [];
+	const allPrimary: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> = [];
+	const allExtended: Array<{ row: ScoredCandidate; fingerprint: InterestFingerprint }> = [];
 
 	for (const fingerprint of activeFingerprints) {
 		const query = buildInterestSearchQuery(fingerprint);
-		const candidates = (await loadCachedQueryResults(env, query, now)).filter((row) => !subscribed.has(row.externalId));
+		const candidates = (await loadCachedQueryResults(env, query, now)).filter(
+			(row) =>
+				!subscribed.has(row.externalId) &&
+				!suppressions.has(suppressionKey(row.provider, row.externalId)),
+		);
 		const scored = scoreFingerprintCandidates(
 			fingerprint,
 			candidates,
+			feedbackIndex,
 			opts?.includeDebug ? debugRows : undefined,
 			Boolean(opts?.includeDebug),
 		);
 		retrieved += scored.retrieved;
 		rejected += scored.rejected;
-		allPrimary.push(...scored.primary);
-		allExtended.push(...scored.extended);
+		for (const row of scored.primary) allPrimary.push({ row, fingerprint });
+		for (const row of scored.extended) allExtended.push({ row, fingerprint });
 	}
 
-	const primaryDeduped = dedupeScored(allPrimary);
+	const primaryDeduped = dedupeScored(allPrimary.map((entry) => entry.row));
 	const primaryIds = new Set(primaryDeduped.map((row) => row.result.externalId));
-	const extendedDeduped = dedupeScored(allExtended).filter((row) => !primaryIds.has(row.result.externalId));
-	const pool = [...primaryDeduped, ...extendedDeduped];
-	const page = pool.slice(offset, offset + limit).map(toRecommendation);
+	const fingerprintByInterest = new Map(activeFingerprints.map((fp) => [fp.interestId, fp]));
+	const extendedDeduped = dedupeScored(allExtended.map((entry) => entry.row)).filter(
+		(row) => !primaryIds.has(row.result.externalId),
+	);
+	const poolEntries = [
+		...primaryDeduped.map((row) => ({ row, fingerprint: fingerprintByInterest.get(row.interestId)! })),
+		...extendedDeduped.map((row) => ({ row, fingerprint: fingerprintByInterest.get(row.interestId)! })),
+	];
+	const pageSlice = poolEntries.slice(offset, offset + limit);
+	const secret = env.SESSION_SECRET;
+	const page: DiscoverRecommendation[] = [];
+	for (const entry of pageSlice) {
+		page.push(await toRecommendation(secret, userId, entry.row, entry.fingerprint));
+	}
 
-	let forYouHasMore = offset + page.length < pool.length;
+	let forYouHasMore = offset + page.length < poolEntries.length;
 	if (!forYouHasMore && opts?.interestId && activeFingerprints[0]) {
 		const query = buildInterestSearchQuery(activeFingerprints[0]);
 		const nextToken = await getInterestNextPageToken(env, query, now);
@@ -217,8 +284,8 @@ export async function buildForYouRecommendations(
 	const metrics: ForYouMetrics = {
 		retrieved,
 		rejected,
-		accepted: pool.length,
-		interestsRepresented: new Set(pool.map((row) => row.interestId).filter(Boolean)).size,
+		accepted: poolEntries.length,
+		interestsRepresented: new Set(poolEntries.map((entry) => entry.row.interestId).filter(Boolean)).size,
 		searchCalls,
 	};
 
@@ -230,11 +297,11 @@ export async function buildForYouRecommendations(
 
 	return {
 		forYou: page,
-		forYouTotal: pool.length,
+		forYouTotal: poolEntries.length,
 		forYouHasMore,
 		forYouInterests: interests,
-		forYouEmpty: pool.length === 0,
-		forYouMessage: pool.length === 0 ? 'No strong matches yet. Follow and categorize more channels to improve For You.' : undefined,
+		forYouEmpty: poolEntries.length === 0,
+		forYouMessage: poolEntries.length === 0 ? 'No strong matches yet. Follow and categorize more channels to improve For You.' : undefined,
 		metrics,
 		debug: opts?.includeDebug ? debugRows : undefined,
 	};

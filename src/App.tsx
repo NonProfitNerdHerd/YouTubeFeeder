@@ -4,6 +4,7 @@ import { InboxPage } from './pages/InboxPage';
 import { LoginPage } from './pages/LoginPage';
 import { DownloadAndroidPage } from './pages/DownloadAndroidPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { RecommendationHistoryPage } from './pages/RecommendationHistoryPage';
 import type { CurrentUser } from './types';
 
 export function App() {
@@ -46,6 +47,10 @@ export function App() {
 			<Route path="/download/android" element={<DownloadAndroidPage />} />
 			<Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
 			<Route path="/settings" element={user ? <SettingsPage user={user} onLogout={onLogout} /> : <Navigate to="/login" replace />} />
+			<Route
+				path="/settings/recommendation-history"
+				element={user ? <RecommendationHistoryPage /> : <Navigate to="/login" replace />}
+			/>
 			<Route path="/" element={user ? <InboxPage user={user} onLogout={onLogout} /> : <Navigate to="/login" replace />} />
 			<Route path="*" element={<Navigate to={user ? '/' : '/login'} replace />} />
 		</Routes>

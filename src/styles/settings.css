@@ -77,6 +77,67 @@
 	font-size: 0.85rem;
 }
 
+.recommendation-history-page {
+	max-width: 48rem;
+}
+
+.recommendation-history-filters {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.recommendation-history-search {
+	display: flex;
+	gap: 10px;
+}
+
+.recommendation-history-search input {
+	flex: 1;
+	min-width: 0;
+	background: #0f1115;
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 10px 14px;
+	font: inherit;
+}
+
+.recommendation-history-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	gap: 12px;
+}
+
+.recommendation-history-item {
+	display: grid;
+	grid-template-columns: 56px minmax(0, 1fr) auto;
+	gap: 12px;
+	align-items: center;
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--panel) 88%, #111827);
+}
+
+.recommendation-history-thumb {
+	width: 56px;
+	height: 56px;
+	border-radius: 10px;
+	object-fit: cover;
+	background: #1a2030;
+}
+
+.recommendation-history-thumb.placeholder {
+	display: block;
+}
+
+.recommendation-history-body p {
+	margin: 4px 0 0;
+}
+
 @media (max-width: 640px) {
 	.settings-page {
 		padding: 16px;

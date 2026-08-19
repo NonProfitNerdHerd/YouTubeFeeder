@@ -71,11 +71,36 @@ export interface CandidateScoreDebug {
 	score: number;
 	threshold: number;
 	result: 'ACCEPT' | 'REJECT';
+	baseScore?: number;
+	feedbackPositive?: number;
+	feedbackNegative?: number;
+	finalScore?: number;
+	contributingFeedbackIds?: string[];
+}
+
+export type RecommendationFeedbackAction = 'followed' | 'channel_not_interested' | 'not_relevant';
+
+export interface RecommendationHistoryEntry {
+	id: string;
+	provider: DiscoveryProvider;
+	externalId: string;
+	channelTitle: string;
+	channelThumbnail: string;
+	interestId: string | null;
+	interestLabel: string | null;
+	action: RecommendationFeedbackAction;
+	actionLabel: string;
+	recommendationReason: string | null;
+	createdAt: string;
+	restoredAt: string | null;
+	active: boolean;
 }
 
 export interface DiscoverRecommendation extends DiscoveryResult {
 	recommendationReason?: string;
 	interestId?: string;
+	interestLabel?: string;
+	recommendationToken?: string;
 }
 
 export interface PodcastSubscriptionRecord {

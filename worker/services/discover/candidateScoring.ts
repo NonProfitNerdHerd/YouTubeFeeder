@@ -22,6 +22,11 @@ export interface CandidateScoreDebug {
 	score: number;
 	threshold: number;
 	result: 'ACCEPT' | 'REJECT';
+	baseScore?: number;
+	feedbackPositive?: number;
+	feedbackNegative?: number;
+	finalScore?: number;
+	contributingFeedbackIds?: string[];
 }
 
 export interface ScoredCandidate {

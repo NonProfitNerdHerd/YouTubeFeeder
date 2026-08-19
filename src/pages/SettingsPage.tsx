@@ -70,6 +70,16 @@ export function SettingsPage({ user, onLogout }: { user: CurrentUser; onLogout: 
 					<p className="muted settings-note">WebSub and cron keep subscriptions up to date; this control is not live yet.</p>
 				</section>
 
+				<section className="settings-section" aria-labelledby="settings-discover">
+					<h3 id="settings-discover">Discover</h3>
+					<p className="muted">
+						Review channels you hid from For You, see why they were hidden, and restore them.
+					</p>
+					<p>
+						<Link to="/settings/recommendation-history">Open recommendation history</Link>
+					</p>
+				</section>
+
 				<section className="settings-section" aria-labelledby="settings-android">
 					<h3 id="settings-android">Android</h3>
 					<p className="muted">

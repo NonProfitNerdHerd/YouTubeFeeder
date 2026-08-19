@@ -1527,6 +1527,75 @@
 	font-weight: 600;
 }
 
+.discover-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-bottom: 8px;
+}
+
+.discover-section-header h2 {
+	margin: 0;
+}
+
+.discover-history-link {
+	font-size: 0.92rem;
+	color: var(--muted);
+	text-decoration: none;
+}
+
+.discover-history-link:hover {
+	color: var(--text);
+	text-decoration: underline;
+}
+
+.discover-undo-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 0 0 16px;
+	padding: 10px 14px;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--panel) 90%, #111827);
+}
+
+.discover-not-interested-btn {
+	align-self: stretch;
+}
+
+.discover-feedback-modal {
+	max-width: 520px;
+}
+
+.discover-feedback-options {
+	display: grid;
+	gap: 12px;
+	margin: 16px 0;
+}
+
+.discover-feedback-option {
+	display: grid;
+	gap: 6px;
+	text-align: left;
+	padding: 14px 16px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--panel) 88%, #111827);
+	cursor: pointer;
+}
+
+.discover-feedback-option:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.discover-feedback-option strong {
+	font-size: 0.98rem;
+}
+
 .discover-browse-tabs {
 	display: flex;
 	flex-wrap: wrap;

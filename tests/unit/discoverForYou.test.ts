@@ -131,7 +131,7 @@ describe('interest profile', () => {
 describe('topic discovery cache', () => {
 	it('returns cached results with zero YouTube requests', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const now = new Date('2026-08-19T12:00:00Z');
 		await db.prepare(
 			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
@@ -154,7 +154,7 @@ describe('topic discovery cache', () => {
 
 	it('uses at most two search.list calls on cold cache when budget allows', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const yt = mockYt(async (path, params) => {
 			if (path !== 'search') throw new Error(`unexpected:${path}`);
 			const q = String(params?.q ?? '');
@@ -190,7 +190,7 @@ describe('topic discovery cache', () => {
 		await db.prepare(`INSERT INTO api_quota_daily (day, endpoint, call_count, general_units, search_calls) VALUES (?, ?, ?, ?, ?)`)
 			.bind(day, DISCOVER_TOPIC_SEARCH_ENDPOINT, DISCOVER_TOPIC_SEARCH_DAILY_BUDGET, 0, DISCOVER_TOPIC_SEARCH_DAILY_BUDGET)
 			.run();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const now = new Date('2026-08-19T12:00:00Z');
 		await db.prepare(
 			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at) VALUES (?, ?, ?, ?)`,
@@ -220,7 +220,7 @@ describe('topic discovery cache', () => {
 		await db.prepare(`INSERT INTO api_quota_daily (day, endpoint, call_count, general_units, search_calls) VALUES (?, ?, ?, ?, ?)`)
 			.bind(day, 'search.list', DISCOVER_USER_SEARCH_RESERVE, 0, DISCOVER_USER_SEARCH_RESERVE)
 			.run();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const spy = vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient');
 		const result = await getTopicCandidates(env, 'storm');
 		expect(spy).not.toHaveBeenCalled();
@@ -232,7 +232,7 @@ describe('topic discovery cache', () => {
 describe('For You assembly', () => {
 	it('excludes subscribed channels and dedupes duplicates', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const now = new Date('2026-08-19T12:00:00Z');
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
@@ -247,7 +247,7 @@ describe('For You assembly', () => {
 
 	it('rejects weak matches and caps accepted results per interest', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const now = new Date('2026-08-19T12:00:00Z');
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
@@ -273,7 +273,7 @@ describe('For You assembly', () => {
 
 	it('returns empty state without searches for sparse profiles', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		db.seedUser('user-1');
 		const spy = vi.spyOn(youtubeModule, 'createYoutubeApiKeyClient');
 		const result = await buildForYouRecommendations(env, 'user-1');
@@ -287,7 +287,7 @@ describe('For You assembly', () => {
 describe('browse tabs', () => {
 	it('loads For You by default without popular videos.list', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
 		const now = new Date('2026-08-19T12:00:00Z');
@@ -304,7 +304,7 @@ describe('browse tabs', () => {
 
 	it('popular tab returns deduped trending channels not videos', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		const yt = mockYt(async (path) => {
 			if (path !== 'videos') throw new Error(`unexpected:${path}`);
 			return {
@@ -344,7 +344,7 @@ describe('browse tabs', () => {
 
 	it('popular tab with interest returns topic channels plus global popular', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		seedSubscribedUser(db);
 		seedStormChasingCategory(db);
 		const now = new Date('2026-08-19T12:00:00Z');
@@ -378,7 +378,7 @@ describe('browse tabs', () => {
 
 	it('recent tab includes all subscribed channels not only discover follows', async () => {
 		const db = new MemorySyncDb();
-		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key' });
+		const env = asEnv(db, { YOUTUBE_API_KEY: 'test-key', SESSION_SECRET: 'test-secret' });
 		db.seedUser('user-1');
 		db.channels.set('sync-ch', { channel_id: 'sync-ch', title: 'Sync Channel', description: '', thumbnail_url: '', uploads_playlist_id: 'PL' });
 		db.prefs.set('user-1:sync-ch', {

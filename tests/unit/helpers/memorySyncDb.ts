@@ -26,6 +26,7 @@ export class MemorySyncDb {
 	discoverSearchCache = new Map<string, Row>();
 	discoverBrowseCache = new Map<string, Row>();
 	topicDiscoveryCache = new Map<string, Row>();
+	recommendationFeedback: Row[] = [];
 	categories = new Map<string, Row>();
 	channelCategories: Row[] = [];
 	failFanout = false;
@@ -461,6 +462,34 @@ export class MemorySyncDb {
 				expires_at: bound[3],
 				next_page_token: bound[4] ?? null,
 			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO recommendation_feedback')) {
+			this.recommendationFeedback.push({
+				id: bound[0],
+				user_id: bound[1],
+				provider: bound[2],
+				external_id: bound[3],
+				channel_title: bound[4],
+				channel_thumbnail: bound[5],
+				interest_id: bound[6],
+				interest_label: bound[7],
+				action: bound[8],
+				matched_concepts_json: bound[9],
+				recommendation_reason: bound[10],
+				base_score: bound[11],
+				created_at: bound[12],
+				restored_at: null,
+			});
+			return 1;
+		}
+		if (normalized.includes('UPDATE recommendation_feedback SET restored_at')) {
+			const restoredAt = bound[0];
+			const id = String(bound[1]);
+			const userId = String(bound[2]);
+			const row = this.recommendationFeedback.find((item) => item.id === id && item.user_id === userId);
+			if (!row) return 0;
+			row.restored_at = restoredAt;
 			return 1;
 		}
 		if (normalized.startsWith('INSERT INTO feed_reconcile_state') || normalized.includes('ON CONFLICT(id) DO UPDATE SET')) {
@@ -913,6 +942,59 @@ export class MemorySyncDb {
 					next_page_token: row.next_page_token ?? null,
 				},
 			];
+		}
+		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('channel_title')) {
+			const userId = String(bound[0]);
+			let rows = this.recommendationFeedback.filter((row) => row.user_id === userId);
+			if (normalized.includes("action = 'channel_not_interested'")) {
+				rows = rows.filter((row) => row.action === 'channel_not_interested');
+			} else if (normalized.includes("action = 'not_relevant'")) {
+				rows = rows.filter((row) => row.action === 'not_relevant');
+			} else if (normalized.includes("action IN ('channel_not_interested', 'not_relevant')")) {
+				rows = rows.filter((row) => row.action === 'channel_not_interested' || row.action === 'not_relevant');
+			}
+			if (normalized.includes('restored_at IS NULL') && !normalized.includes('IS NOT NULL')) {
+				rows = rows.filter((row) => row.restored_at == null);
+			} else if (normalized.includes('restored_at IS NOT NULL')) {
+				rows = rows.filter((row) => row.restored_at != null);
+			}
+			rows = rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+			const limit = Number(bound[bound.length - 1] ?? 100);
+			return rows.slice(0, limit);
+		}
+		if (
+			normalized.includes('FROM recommendation_feedback') &&
+			normalized.includes('SELECT provider, external_id') &&
+			normalized.includes('restored_at IS NULL')
+		) {
+			const userId = String(bound[0]);
+			return this.recommendationFeedback
+				.filter(
+					(row) =>
+						row.user_id === userId &&
+						row.restored_at == null &&
+						(row.action === 'channel_not_interested' || row.action === 'not_relevant'),
+				)
+				.map((row) => ({ provider: row.provider, external_id: row.external_id }));
+		}
+		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('restored_at IS NULL')) {
+			const userId = String(bound[0]);
+			if (normalized.includes("action IN ('not_relevant', 'followed')")) {
+				return this.recommendationFeedback
+					.filter(
+						(row) =>
+							row.user_id === userId &&
+							row.restored_at == null &&
+							(row.action === 'not_relevant' || row.action === 'followed'),
+					)
+					.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+			}
+		}
+		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('WHERE id = ? AND user_id = ?')) {
+			const id = String(bound[0]);
+			const userId = String(bound[1]);
+			const row = this.recommendationFeedback.find((item) => item.id === id && item.user_id === userId);
+			return row ? [{ id: row.id, restored_at: row.restored_at ?? null }] : [];
 		}
 		if (normalized.includes('FROM discover_browse_cache WHERE section_key = ?')) {
 			const row = this.discoverBrowseCache.get(String(bound[0]));

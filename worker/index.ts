@@ -31,6 +31,13 @@ import {
 } from './db/podcasts';
 import { discoverBrowse, discoverSearch, discoverSubscribePodcast } from './services/discover';
 import { FOR_YOU_PAGE_SIZE } from './services/discover/forYou';
+import {
+	getRecommendationHistory,
+	recordFollowFeedbackFromToken,
+	restoreFeedback,
+	submitRecommendationFeedback,
+	type RecommendationFeedbackAction,
+} from './services/discover/recommendationFeedbackService';
 import { followYoutubeChannel, unfollowYoutubeChannel } from './services/discoverFollow';
 import { catchUpPodcast } from './services/podcastCatchup';
 import {
@@ -429,22 +436,78 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			title?: string;
 			description?: string;
 			thumbnailUrl?: string;
+			recommendationToken?: string;
 		}>(request);
 		if (!body?.channelId) return apiError(400, 'invalid_channel', 'Missing channelId.');
 		try {
-			return json(
-				await followYoutubeChannel(env, user.id, {
-					channelId: body.channelId,
-					title: body.title,
-					description: body.description,
-					thumbnailUrl: body.thumbnailUrl,
-				}),
-			);
+			const followResult = await followYoutubeChannel(env, user.id, {
+				channelId: body.channelId,
+				title: body.title,
+				description: body.description,
+				thumbnailUrl: body.thumbnailUrl,
+			});
+			let feedbackRecorded = false;
+			if (body.recommendationToken) {
+				const feedback = await recordFollowFeedbackFromToken(env, user.id, body.recommendationToken, body.channelId);
+				feedbackRecorded = feedback.ok;
+				if (!feedback.ok) {
+					console.warn(`For You follow feedback not recorded: ${feedback.code}`);
+				}
+			}
+			return json({ ...followResult, feedbackRecorded });
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : 'follow_failed';
 			if (msg === 'invalid_channel') return apiError(400, 'invalid_channel', 'Invalid channel.');
 			return apiError(500, 'follow_failed', msg);
 		}
+	}
+
+	if (path === '/api/discover/feedback' && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const body = await readJson<{ recommendationToken?: string; action?: RecommendationFeedbackAction }>(request);
+		if (!body?.recommendationToken) return apiError(400, 'invalid_token', 'Missing recommendationToken.');
+		if (!body.action || !['channel_not_interested', 'not_relevant'].includes(body.action)) {
+			return apiError(400, 'invalid_action', 'Invalid feedback action.');
+		}
+		const result = await submitRecommendationFeedback(env, user.id, body.action, body.recommendationToken);
+		if (!result.ok) {
+			if (result.code === 'invalid_token') return apiError(400, 'invalid_token', 'Invalid or expired recommendation token.');
+			return apiError(500, 'feedback_failed', 'Could not record feedback.');
+		}
+		return json({
+			ok: true,
+			feedbackId: result.feedback.id,
+			action: result.feedback.action,
+		});
+	}
+
+	if (path === '/api/discover/recommendation-history' && request.method === 'GET') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const filterParam = url.searchParams.get('filter');
+		const statusParam = url.searchParams.get('status');
+		const filter =
+			filterParam === 'channel' || filterParam === 'not_relevant' ? filterParam : 'all';
+		const status =
+			statusParam === 'restored' || statusParam === 'all' ? statusParam : 'active';
+		const q = url.searchParams.get('q') ?? undefined;
+		return json({
+			entries: await getRecommendationHistory(env, user.id, { filter, status, query: q }),
+		});
+	}
+
+	if (path.startsWith('/api/discover/feedback/') && path.endsWith('/restore') && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const feedbackId = decodeURIComponent(path.slice('/api/discover/feedback/'.length, -'/restore'.length));
+		const result = await restoreFeedback(env, user.id, feedbackId);
+		if (!result.ok) {
+			if (result.code === 'not_found') return apiError(404, 'not_found', 'Feedback entry not found.');
+			if (result.code === 'already_restored') return apiError(409, 'already_restored', 'Feedback already restored.');
+			return apiError(500, 'restore_failed', 'Could not restore feedback.');
+		}
+		return json({ ok: true, restoredAt: result.restoredAt });
 	}
 
 	if (path === '/api/discover/unfollow/youtube' && request.method === 'POST') {

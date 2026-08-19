@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import type { CategoryRecord } from '../types';
 import type {
 	DiscoverBrowseResponse,
@@ -7,6 +8,7 @@ import type {
 	DiscoverRecommendation,
 	DiscoverSearchResponse,
 	DiscoveryResult,
+	RecommendationFeedbackAction,
 } from '../types/discover';
 
 interface SyncApiBody {
@@ -24,6 +26,12 @@ interface FollowSetupState {
 	title: string;
 	description?: string;
 	thumbnailUrl?: string;
+	recommendationToken?: string;
+}
+
+interface UndoFeedbackState {
+	feedbackId: string;
+	message: string;
 }
 
 function syncMessage(body: SyncApiBody, fallback: string): string {
@@ -121,6 +129,10 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [searchMode, setSearchMode] = useState(false);
 	const [popularBrowse, setPopularBrowse] = useState<DiscoverBrowseResponse | null>(null);
 	const [popularInterestContext, setPopularInterestContext] = useState<string | undefined>();
+	const [notInterestedTarget, setNotInterestedTarget] = useState<DiscoverRecommendation | null>(null);
+	const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+	const [undoFeedback, setUndoFeedback] = useState<UndoFeedbackState | null>(null);
+	const undoTimerRef = useRef<number | null>(null);
 
 	async function loadCategories() {
 		try {
@@ -212,6 +224,81 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	}
 
 	useEffect(() => {
+		return () => {
+			if (undoTimerRef.current != null) window.clearTimeout(undoTimerRef.current);
+		};
+	}, []);
+
+	function showUndoBar(feedbackId: string, message: string) {
+		setUndoFeedback({ feedbackId, message });
+		if (undoTimerRef.current != null) window.clearTimeout(undoTimerRef.current);
+		undoTimerRef.current = window.setTimeout(() => {
+			setUndoFeedback(null);
+			undoTimerRef.current = null;
+		}, 10_000);
+	}
+
+	function removeForYouItem(externalId: string) {
+		setForYouItems((rows) => rows.filter((row) => row.externalId !== externalId));
+		setForYouTotal((value) => Math.max(0, value - 1));
+	}
+
+	async function submitNotInterested(action: RecommendationFeedbackAction) {
+		if (!notInterestedTarget?.recommendationToken) return;
+		setFeedbackSubmitting(true);
+		onError('');
+		try {
+			const res = await fetch('/api/discover/feedback', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({
+					recommendationToken: notInterestedTarget.recommendationToken,
+					action,
+				}),
+			});
+			const body = (await res.json()) as { error?: { message: string }; feedbackId?: string };
+			if (!res.ok) throw new Error(body.error?.message ?? 'Could not record feedback.');
+			const title = notInterestedTarget.title;
+			removeForYouItem(notInterestedTarget.externalId);
+			setNotInterestedTarget(null);
+			if (body.feedbackId) {
+				showUndoBar(
+					body.feedbackId,
+					action === 'not_relevant' ? `${title} marked not relevant.` : `${title} hidden.`,
+				);
+			}
+		} catch (err: unknown) {
+			onError(err instanceof Error ? err.message : 'Could not record feedback.');
+		} finally {
+			setFeedbackSubmitting(false);
+		}
+	}
+
+	async function undoFeedbackAction() {
+		if (!undoFeedback) return;
+		onError('');
+		try {
+			const res = await fetch(`/api/discover/feedback/${encodeURIComponent(undoFeedback.feedbackId)}/restore`, {
+				method: 'POST',
+				credentials: 'same-origin',
+			});
+			const body = (await res.json()) as { error?: { message: string } };
+			if (!res.ok) throw new Error(body.error?.message ?? 'Undo failed.');
+			setUndoFeedback(null);
+			if (undoTimerRef.current != null) {
+				window.clearTimeout(undoTimerRef.current);
+				undoTimerRef.current = null;
+			}
+			onStatus('Recommendation restored.');
+			if (browseTab === 'forYou') void loadForYou(forYouInterest);
+		} catch (err: unknown) {
+			onError(err instanceof Error ? err.message : 'Undo failed.');
+		}
+	}
+
+
+	useEffect(() => {
 		void loadCategories();
 	}, []);
 
@@ -301,14 +388,31 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		await unfollowYoutube(unfollowConfirm.channelId, unfollowConfirm.title);
 	}
 
-	function requestFollow(result: DiscoveryResult, channelId: string) {
+	function requestFollow(result: DiscoverRecommendation, channelId: string) {
 		onError('');
 		setFollowSetup({
 			channelId,
 			title: youtubeChannelTitle(result),
 			description: result.description,
 			thumbnailUrl: result.type === 'channel' ? result.imageUrl : undefined,
+			recommendationToken: result.recommendationToken,
 		});
+	}
+
+	function renderForYouChannelActions(result: DiscoverRecommendation) {
+		return (
+			<div className="discover-action-stack">
+				{renderYoutubeFollowAction(result, result.externalId)}
+				<button
+					className="ghost tiny discover-not-interested-btn"
+					type="button"
+					disabled={feedbackSubmitting}
+					onClick={() => setNotInterestedTarget(result)}
+				>
+					Not interested
+				</button>
+			</div>
+		);
 	}
 
 	function renderYoutubeFollowAction(result: DiscoveryResult, channelId: string) {
@@ -493,6 +597,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					title: followSetup.title,
 					description: followSetup.description,
 					thumbnailUrl: followSetup.thumbnailUrl,
+					...(followSetup.recommendationToken ? { recommendationToken: followSetup.recommendationToken } : {}),
 				}),
 			});
 			const followBody = (await followRes.json()) as { error?: { message: string }; alreadyFollowing?: boolean };
@@ -529,7 +634,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}
 	}
 
-	function renderActions(result: DiscoveryResult) {
+	function renderActions(result: DiscoveryResult | DiscoverRecommendation, forYou = false) {
 		if (result.type === 'podcast') {
 			return result.subscribed ? (
 				<span className="muted">Subscribed ✓</span>
@@ -564,6 +669,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			);
 		}
 		if (result.provider === 'youtube' && result.type === 'channel') {
+			if (forYou && 'recommendationToken' in result && result.recommendationToken) {
+				return renderForYouChannelActions(result as DiscoverRecommendation);
+			}
 			return renderYoutubeFollowAction(result, result.externalId);
 		}
 		if (result.provider === 'youtube' && result.type === 'video' && result.parentExternalId) {
@@ -581,7 +689,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		return null;
 	}
 
-	function renderResult(result: DiscoveryResult | DiscoverRecommendation) {
+	function renderResult(result: DiscoveryResult | DiscoverRecommendation, forYou = false) {
 		const isChannel = result.type === 'channel';
 		const isYoutubeChannel = isChannel && result.provider === 'youtube';
 		const reason = 'recommendationReason' in result ? result.recommendationReason : undefined;
@@ -625,7 +733,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					{reason ? <p className="discover-reason">{reason}</p> : null}
 					{result.parentTitle ? <small className="muted">From {result.parentTitle}</small> : null}
 				</div>
-				<div className="discover-result-actions">{renderActions(result)}</div>
+				<div className="discover-result-actions">{renderActions(result, forYou)}</div>
 			</li>
 		);
 	}
@@ -677,7 +785,12 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			<div className="discover-scroll">
 				<div className="discover-page">
 			<section className="discover-sections">
-				<h2>Browse</h2>
+				<div className="discover-section-header">
+					<h2>Browse</h2>
+					<Link className="discover-history-link" to="/settings/recommendation-history">
+						Recommendation history
+					</Link>
+				</div>
 				<div className="discover-toolbar">
 					<div className="discover-browse-tabs" role="tablist" aria-label="Browse tabs">
 						{(
@@ -731,6 +844,15 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 						))}
 					</div>
 				</div>
+
+				{undoFeedback ? (
+					<div className="discover-undo-bar" role="status">
+						<span>{undoFeedback.message}</span>
+						<button className="ghost tiny" type="button" onClick={() => void undoFeedbackAction()}>
+							Undo
+						</button>
+					</div>
+				) : null}
 
 				{searchActive ? (
 					<div className="discover-search-results">
@@ -813,7 +935,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 				{!searchActive && browseResults.length ? (
 					<div className="discover-section-block">
-						<ul className="discover-results">{browseResults.map((result) => renderResult(result))}</ul>
+						<ul className="discover-results">
+							{browseResults.map((result) => renderResult(result, browseTab === 'forYou'))}
+						</ul>
 						{showForYouSeeMore ? (
 							<div className="discover-see-more-wrap">
 								<button
@@ -882,6 +1006,48 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 							</button>
 						</div>
 					</form>
+				</div>
+			) : null}
+			{notInterestedTarget ? (
+				<div className="modal-backdrop" onClick={() => !feedbackSubmitting && setNotInterestedTarget(null)}>
+					<div
+						className="modal discover-feedback-modal"
+						onClick={(e) => e.stopPropagation()}
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="discover-feedback-title"
+					>
+						<h2 id="discover-feedback-title">Why don&apos;t you want this recommendation?</h2>
+						<div className="discover-feedback-options">
+							<button
+								className="discover-feedback-option"
+								type="button"
+								disabled={feedbackSubmitting}
+								onClick={() => void submitNotInterested('channel_not_interested')}
+							>
+								<strong>Not interested in this channel</strong>
+								<span className="muted">
+									Hide this channel. This will not change the topics VortiQuest thinks you&apos;re interested in.
+								</span>
+							</button>
+							<button
+								className="discover-feedback-option"
+								type="button"
+								disabled={feedbackSubmitting}
+								onClick={() => void submitNotInterested('not_relevant')}
+							>
+								<strong>Not relevant to this topic</strong>
+								<span className="muted">
+									Hide this channel and use this feedback to improve recommendations for this topic.
+								</span>
+							</button>
+						</div>
+						<div className="modal-actions">
+							<button className="ghost" type="button" onClick={() => setNotInterestedTarget(null)} disabled={feedbackSubmitting}>
+								Cancel
+							</button>
+						</div>
+					</div>
 				</div>
 			) : null}
 			{unfollowConfirm ? (
