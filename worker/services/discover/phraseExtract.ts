@@ -45,6 +45,8 @@ export const STOP_WORDS = new Set([
 	'also',
 	'www',
 	'com',
+	'http',
+	'https',
 	'watch',
 	'full',
 	'install',

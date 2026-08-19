@@ -7,6 +7,10 @@ import { getSubscribedChannelIds } from '../../db/queries';
 import { DISCOVER_TOPIC_REFRESH_PER_REQUEST } from '../discoverQuota';
 import { buildInterestSearchQueries } from './clusterQueries';
 import {
+	loadCachedCandidatesWithFallback,
+	loadPhraseCacheCandidates,
+} from './cacheLookup';
+import {
 	MIN_ACCEPT_SCORE,
 	shouldPersistNewCandidate,
 	shouldRetainPersistedCandidate,
@@ -17,7 +21,7 @@ import { computeFeedbackAdjustment, buildFeedbackAdjustmentIndex } from './feedb
 import { loadActiveFeedbackRows } from '../../db/recommendationFeedback';
 import { matchedConceptsFromDebug } from './recommendationFeedbackService';
 import type { InterestFingerprint } from './interestFingerprint';
-import { getTopicCandidates, loadCachedQueryResults, normalizeTopic } from './topicDiscovery';
+import { getTopicCandidates, normalizeTopic } from './topicDiscovery';
 import {
 	loadActiveInterestCandidates,
 	retireInterestCandidateByRelevance,
@@ -147,10 +151,10 @@ export async function discoverCandidatesForInterest(
 	const toPersist: DiscoverInterestCandidateInsert[] = [];
 
 	for (const clusterQuery of queries) {
-		let candidates = await loadCachedQueryResults(env, clusterQuery.query, now);
-		if (candidates.length) {
-			cacheHits += 1;
-		} else if (allowLiveSearch && liveSearches < maxLiveSearches) {
+		const cacheLookup = await loadCachedCandidatesWithFallback(env, clusterQuery, fingerprint, now);
+		let candidates = cacheLookup.results;
+		if (cacheLookup.hitKeys.length) cacheHits += 1;
+		else if (allowLiveSearch && liveSearches < maxLiveSearches) {
 			const refreshed = await getTopicCandidates(env, clusterQuery.query, now, { allowRefresh: true });
 			if (refreshed.refreshed) liveSearches += 1;
 			candidates = refreshed.results;
@@ -167,6 +171,27 @@ export async function discoverCandidatesForInterest(
 				accepted += 1;
 				seen.add(`${candidate.provider}:${candidate.externalId}`);
 				toPersist.push(scoredToInsert(scored, fingerprint, normalizeTopic(clusterQuery.query)));
+			} else {
+				rejected += 1;
+			}
+		}
+	}
+
+	if (rawCandidates === 0) {
+		const phraseLookup = await loadPhraseCacheCandidates(env, fingerprint, now);
+		if (phraseLookup.hitKeys.length) cacheHits += 1;
+		const filtered = phraseLookup.results.filter(
+			(row) => !subscribed.has(row.externalId) && !seen.has(`${row.provider}:${row.externalId}`),
+		);
+		rawCandidates += filtered.length;
+		for (const candidate of filtered) {
+			const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
+			if (shouldPersistNewCandidate(scored.score)) {
+				accepted += 1;
+				seen.add(`${candidate.provider}:${candidate.externalId}`);
+				toPersist.push(
+					scoredToInsert(scored, fingerprint, phraseLookup.hitKeys[0] ?? normalizeTopic(fingerprint.phrases[0]?.text ?? '')),
+				);
 			} else {
 				rejected += 1;
 			}

@@ -1,7 +1,7 @@
 import { listInterestCategories, listSubscribedChannels } from '../../db/queries';
 import { buildInterestCorpus } from './interestCorpus';
 import { buildConceptClusters, type ConceptCluster } from './conceptClustering';
-import { buildClusterQueries, type ClusterQuery } from './clusterQueries';
+import { buildInterestSearchQueries, type ClusterQuery } from './clusterQueries';
 import {
 	extractPhrasesFromChannelDocuments,
 	extractTermsFromChannelDocuments,
@@ -46,24 +46,22 @@ export async function buildInterestFingerprints(db: D1Database, userId: string):
 			.slice(0, 20);
 
 		const clusters = buildConceptClusters(phrasesWithCoverage, corpus.channelDocuments);
-		const queries = buildClusterQueries(clusters);
-
-		const topPhraseWeight = phrases[0]?.weight ?? 0;
-		const confidence = computeConfidence(corpus.channelCount, corpus.videosSampled, topPhraseWeight);
-		if (confidence < 20) continue;
-
-		fingerprints.push({
+		const draft: InterestFingerprint = {
 			interestId: category.id,
 			label: category.name,
 			phrases,
 			terms,
 			negativeHints: [],
 			channelCount: corpus.channelCount,
-			confidence,
+			confidence: 0,
 			videosSampled: corpus.videosSampled,
 			clusters,
-			queries,
-		});
+		};
+		draft.confidence = computeConfidence(corpus.channelCount, corpus.videosSampled, phrases[0]?.weight ?? 0);
+		if (draft.confidence < 20) continue;
+		draft.queries = buildInterestSearchQueries(draft);
+
+		fingerprints.push(draft);
 	}
 
 	return fingerprints.sort((a, b) => b.confidence - a.confidence || a.label.localeCompare(b.label));

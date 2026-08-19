@@ -56,11 +56,12 @@ describe('phrase extraction', () => {
 });
 
 describe('query construction', () => {
-	it('builds rich queries with quoted phrases rather than lone ambiguous tokens', () => {
+	it('builds focused plain-text queries rather than lone ambiguous tokens', () => {
 		const query = buildInterestSearchQuery(weatherFingerprint());
-		expect(query).toContain('"storm chasing"');
-		expect(query).toMatch(/tornado|meteorology|supercell/);
+		expect(query).toContain('storm chasing');
+		expect(query).toMatch(/tornado|meteorology|supercell|severe weather/);
 		expect(query).not.toMatch(/^storm$/);
+		expect(query).not.toContain('"');
 	});
 });
 

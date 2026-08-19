@@ -21,6 +21,10 @@ import {
 import { buildFeedbackAdjustmentIndex, computeFeedbackAdjustment } from './feedbackScoring';
 import { buildInterestFingerprints, isInterestFingerprintEmpty, type InterestFingerprint } from './interestFingerprint';
 import { buildInterestSearchQueries } from './clusterQueries';
+import {
+	loadCachedCandidatesWithFallback,
+	loadPhraseCacheCandidates,
+} from './cacheLookup';
 import { mintTokenForScoredCandidate, matchedConceptsFromDebug } from './recommendationFeedbackService';
 import {
 	evaluatePersistedCandidates,
@@ -29,7 +33,6 @@ import {
 import {
 	fetchNextInterestPage,
 	getInterestNextPageToken,
-	loadCachedQueryResults,
 	normalizeTopic,
 } from './topicDiscovery';
 
@@ -262,7 +265,7 @@ export async function buildForYouRecommendations(
 				Boolean(opts?.includeDebug),
 				opts?.includeDebug ? debugRows : undefined,
 			);
-			if (!scored || scored.score < MIN_ACCEPT_SCORE) continue;
+			if (!scored || !shouldRetainPersistedCandidate(scored.score)) continue;
 			if (seenIds.has(row.external_id)) continue;
 			seenIds.add(row.external_id);
 			poolEntries.push({ row: scored, fingerprint, candidateId: row.id });
@@ -270,16 +273,18 @@ export async function buildForYouRecommendations(
 
 		const queries = buildInterestSearchQueries(fingerprint);
 		const toPersist: Parameters<typeof upsertInterestCandidates>[2] = [];
+		let clusterRawCount = 0;
 
 		for (const clusterQuery of queries) {
-			const cached = await loadCachedQueryResults(env, clusterQuery.query, now);
-			if (cached.length) cacheHits += 1;
-			const filtered = cached.filter(
+			const cacheLookup = await loadCachedCandidatesWithFallback(env, clusterQuery, fingerprint, now);
+			if (cacheLookup.hitKeys.length) cacheHits += 1;
+			const filtered = cacheLookup.results.filter(
 				(row) =>
 					!subscribed.has(row.externalId) &&
 					!suppressions.has(suppressionKey(row.provider, row.externalId)) &&
 					!seenIds.has(row.externalId),
 			);
+			clusterRawCount += filtered.length;
 			retrieved += filtered.length;
 
 			for (const candidate of filtered) {
@@ -307,6 +312,56 @@ export async function buildForYouRecommendations(
 							source: 'discovered',
 							recommendationReason: scored.recommendationReason,
 							originatingQuery: normalizeTopic(clusterQuery.query),
+							matchedConceptsJson: JSON.stringify(matchedConceptsFromDebug(scored.debug, fingerprint)),
+							baseRelevanceScore: scored.score,
+						});
+					}
+				} else if (scored.score >= MIN_EXPAND_SCORE) {
+					if (!seenIds.has(candidate.externalId)) {
+						seenIds.add(candidate.externalId);
+						poolEntries.push({ row: scored, fingerprint });
+					}
+				} else {
+					rejected += 1;
+				}
+			}
+		}
+
+		if (clusterRawCount === 0) {
+			const phraseLookup = await loadPhraseCacheCandidates(env, fingerprint, now);
+			if (phraseLookup.hitKeys.length) cacheHits += 1;
+			const filtered = phraseLookup.results.filter(
+				(row) =>
+					!subscribed.has(row.externalId) &&
+					!suppressions.has(suppressionKey(row.provider, row.externalId)) &&
+					!seenIds.has(row.externalId),
+			);
+			retrieved += filtered.length;
+			for (const candidate of filtered) {
+				const scored = applyFeedbackToCandidate(
+					candidate,
+					fingerprint,
+					feedbackIndex,
+					Boolean(opts?.includeDebug),
+					opts?.includeDebug ? debugRows : undefined,
+				);
+				if (scored.score >= MIN_ACCEPT_SCORE) {
+					if (!seenIds.has(candidate.externalId)) {
+						seenIds.add(candidate.externalId);
+						poolEntries.push({ row: scored, fingerprint });
+					}
+					if (shouldPersistNewCandidate(scored.score)) {
+						toPersist.push({
+							interestId: fingerprint.interestId,
+							interestLabel: fingerprint.label,
+							provider: candidate.provider,
+							externalId: candidate.externalId,
+							channelTitle: candidate.title,
+							channelThumbnail: candidate.imageUrl ?? '',
+							channelDescription: candidate.description ?? '',
+							source: 'discovered',
+							recommendationReason: scored.recommendationReason,
+							originatingQuery: phraseLookup.hitKeys[0] ?? normalizeTopic(fingerprint.phrases[0]?.text ?? ''),
 							matchedConceptsJson: JSON.stringify(matchedConceptsFromDebug(scored.debug, fingerprint)),
 							baseRelevanceScore: scored.score,
 						});
