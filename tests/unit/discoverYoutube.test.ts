@@ -71,7 +71,7 @@ describe('YouTube discover search', () => {
 				items: [{ id: { channelId: CHANNEL }, snippet: { title: 'Keith Olbermann', thumbnails: {} } }],
 			};
 		});
-		const results = await searchYoutubeChannels(yt, 'Olbermann');
+		const { results } = await searchYoutubeChannels(yt, 'Olbermann');
 		expect(results).toHaveLength(1);
 		expect(yt.calls.search).toBe(1);
 		expect(yt.searchQueries).toBe(1);

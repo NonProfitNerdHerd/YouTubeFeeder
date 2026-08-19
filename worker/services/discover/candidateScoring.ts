@@ -9,6 +9,8 @@ import {
 import type { InterestFingerprint } from './interestFingerprint';
 
 export const MIN_ACCEPT_SCORE = 55;
+/** Weaker matches shown only after user clicks "See more". */
+export const MIN_EXPAND_SCORE = 42;
 
 export interface CandidateScoreDebug {
 	candidateTitle: string;
@@ -166,10 +168,12 @@ export function scoreCandidateAgainstFingerprint(
 export function scoreCandidatesForInterest(
 	candidates: DiscoveryResult[],
 	fingerprint: InterestFingerprint,
+	opts?: { minScore?: number },
 ): ScoredCandidate[] {
+	const minScore = opts?.minScore ?? MIN_ACCEPT_SCORE;
 	return candidates
 		.map((candidate) => scoreCandidateAgainstFingerprint(candidate, fingerprint))
-		.filter((row) => row.score >= MIN_ACCEPT_SCORE)
+		.filter((row) => row.score >= minScore)
 		.sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
 }
 

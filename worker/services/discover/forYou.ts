@@ -1,19 +1,26 @@
-import type { DiscoverRecommendation } from '../../../src/types/discover';
+import type { DiscoverRecommendation, DiscoveryResult } from '../../../src/types/discover';
 import { getSubscribedChannelIds } from '../../db/queries';
 import {
+	MIN_ACCEPT_SCORE,
+	MIN_EXPAND_SCORE,
 	scoreCandidateAgainstFingerprint,
 	scoreCandidatesForInterest,
 	type CandidateScoreDebug,
 	type ScoredCandidate,
 } from './candidateScoring';
-import { buildInterestFingerprints, isInterestFingerprintEmpty } from './interestFingerprint';
+import { buildInterestFingerprints, isInterestFingerprintEmpty, type InterestFingerprint } from './interestFingerprint';
 import { buildInterestSearchQuery, interestQueryCacheKey } from './queryConstruction';
-import { loadCachedQueryResults, refreshQueryCaches } from './topicDiscovery';
+import {
+	fetchNextInterestPage,
+	getInterestNextPageToken,
+	getTopicCandidates,
+	loadCachedQueryResults,
+	refreshQueryCaches,
+} from './topicDiscovery';
 
-const MAX_FOR_YOU = 30;
-const MAX_PER_INTEREST = 8;
+export const FOR_YOU_PAGE_SIZE = 25;
 const INTERESTS_FOR_REFRESH = 2;
-const INTERESTS_TO_MERGE = 6;
+const INTERESTS_TO_MERGE = 12;
 
 export interface ForYouMetrics {
 	retrieved: number;
@@ -29,8 +36,19 @@ export interface ForYouInterest {
 	confidence: number;
 }
 
+export interface ForYouBuildOpts {
+	interestId?: string;
+	includeDebug?: boolean;
+	limit?: number;
+	offset?: number;
+	loadMore?: boolean;
+	refreshOffset?: number;
+}
+
 export interface ForYouResult {
 	forYou: DiscoverRecommendation[];
+	forYouTotal: number;
+	forYouHasMore: boolean;
 	forYouInterests: ForYouInterest[];
 	forYouEmpty: boolean;
 	forYouMessage?: string;
@@ -49,34 +67,6 @@ function dedupeScored(scored: ScoredCandidate[]): ScoredCandidate[] {
 	return [...byId.values()].sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title));
 }
 
-function diversifyByInterest(
-	grouped: Map<string, DiscoverRecommendation[]>,
-	maxTotal = MAX_FOR_YOU,
-	maxPerInterest = MAX_PER_INTEREST,
-): DiscoverRecommendation[] {
-	const keys = [...grouped.keys()];
-	const picked: DiscoverRecommendation[] = [];
-	const counts = new Map<string, number>();
-
-	while (picked.length < maxTotal) {
-		let added = false;
-		for (const key of keys) {
-			const count = counts.get(key) ?? 0;
-			if (count >= maxPerInterest) continue;
-			const list = grouped.get(key) ?? [];
-			const next = list[count];
-			if (!next) continue;
-			picked.push(next);
-			counts.set(key, count + 1);
-			added = true;
-			if (picked.length >= maxTotal) break;
-		}
-		if (!added) break;
-	}
-
-	return picked;
-}
-
 function toRecommendation(row: ScoredCandidate): DiscoverRecommendation {
 	return {
 		...row.result,
@@ -86,13 +76,38 @@ function toRecommendation(row: ScoredCandidate): DiscoverRecommendation {
 	};
 }
 
+function scoreFingerprintCandidates(
+	fingerprint: InterestFingerprint,
+	candidates: DiscoveryResult[],
+	debugRows: CandidateScoreDebug[] | undefined,
+	includeDebug: boolean,
+): { primary: ScoredCandidate[]; extended: ScoredCandidate[]; retrieved: number; rejected: number } {
+	const filtered = candidates;
+	if (includeDebug && debugRows) {
+		for (const candidate of filtered) {
+			debugRows.push(scoreCandidateAgainstFingerprint(candidate, fingerprint).debug);
+		}
+	}
+	const primary = scoreCandidatesForInterest(filtered, fingerprint, { minScore: MIN_ACCEPT_SCORE });
+	const extended = scoreCandidatesForInterest(filtered, fingerprint, { minScore: MIN_EXPAND_SCORE }).filter(
+		(row) => row.score < MIN_ACCEPT_SCORE,
+	);
+	return {
+		primary,
+		extended,
+		retrieved: filtered.length,
+		rejected: filtered.length - primary.length - extended.length,
+	};
+}
+
 export async function buildForYouRecommendations(
 	env: Env,
 	userId: string,
-	opts?: { interestId?: string; includeDebug?: boolean },
+	opts?: ForYouBuildOpts,
 	now = new Date(),
 ): Promise<ForYouResult> {
-	const fingerprints = await buildInterestFingerprints(env.DB, userId);
+	const limit = Math.min(50, Math.max(1, opts?.limit ?? FOR_YOU_PAGE_SIZE));
+	const offset = Math.max(0, opts?.offset ?? 0);
 	const emptyMetrics: ForYouMetrics = {
 		retrieved: 0,
 		rejected: 0,
@@ -101,9 +116,12 @@ export async function buildForYouRecommendations(
 		searchCalls: 0,
 	};
 
+	const fingerprints = await buildInterestFingerprints(env.DB, userId);
 	if (isInterestFingerprintEmpty(fingerprints)) {
 		return {
 			forYou: [],
+			forYouTotal: 0,
+			forYouHasMore: false,
 			forYouInterests: [],
 			forYouEmpty: true,
 			forYouMessage: 'Follow and categorize channels to improve For You.',
@@ -118,71 +136,105 @@ export async function buildForYouRecommendations(
 	}));
 
 	const mergeFingerprints = fingerprints.slice(0, INTERESTS_TO_MERGE);
-	const refreshQueries = mergeFingerprints.slice(0, INTERESTS_FOR_REFRESH).map((fp) => buildInterestSearchQuery(fp));
-	const { cacheByKey, searchCalls } = await refreshQueryCaches(env, refreshQueries, now, INTERESTS_FOR_REFRESH);
+	const activeFingerprints = opts?.interestId
+		? mergeFingerprints.filter((fp) => fp.interestId === opts.interestId)
+		: mergeFingerprints;
+
+	if (!activeFingerprints.length) {
+		return {
+			forYou: [],
+			forYouTotal: 0,
+			forYouHasMore: false,
+			forYouInterests: interests,
+			forYouEmpty: true,
+			forYouMessage: 'No recommendations for this interest yet.',
+			metrics: emptyMetrics,
+		};
+	}
+
+	let searchCalls = 0;
+	const refreshOffset = Math.max(0, opts?.refreshOffset ?? 0);
+
+	if (opts?.interestId && activeFingerprints[0]) {
+		const fp = activeFingerprints[0];
+		const query = buildInterestSearchQuery(fp);
+		if (opts.loadMore) {
+			const next = await fetchNextInterestPage(env, query, now);
+			searchCalls += next.searchCalls;
+		} else {
+			const refreshed = await getTopicCandidates(env, query, now);
+			if (refreshed.refreshed) searchCalls += 1;
+		}
+	} else if (opts?.loadMore) {
+		const refreshSlice = mergeFingerprints.slice(refreshOffset, refreshOffset + INTERESTS_FOR_REFRESH);
+		const refreshTargets = refreshSlice.length ? refreshSlice : mergeFingerprints.slice(0, INTERESTS_FOR_REFRESH);
+		const refreshQueries = refreshTargets.map((fp) => buildInterestSearchQuery(fp));
+		const refreshed = await refreshQueryCaches(env, refreshQueries, now, INTERESTS_FOR_REFRESH);
+		searchCalls += refreshed.searchCalls;
+	} else {
+		const refreshQueries = mergeFingerprints.slice(0, INTERESTS_FOR_REFRESH).map((fp) => buildInterestSearchQuery(fp));
+		const refreshed = await refreshQueryCaches(env, refreshQueries, now, INTERESTS_FOR_REFRESH);
+		searchCalls += refreshed.searchCalls;
+	}
 
 	const subscribed = await getSubscribedChannelIds(env.DB, userId);
 	const debugRows: CandidateScoreDebug[] = [];
 	let retrieved = 0;
 	let rejected = 0;
-	const allAccepted: ScoredCandidate[] = [];
+	const allPrimary: ScoredCandidate[] = [];
+	const allExtended: ScoredCandidate[] = [];
 
-	for (const fingerprint of mergeFingerprints) {
-		if (opts?.interestId && fingerprint.interestId !== opts.interestId) continue;
-
+	for (const fingerprint of activeFingerprints) {
 		const query = buildInterestSearchQuery(fingerprint);
-		const cacheKey = interestQueryCacheKey(fingerprint);
-		let candidates = cacheByKey.get(cacheKey) ?? [];
-		if (!candidates.length) {
-			candidates = await loadCachedQueryResults(env, query, now);
-		}
-
-		const filtered = candidates.filter((row) => !subscribed.has(row.externalId));
-		retrieved += filtered.length;
-
-		if (opts?.includeDebug) {
-			for (const candidate of filtered) {
-				const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
-				debugRows.push(scored.debug);
-			}
-		}
-
-		const scored = scoreCandidatesForInterest(filtered, fingerprint);
-		rejected += filtered.length - scored.length;
-		allAccepted.push(...scored);
+		const candidates = (await loadCachedQueryResults(env, query, now)).filter((row) => !subscribed.has(row.externalId));
+		const scored = scoreFingerprintCandidates(
+			fingerprint,
+			candidates,
+			opts?.includeDebug ? debugRows : undefined,
+			Boolean(opts?.includeDebug),
+		);
+		retrieved += scored.retrieved;
+		rejected += scored.rejected;
+		allPrimary.push(...scored.primary);
+		allExtended.push(...scored.extended);
 	}
 
-	const deduped = dedupeScored(allAccepted);
-	const grouped = new Map<string, DiscoverRecommendation[]>();
-	for (const row of deduped) {
-		const list = grouped.get(row.interestId) ?? [];
-		list.push(toRecommendation(row));
-		grouped.set(row.interestId, list);
-	}
+	const primaryDeduped = dedupeScored(allPrimary);
+	const primaryIds = new Set(primaryDeduped.map((row) => row.result.externalId));
+	const extendedDeduped = dedupeScored(allExtended).filter((row) => !primaryIds.has(row.result.externalId));
+	const pool = [...primaryDeduped, ...extendedDeduped];
+	const page = pool.slice(offset, offset + limit).map(toRecommendation);
 
-	const forYou = opts?.interestId
-		? deduped.filter((row) => row.interestId === opts.interestId).map(toRecommendation)
-		: diversifyByInterest(grouped);
+	let forYouHasMore = offset + page.length < pool.length;
+	if (!forYouHasMore && opts?.interestId && activeFingerprints[0]) {
+		const query = buildInterestSearchQuery(activeFingerprints[0]);
+		const nextToken = await getInterestNextPageToken(env, query, now);
+		forYouHasMore = Boolean(nextToken);
+	} else if (!forYouHasMore && !opts?.interestId) {
+		forYouHasMore = refreshOffset + INTERESTS_FOR_REFRESH < mergeFingerprints.length;
+	}
 
 	const metrics: ForYouMetrics = {
 		retrieved,
 		rejected,
-		accepted: forYou.length,
-		interestsRepresented: new Set(forYou.map((row) => row.interestId).filter(Boolean)).size,
+		accepted: pool.length,
+		interestsRepresented: new Set(pool.map((row) => row.interestId).filter(Boolean)).size,
 		searchCalls,
 	};
 
 	if (env.DISCOVER_RELEVANCE_DEBUG === 'true') {
 		console.log(
-			`ForYou metrics: Retrieved=${metrics.retrieved} Rejected=${metrics.rejected} Accepted=${metrics.accepted} Interests=${metrics.interestsRepresented} search.list=${metrics.searchCalls}`,
+			`ForYou metrics: Retrieved=${metrics.retrieved} Rejected=${metrics.rejected} Accepted=${metrics.accepted} Page=${page.length} offset=${offset} search.list=${metrics.searchCalls}`,
 		);
 	}
 
 	return {
-		forYou,
+		forYou: page,
+		forYouTotal: pool.length,
+		forYouHasMore,
 		forYouInterests: interests,
-		forYouEmpty: forYou.length === 0,
-		forYouMessage: forYou.length === 0 ? 'No strong matches yet. Follow and categorize more channels to improve For You.' : undefined,
+		forYouEmpty: pool.length === 0,
+		forYouMessage: pool.length === 0 ? 'No strong matches yet. Follow and categorize more channels to improve For You.' : undefined,
 		metrics,
 		debug: opts?.includeDebug ? debugRows : undefined,
 	};

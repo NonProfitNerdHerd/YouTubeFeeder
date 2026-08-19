@@ -5,7 +5,7 @@ import {
 	putDiscoverBrowseCache,
 } from '../db/discoverCache';
 import { getSubscribedChannelIds, listRecentlyFollowedChannels } from '../db/queries';
-import { buildForYouRecommendations } from './discover/forYou';
+import { buildForYouRecommendations, FOR_YOU_PAGE_SIZE } from './discover/forYou';
 import { recordYoutubeCalls } from './websub';
 import { createYoutubeApiKeyClient } from './youtube';
 
@@ -124,7 +124,14 @@ export async function discoverBrowse(
 	env: Env,
 	userId: string,
 	tab: DiscoverBrowseTab = 'forYou',
-	opts?: { interestId?: string; includeDebug?: boolean },
+	opts?: {
+		interestId?: string;
+		includeDebug?: boolean;
+		limit?: number;
+		offset?: number;
+		loadMore?: boolean;
+		refreshOffset?: number;
+	},
 	now = new Date(),
 ): Promise<DiscoverBrowseResponse> {
 	const refreshedAt = now.toISOString();
@@ -140,6 +147,8 @@ export async function discoverBrowse(
 		return {
 			...empty,
 			forYou: forYouResult.forYou,
+			forYouTotal: forYouResult.forYouTotal,
+			forYouHasMore: forYouResult.forYouHasMore,
 			forYouInterests: forYouResult.forYouInterests,
 			forYouEmpty: forYouResult.forYouEmpty,
 			forYouMessage: forYouResult.forYouMessage,

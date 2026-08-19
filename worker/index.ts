@@ -30,6 +30,7 @@ import {
 	updatePodcastPrefs,
 } from './db/podcasts';
 import { discoverBrowse, discoverSearch, discoverSubscribePodcast } from './services/discover';
+import { FOR_YOU_PAGE_SIZE } from './services/discover/forYou';
 import { followYoutubeChannel, unfollowYoutubeChannel } from './services/discoverFollow';
 import { catchUpPodcast } from './services/podcastCatchup';
 import {
@@ -411,7 +412,13 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			tabParam === 'popular' || tabParam === 'recent' || tabParam === 'forYou' ? tabParam : 'forYou';
 		const interestId = url.searchParams.get('interest') ?? undefined;
 		const includeDebug = url.searchParams.get('debug') === '1' && env.DISCOVER_RELEVANCE_DEBUG === 'true';
-		return json(await discoverBrowse(env, user.id, tab, { interestId, includeDebug }));
+		const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? FOR_YOU_PAGE_SIZE) || FOR_YOU_PAGE_SIZE));
+		const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
+		const loadMore = url.searchParams.get('loadMore') === '1';
+		const refreshOffset = Math.max(0, Number(url.searchParams.get('forYouRefreshOffset') ?? 0) || 0);
+		return json(
+			await discoverBrowse(env, user.id, tab, { interestId, includeDebug, limit, offset, loadMore, refreshOffset }),
+		);
 	}
 
 	if (path === '/api/discover/follow/youtube' && request.method === 'POST') {

@@ -31,6 +31,8 @@ export interface DiscoverSearchResponse {
 
 export interface DiscoverBrowseResponse {
 	forYou: DiscoverRecommendation[];
+	forYouTotal?: number;
+	forYouHasMore?: boolean;
 	forYouInterests?: DiscoverInterest[];
 	forYouEmpty?: boolean;
 	forYouMessage?: string;

@@ -79,6 +79,22 @@ interface DiscoverPageProps {
 	onStatus: (message: string) => void;
 }
 
+const FOR_YOU_PAGE_SIZE = 25;
+
+function mergeForYouItems(
+	primary: DiscoverRecommendation[],
+	additional: DiscoverRecommendation[] = [],
+): DiscoverRecommendation[] {
+	const seen = new Set(primary.map((row) => row.externalId));
+	const out = [...primary];
+	for (const row of additional) {
+		if (seen.has(row.externalId)) continue;
+		seen.add(row.externalId);
+		out.push(row);
+	}
+	return out;
+}
+
 export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPageProps) {
 	const [query, setQuery] = useState('');
 	const [filter, setFilter] = useState<DiscoverFilter>('all');
@@ -95,6 +111,13 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [categories, setCategories] = useState<CategoryRecord[]>([]);
 	const [followSaving, setFollowSaving] = useState(false);
 	const [forYouInterest, setForYouInterest] = useState<string>('all');
+	const [forYouItems, setForYouItems] = useState<DiscoverRecommendation[]>([]);
+	const [forYouInterests, setForYouInterests] = useState<DiscoverBrowseResponse['forYouInterests']>([]);
+	const [forYouTotal, setForYouTotal] = useState(0);
+	const [forYouHasMore, setForYouHasMore] = useState(false);
+	const [forYouMessage, setForYouMessage] = useState<string | undefined>();
+	const [forYouRefreshOffset, setForYouRefreshOffset] = useState(0);
+	const [forYouLoadingMore, setForYouLoadingMore] = useState(false);
 
 	async function loadCategories() {
 		try {
@@ -107,7 +130,48 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}
 	}
 
+	async function loadForYou(interestId: string, append = false) {
+		const offset = append ? forYouItems.length : 0;
+		const needsRemoteFetch = append && offset >= forYouTotal && forYouHasMore;
+		const params = new URLSearchParams({
+			tab: 'forYou',
+			limit: String(FOR_YOU_PAGE_SIZE),
+			offset: String(offset),
+		});
+		if (interestId !== 'all') params.set('interest', interestId);
+		if (needsRemoteFetch) {
+			params.set('loadMore', '1');
+			if (interestId === 'all') params.set('forYouRefreshOffset', String(forYouRefreshOffset));
+		}
+
+		if (append) setForYouLoadingMore(true);
+		else setBrowseLoading(true);
+
+		try {
+			const res = await fetch(`/api/discover/browse?${params.toString()}`, { credentials: 'same-origin' });
+			if (!res.ok) return;
+			const body = (await res.json()) as DiscoverBrowseResponse;
+			setForYouInterests(body.forYouInterests ?? []);
+			setForYouTotal(body.forYouTotal ?? body.forYou.length);
+			setForYouHasMore(body.forYouHasMore ?? false);
+			setForYouMessage(body.forYouMessage);
+			setForYouItems((prev) => (append ? mergeForYouItems(prev, body.forYou ?? []) : body.forYou ?? []));
+			if (needsRemoteFetch && interestId === 'all') {
+				setForYouRefreshOffset((value) => value + 2);
+			}
+			if (!append) {
+				setForYouRefreshOffset(0);
+			}
+		} catch {
+			// Browse is optional; search still works.
+		} finally {
+			if (append) setForYouLoadingMore(false);
+			else setBrowseLoading(false);
+		}
+	}
+
 	async function loadBrowseTab(tab: DiscoverBrowseTab) {
+		if (tab === 'forYou') return;
 		if (browseCache[tab]) return;
 		setBrowseLoading(true);
 		try {
@@ -123,13 +187,21 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	}
 
 	useEffect(() => {
-		void loadBrowseTab('forYou');
 		void loadCategories();
 	}, []);
 
 	useEffect(() => {
-		void loadBrowseTab(browseTab);
-	}, [browseTab]);
+		if (browseTab === 'forYou') {
+			void loadForYou(forYouInterest);
+		} else {
+			void loadBrowseTab(browseTab);
+		}
+	}, [browseTab, forYouInterest]);
+
+	async function loadMoreForYou() {
+		if (forYouLoadingMore || !forYouHasMore) return;
+		await loadForYou(forYouInterest, true);
+	}
 
 	function markUnsubscribed(channelId: string) {
 		const mark = (rows: DiscoveryResult[]) =>
@@ -138,6 +210,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			);
 		const removeChannel = (rows: DiscoveryResult[]) => rows.filter((row) => row.externalId !== channelId);
 		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
+		setForYouItems((rows) => mark(rows));
 		setBrowseCache((prev) => {
 			const next = { ...prev };
 			for (const tab of Object.keys(next) as DiscoverBrowseTab[]) {
@@ -242,6 +315,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		const filterForYou = (rows: DiscoverRecommendation[]) =>
 			rows.filter((row) => row.externalId !== channelId && row.parentExternalId !== channelId);
 		setResponse((prev) => (prev ? { ...prev, results: mark(prev.results) } : prev));
+		setForYouItems((rows) => filterForYou(rows));
 		setBrowseCache((prev) => {
 			const next = { ...prev };
 			for (const tab of Object.keys(next) as DiscoverBrowseTab[]) {
@@ -249,7 +323,6 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				if (!entry) continue;
 				next[tab] = {
 					...entry,
-					forYou: tab === 'forYou' ? filterForYou(entry.forYou ?? []) : entry.forYou,
 					recentlyFollowed: mark(entry.recentlyFollowed ?? []),
 					popularVideos: mark(entry.popularVideos ?? []),
 				};
@@ -517,16 +590,14 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}) ?? [];
 
 	const activeBrowse = browseCache[browseTab];
-	const forYouInterests = activeBrowse?.forYouInterests ?? [];
-	const allForYou = activeBrowse?.forYou ?? [];
 	const browseResults =
 		browseTab === 'forYou'
-			? forYouInterest === 'all'
-				? allForYou
-				: allForYou.filter((row) => row.interestId === forYouInterest)
+			? forYouItems
 			: browseTab === 'popular'
 				? activeBrowse?.popularVideos ?? []
 				: activeBrowse?.recentlyFollowed ?? [];
+	const showForYouSeeMore = browseTab === 'forYou' && forYouHasMore;
+	const forYouEmpty = browseTab === 'forYou' && !browseLoading && forYouItems.length === 0;
 
 	return (
 		<div className="discover-shell">
@@ -604,7 +675,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					</div>
 				</div>
 
-				{browseTab === 'forYou' && forYouInterests.length ? (
+				{browseTab === 'forYou' && forYouInterests && forYouInterests.length ? (
 					<div className="discover-interest-chips" role="tablist" aria-label="For You interests">
 						<button
 							type="button"
@@ -632,9 +703,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 				{browseLoading && !activeBrowse ? <p className="muted discover-hint">Loading browse…</p> : null}
 
-				{browseTab === 'forYou' && activeBrowse?.forYouEmpty ? (
+				{browseTab === 'forYou' && forYouEmpty ? (
 					<div className="discover-section-block">
-						<p className="muted">{activeBrowse.forYouMessage ?? 'Follow and categorize channels to improve For You.'}</p>
+						<p className="muted">{forYouMessage ?? 'Follow and categorize channels to improve For You.'}</p>
 						<button className="ghost tiny" type="button" onClick={() => setBrowseTab('popular')}>
 							Browse Popular
 						</button>
@@ -644,6 +715,20 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				{browseResults.length ? (
 					<div className="discover-section-block">
 						<ul className="discover-results">{browseResults.map((result) => renderResult(result))}</ul>
+						{showForYouSeeMore ? (
+							<div className="discover-see-more-wrap">
+								<button
+									className="ghost discover-see-more"
+									type="button"
+									disabled={forYouLoadingMore}
+									onClick={() => void loadMoreForYou()}
+								>
+									{forYouLoadingMore
+										? 'Loading more…'
+										: 'See more'}
+								</button>
+							</div>
+						) : null}
 					</div>
 				) : null}
 

@@ -459,6 +459,7 @@ export class MemorySyncDb {
 				results_json: bound[1],
 				searched_at: bound[2],
 				expires_at: bound[3],
+				next_page_token: bound[4] ?? null,
 			});
 			return 1;
 		}
@@ -903,7 +904,15 @@ export class MemorySyncDb {
 		}
 		if (normalized.includes('FROM topic_discovery_cache WHERE normalized_topic = ?')) {
 			const row = this.topicDiscoveryCache.get(String(bound[0]));
-			return row ? [row] : [];
+			if (!row) return [];
+			return [
+				{
+					results_json: row.results_json,
+					searched_at: row.searched_at,
+					expires_at: row.expires_at,
+					next_page_token: row.next_page_token ?? null,
+				},
+			];
 		}
 		if (normalized.includes('FROM discover_browse_cache WHERE section_key = ?')) {
 			const row = this.discoverBrowseCache.get(String(bound[0]));

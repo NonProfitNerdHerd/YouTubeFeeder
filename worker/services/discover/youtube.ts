@@ -56,14 +56,19 @@ export function overlayYoutubeSubscribed(results: DiscoveryResult[], subscribed:
 export async function searchYoutubeChannels(
 	yt: YoutubeClient,
 	query: string,
-): Promise<DiscoveryResult[]> {
-	const page = await yt.getJson<{ items?: SearchListChannelItem[] }>('search', {
+	pageToken?: string,
+): Promise<{ results: DiscoveryResult[]; nextPageToken: string | null }> {
+	const page = await yt.getJson<{ items?: SearchListChannelItem[]; nextPageToken?: string }>('search', {
 		part: 'snippet',
 		q: query,
 		type: 'channel',
-		maxResults: '15',
+		maxResults: '50',
+		...(pageToken ? { pageToken } : {}),
 	});
-	return mapChannelSearchItems(page.items ?? []);
+	return {
+		results: mapChannelSearchItems(page.items ?? []),
+		nextPageToken: page.nextPageToken ?? null,
+	};
 }
 
 export interface YoutubeDiscoverSearchResult {
@@ -133,7 +138,7 @@ export async function searchYoutubeDiscover(
 	}
 
 	const yt = createYoutubeApiKeyClient(apiKey);
-	const rawResults = await searchYoutubeChannels(yt, query.trim());
+	const { results: rawResults } = await searchYoutubeChannels(yt, query.trim());
 	await recordYoutubeCalls(env.DB, yt);
 
 	const cachePayload = rawResults.map(({ subscribed: _s, ...row }) => row);

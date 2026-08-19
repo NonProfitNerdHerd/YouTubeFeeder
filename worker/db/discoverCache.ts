@@ -96,11 +96,11 @@ export async function getTopicDiscoveryCache(
 	db: D1Database,
 	normalizedTopic: string,
 	now = new Date(),
-): Promise<{ results: DiscoveryResult[]; searchedAt: string; stale: boolean } | null> {
+): Promise<{ results: DiscoveryResult[]; searchedAt: string; stale: boolean; nextPageToken: string | null } | null> {
 	const row = await db
-		.prepare(`SELECT results_json, searched_at, expires_at FROM topic_discovery_cache WHERE normalized_topic = ?`)
+		.prepare(`SELECT results_json, searched_at, expires_at, next_page_token FROM topic_discovery_cache WHERE normalized_topic = ?`)
 		.bind(normalizedTopic)
-		.first<{ results_json: string; searched_at: string; expires_at: string }>();
+		.first<{ results_json: string; searched_at: string; expires_at: string; next_page_token: string | null }>();
 	if (!row) return null;
 	let results: DiscoveryResult[] = [];
 	try {
@@ -109,13 +109,14 @@ export async function getTopicDiscoveryCache(
 		return null;
 	}
 	const fresh = row.expires_at > now.toISOString();
-	return { results, searchedAt: row.searched_at, stale: !fresh };
+	return { results, searchedAt: row.searched_at, stale: !fresh, nextPageToken: row.next_page_token ?? null };
 }
 
 export async function putTopicDiscoveryCache(
 	db: D1Database,
 	normalizedTopic: string,
 	results: DiscoveryResult[],
+	nextPageToken: string | null = null,
 	ttlMs = DISCOVER_TOPIC_CACHE_TTL_MS,
 	now = new Date(),
 ): Promise<void> {
@@ -123,13 +124,33 @@ export async function putTopicDiscoveryCache(
 	const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
 	await db
 		.prepare(
-			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at)
-			 VALUES (?, ?, ?, ?)
+			`INSERT INTO topic_discovery_cache (normalized_topic, results_json, searched_at, expires_at, next_page_token)
+			 VALUES (?, ?, ?, ?, ?)
 			 ON CONFLICT(normalized_topic) DO UPDATE SET
 				results_json = excluded.results_json,
 				searched_at = excluded.searched_at,
-				expires_at = excluded.expires_at`,
+				expires_at = excluded.expires_at,
+				next_page_token = excluded.next_page_token`,
 		)
-		.bind(normalizedTopic, JSON.stringify(results), searchedAt, expiresAt)
+		.bind(normalizedTopic, JSON.stringify(results), searchedAt, expiresAt, nextPageToken)
 		.run();
+}
+
+export async function appendTopicDiscoveryCache(
+	db: D1Database,
+	normalizedTopic: string,
+	additionalResults: DiscoveryResult[],
+	nextPageToken: string | null,
+	ttlMs = DISCOVER_TOPIC_CACHE_TTL_MS,
+	now = new Date(),
+): Promise<void> {
+	const existing = await getTopicDiscoveryCache(db, normalizedTopic, now);
+	const merged = [...(existing?.results ?? [])];
+	const seen = new Set(merged.map((row) => row.externalId));
+	for (const row of additionalResults) {
+		if (seen.has(row.externalId)) continue;
+		seen.add(row.externalId);
+		merged.push(row);
+	}
+	await putTopicDiscoveryCache(db, normalizedTopic, merged, nextPageToken, ttlMs, now);
 }
