@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import type { CategoryRecord } from '../types';
 import type {
 	DiscoverBrowseResponse,
 	DiscoverBrowseTab,
@@ -7,6 +8,27 @@ import type {
 	DiscoverSearchResponse,
 	DiscoveryResult,
 } from '../types/discover';
+
+interface SyncApiBody {
+	error?: { message: string };
+	errorSummary?: string | null;
+	videosAdded?: number;
+	done?: boolean;
+	nextPageToken?: string;
+	pulled?: number;
+	want?: number;
+}
+
+interface FollowSetupState {
+	channelId: string;
+	title: string;
+	description?: string;
+	thumbnailUrl?: string;
+}
+
+function syncMessage(body: SyncApiBody, fallback: string): string {
+	return body.error?.message || body.errorSummary || fallback;
+}
 
 function IconSearch() {
 	return (
@@ -69,7 +91,21 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [following, setFollowing] = useState<string | null>(null);
 	const [unfollowing, setUnfollowing] = useState<string | null>(null);
 	const [unfollowConfirm, setUnfollowConfirm] = useState<{ channelId: string; title: string } | null>(null);
+	const [followSetup, setFollowSetup] = useState<FollowSetupState | null>(null);
+	const [categories, setCategories] = useState<CategoryRecord[]>([]);
+	const [followSaving, setFollowSaving] = useState(false);
 	const [forYouInterest, setForYouInterest] = useState<string>('all');
+
+	async function loadCategories() {
+		try {
+			const res = await fetch('/api/categories', { credentials: 'same-origin' });
+			if (!res.ok) return;
+			const body = (await res.json()) as { categories?: CategoryRecord[] };
+			setCategories(body.categories ?? []);
+		} catch {
+			// Categories are optional in the follow modal.
+		}
+	}
 
 	async function loadBrowseTab(tab: DiscoverBrowseTab) {
 		if (browseCache[tab]) return;
@@ -88,6 +124,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 	useEffect(() => {
 		void loadBrowseTab('forYou');
+		void loadCategories();
 	}, []);
 
 	useEffect(() => {
@@ -154,11 +191,21 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		await unfollowYoutube(unfollowConfirm.channelId, unfollowConfirm.title);
 	}
 
+	function requestFollow(result: DiscoveryResult, channelId: string) {
+		onError('');
+		setFollowSetup({
+			channelId,
+			title: youtubeChannelTitle(result),
+			description: result.description,
+			thumbnailUrl: result.type === 'channel' ? result.imageUrl : undefined,
+		});
+	}
+
 	function renderYoutubeFollowAction(result: DiscoveryResult, channelId: string) {
 		if (result.subscribed) {
 			return (
 				<button
-					className="ghost tiny discover-unfollow"
+					className="discover-unfollow-btn"
 					type="button"
 					disabled={unfollowing === channelId}
 					onClick={() => requestUnfollow(channelId, youtubeChannelTitle(result))}
@@ -169,13 +216,21 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}
 		return (
 			<button
-				className="ghost tiny"
+				className="discover-follow-btn"
 				type="button"
-				disabled={following === channelId}
-				onClick={() => void followYoutube(result)}
+				disabled={following === channelId || followSaving}
+				onClick={() => requestFollow(result, channelId)}
 			>
 				{following === channelId ? 'Following…' : 'Follow in VortiQuest'}
 			</button>
+		);
+	}
+
+	function renderYoutubeChannelLink(result: DiscoveryResult, className: string, children: ReactNode) {
+		return (
+			<a className={className} href={channelUrl(result)} target="_blank" rel="noreferrer">
+				{children}
+			</a>
 		);
 	}
 
@@ -267,31 +322,87 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}
 	}
 
-	async function followYoutube(result: DiscoveryResult) {
-		const channelId = result.type === 'channel' ? result.externalId : result.parentExternalId;
-		if (!channelId) return;
-		setFollowing(channelId);
+	async function runCatchupChannel(channelId: string, title: string, pull: number) {
+		let pageToken = '';
+		let pulled = 0;
+		let added = 0;
+		const want = Math.min(500, pull);
+		for (;;) {
+			onStatus(`Catching up ${title}… ${pulled} / ${want}`);
+			const res = await fetch('/api/sync/catchup', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({ channelId, pageToken, pulled }),
+			});
+			const body = (await res.json().catch(() => ({}))) as SyncApiBody;
+			if (!res.ok) throw new Error(syncMessage(body, 'Catch up failed.'));
+			added += body.videosAdded ?? 0;
+			pulled = body.pulled ?? pulled;
+			const nextWant = body.want ?? want;
+			if (body.done) break;
+			if ((body.videosAdded ?? 0) < 1) break;
+			pageToken = body.nextPageToken ?? '';
+			if (pulled >= nextWant) break;
+		}
+		if (added > 0) {
+			onStatus(`Added ${added} videos from ${title}.`);
+		}
+	}
+
+	async function saveFollowSetup(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!followSetup) return;
+		const form = new FormData(event.currentTarget);
+		const maxVideosToPull = Number(form.get('maxVideosToPull') || 0);
+		const categoryIds = form.getAll('categoryIds').map(String);
+		const followInInbox = form.get('followInInbox') === 'on';
+
+		setFollowSaving(true);
+		setFollowing(followSetup.channelId);
 		onError('');
 		try {
-			const res = await fetch('/api/discover/follow/youtube', {
+			const followRes = await fetch('/api/discover/follow/youtube', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				credentials: 'same-origin',
 				body: JSON.stringify({
-					channelId,
-					title: result.type === 'channel' ? result.title : result.parentTitle ?? result.publisher,
-					description: result.description,
-					thumbnailUrl: result.type === 'channel' ? result.imageUrl : undefined,
+					channelId: followSetup.channelId,
+					title: followSetup.title,
+					description: followSetup.description,
+					thumbnailUrl: followSetup.thumbnailUrl,
 				}),
 			});
-			const body = (await res.json()) as { error?: { message: string }; alreadyFollowing?: boolean };
-			if (!res.ok) throw new Error(body.error?.message ?? 'Follow failed.');
-			onStatus(body.alreadyFollowing ? `Already following ${result.title}.` : `Now following ${result.title} in VortiQuest.`);
-			markSubscribed(channelId);
+			const followBody = (await followRes.json()) as { error?: { message: string }; alreadyFollowing?: boolean };
+			if (!followRes.ok) throw new Error(followBody.error?.message ?? 'Follow failed.');
+
+			const patchRes = await fetch(`/api/channels/${encodeURIComponent(followSetup.channelId)}`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'same-origin',
+				body: JSON.stringify({
+					followInInbox,
+					maxVideosToPull,
+					categoryIds,
+				}),
+			});
+			if (!patchRes.ok) throw new Error('Could not save channel settings.');
+
+			if (maxVideosToPull > 0) {
+				await runCatchupChannel(followSetup.channelId, followSetup.title, maxVideosToPull);
+			} else if (followBody.alreadyFollowing) {
+				onStatus(`Updated settings for ${followSetup.title}.`);
+			} else {
+				onStatus(`Now following ${followSetup.title} in VortiQuest.`);
+			}
+
+			markSubscribed(followSetup.channelId);
 			onSubscribed();
+			setFollowSetup(null);
 		} catch (err: unknown) {
 			onError(err instanceof Error ? err.message : 'Follow failed.');
 		} finally {
+			setFollowSaving(false);
 			setFollowing(null);
 		}
 	}
@@ -350,6 +461,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 	function renderResult(result: DiscoveryResult | DiscoverRecommendation) {
 		const isChannel = result.type === 'channel';
+		const isYoutubeChannel = isChannel && result.provider === 'youtube';
 		const reason = 'recommendationReason' in result ? result.recommendationReason : undefined;
 		return (
 			<li
@@ -357,7 +469,17 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				className={isChannel ? 'discover-result discover-result-channel' : 'discover-result'}
 			>
 				<div className="discover-thumb-wrap">
-					{result.imageUrl ? (
+					{isYoutubeChannel ? (
+						renderYoutubeChannelLink(
+							result,
+							'discover-channel-link discover-channel-thumb-link',
+							result.imageUrl ? (
+								<img src={result.imageUrl} alt="" className="discover-thumb" />
+							) : (
+								<span className="discover-thumb placeholder" aria-hidden="true" />
+							),
+						)
+					) : result.imageUrl ? (
 						<img src={result.imageUrl} alt="" className="discover-thumb" />
 					) : (
 						<span className="discover-thumb placeholder" aria-hidden="true" />
@@ -365,9 +487,19 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				</div>
 				<div className="discover-result-body">
 					{renderTypeBadge(result)}
-					<strong className="video-title">{result.title}</strong>
+					{isYoutubeChannel ? (
+						renderYoutubeChannelLink(result, 'discover-channel-link discover-channel-title-link', <strong className="video-title">{result.title}</strong>)
+					) : (
+						<strong className="video-title">{result.title}</strong>
+					)}
 					{result.publisher && result.type !== 'channel' ? <small className="muted">{result.publisher}</small> : null}
-					{result.description ? <p className="muted discover-desc">{result.description}</p> : null}
+					{result.description ? (
+						isYoutubeChannel ? (
+							renderYoutubeChannelLink(result, 'discover-channel-link discover-channel-desc-link', <p className="muted discover-desc">{result.description}</p>)
+						) : (
+							<p className="muted discover-desc">{result.description}</p>
+						)
+					) : null}
 					{reason ? <p className="discover-reason">{reason}</p> : null}
 					{result.parentTitle ? <small className="muted">From {result.parentTitle}</small> : null}
 				</div>
@@ -400,37 +532,6 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		<div className="discover-shell">
 			<div className="discover-scroll">
 				<div className="discover-page">
-			<form className="discover-search" onSubmit={(e) => void runSearch(e)}>
-				<label className="discover-search-field">
-					<IconSearch />
-					<input
-						type="search"
-						value={query}
-						onChange={(e) => setQuery(e.target.value)}
-						placeholder="Search podcasts, YouTube channels, creators, or topics"
-						aria-label="Discover search"
-					/>
-				</label>
-				<button className="ghost discover-search-submit" type="submit" disabled={loading}>
-					{loading ? 'Searching…' : 'Search'}
-				</button>
-			</form>
-
-			<div className="discover-filters" role="tablist" aria-label="Result filters">
-				{(['all', 'podcasts', 'youtube', 'live'] as DiscoverFilter[]).map((value) => (
-					<button
-						key={value}
-						type="button"
-						className={filter === value ? 'tab active' : 'tab'}
-						role="tab"
-						aria-selected={filter === value}
-						onClick={() => setFilter(value)}
-					>
-						{value === 'all' ? 'All' : value === 'podcasts' ? 'Podcasts' : value === 'youtube' ? 'YouTube' : 'Live'}
-					</button>
-				))}
-			</div>
-
 			{response?.cached ? <p className="muted discover-hint">Showing cached Discover results.</p> : null}
 
 			{response?.warnings.length ? (
@@ -445,29 +546,62 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				<p className="muted discover-hint">No results found for &ldquo;{response.query}&rdquo;.</p>
 			) : null}
 
-			<ul className="discover-results">{filtered.map((result) => renderResult(result))}</ul>
+			{filtered.length ? <ul className="discover-results">{filtered.map((result) => renderResult(result))}</ul> : null}
 
 			<section className="discover-sections">
 				<h2>Browse</h2>
-				<div className="discover-browse-tabs" role="tablist" aria-label="Browse tabs">
-					{(
-						[
-							['forYou', 'For You'],
-							['popular', 'Popular'],
-							['recent', 'Recently Followed'],
-						] as const
-					).map(([value, label]) => (
-						<button
-							key={value}
-							type="button"
-							className={browseTab === value ? 'tab active' : 'tab'}
-							role="tab"
-							aria-selected={browseTab === value}
-							onClick={() => setBrowseTab(value)}
-						>
-							{label}
+				<div className="discover-toolbar">
+					<div className="discover-browse-tabs" role="tablist" aria-label="Browse tabs">
+						{(
+							[
+								['forYou', 'For You'],
+								['popular', 'Popular'],
+								['recent', 'Recently Followed'],
+							] as const
+						).map(([value, label]) => (
+							<button
+								key={value}
+								type="button"
+								className={browseTab === value ? 'tab active' : 'tab'}
+								role="tab"
+								aria-selected={browseTab === value}
+								onClick={() => setBrowseTab(value)}
+							>
+								{label}
+							</button>
+						))}
+					</div>
+
+					<form className="discover-search" onSubmit={(e) => void runSearch(e)}>
+						<label className="discover-search-field">
+							<IconSearch />
+							<input
+								type="search"
+								value={query}
+								onChange={(e) => setQuery(e.target.value)}
+								placeholder="Search podcasts, YouTube channels, creators, or topics"
+								aria-label="Discover search"
+							/>
+						</label>
+						<button className="ghost discover-search-submit" type="submit" disabled={loading}>
+							{loading ? 'Searching…' : 'Search'}
 						</button>
-					))}
+					</form>
+
+					<div className="discover-filters" role="tablist" aria-label="Result filters">
+						{(['all', 'podcasts', 'youtube'] as DiscoverFilter[]).map((value) => (
+							<button
+								key={value}
+								type="button"
+								className={filter === value ? 'tab active' : 'tab'}
+								role="tab"
+								aria-selected={filter === value}
+								onClick={() => setFilter(value)}
+							>
+								{value === 'all' ? 'All' : value === 'podcasts' ? 'Podcasts' : 'YouTube'}
+							</button>
+						))}
+					</div>
 				</div>
 
 				{browseTab === 'forYou' && forYouInterests.length ? (
@@ -523,6 +657,49 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				</section>
 				</div>
 			</div>
+			{followSetup ? (
+				<div className="modal-backdrop" onClick={() => !followSaving && setFollowSetup(null)}>
+					<form
+						className="modal discover-follow-modal"
+						onClick={(e) => e.stopPropagation()}
+						onSubmit={(e) => void saveFollowSetup(e)}
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="discover-follow-title"
+					>
+						<h2 id="discover-follow-title">Follow {followSetup.title}</h2>
+						<label className="check">
+							<input type="checkbox" name="followInInbox" defaultChecked />
+							Follow in inbox (always pull new videos)
+						</label>
+						<label>
+							How many older videos to catch up (0–500)
+							<input type="number" name="maxVideosToPull" min={0} max={500} defaultValue={0} />
+						</label>
+						<fieldset className="modal-cats">
+							<legend>Categories</legend>
+							{categories.length === 0 ? (
+								<p className="muted">Add a category on the By Category tab first.</p>
+							) : (
+								categories.map((cat) => (
+									<label key={cat.id} className="check">
+										<input type="checkbox" name="categoryIds" value={cat.id} />
+										{cat.name}
+									</label>
+								))
+							)}
+						</fieldset>
+						<div className="modal-actions">
+							<button className="ghost" type="button" onClick={() => setFollowSetup(null)} disabled={followSaving}>
+								Cancel
+							</button>
+							<button className="discover-follow-btn discover-follow-modal-save" type="submit" disabled={followSaving}>
+								{followSaving ? 'Saving…' : 'Save'}
+							</button>
+						</div>
+					</form>
+				</div>
+			) : null}
 			{unfollowConfirm ? (
 				<div className="modal-backdrop" onClick={() => setUnfollowConfirm(null)}>
 					<div className="modal discover-unfollow-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="discover-unfollow-title">
