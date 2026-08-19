@@ -226,11 +226,15 @@ function IconGear() {
 	);
 }
 
-function categoryNames(channel: ChannelRecord, all: CategoryRecord[]): string {
-	const names = channel.categoryIds
+function categoryNames(ids: string[], all: CategoryRecord[]): string {
+	const names = ids
 		.map((id) => all.find((cat) => cat.id === id)?.name)
 		.filter((name): name is string => Boolean(name));
 	return names.length ? names.join(', ') : 'No category';
+}
+
+function channelCategoryNames(channel: ChannelRecord, all: CategoryRecord[]): string {
+	return categoryNames(channel.categoryIds, all);
 }
 
 export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () => void }) {
@@ -552,6 +556,12 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		return channel.categoryIds.includes(filterId);
 	}
 
+	function podcastMatchesCategory(podcast: PodcastSubscriptionRecord, filterId: string | null): boolean {
+		if (!filterId) return true;
+		if (isUncategorizedFilter(filterId)) return podcast.categoryIds.length === 0;
+		return podcast.categoryIds.includes(filterId);
+	}
+
 	const listMultiSelectEnabled =
 		!androidClient && (leftTab === 'inbox' || leftTab === 'snoozed' || leftTab === 'deleted');
 
@@ -747,6 +757,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			body: JSON.stringify({
 				followInInbox: form.get('followInInbox') === 'on',
 				maxEpisodesToPull,
+				categoryIds: form.getAll('categoryIds').map(String),
 			}),
 		});
 		if (!res.ok) return null;
@@ -1284,12 +1295,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const categoryThreeCol = !androidClient && !phoneLayout && leftTab === 'categories';
 	const feedThreeCol = streamsThreeCol || watchlistThreeCol || categoryThreeCol;
 	const streamsList = categoryId ? channels.filter((ch) => channelMatchesCategory(ch, categoryId)) : channels;
+	const podcastsList = categoryId ? podcasts.filter((p) => podcastMatchesCategory(p, categoryId)) : podcasts;
 	type SubscriptionRow =
 		| { kind: 'youtube'; data: ChannelRecord }
 		| { kind: 'podcast'; data: PodcastSubscriptionRecord };
 	const subscriptionRows: SubscriptionRow[] = [
 		...streamsList.map((data) => ({ kind: 'youtube' as const, data })),
-		...(categoryId ? [] : podcasts.map((data) => ({ kind: 'podcast' as const, data }))),
+		...podcastsList.map((data) => ({ kind: 'podcast' as const, data })),
 	].sort((a, b) => a.data.title.localeCompare(b.data.title));
 	const visibleItems = items?.filter((item) => matchesWatchedFilter(item.watchedAt, watchedFilter)) ?? null;
 	const playthroughCurrent = playthroughActive
@@ -2215,7 +2227,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 														? `Last video sync: ${new Date(row.data.lastSynchronizedAt).toLocaleString()}`
 														: 'Last video sync: never'}
 												</small>
-												<small className="muted cat-tags">{categoryNames(row.data, categories)}</small>
+												<small className="muted cat-tags">{channelCategoryNames(row.data, categories)}</small>
 											</span>
 										</button>
 										<button className="ghost tiny" type="button" onClick={() => setEditing(row.data)}>
@@ -2225,7 +2237,11 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								) : (
 									<div key={row.data.podcastId} className="sub-row">
 										<button className="sub" type="button" onClick={() => setSelectedVideoId(null)}>
-											{row.data.imageUrl ? <img src={row.data.imageUrl} alt="" /> : <span className="discover-thumb placeholder" />}
+											{row.data.imageUrl ? (
+												<img src={row.data.imageUrl} alt="" />
+											) : (
+												<span className="sub-avatar-placeholder" aria-hidden="true" />
+											)}
 											<span>
 												<strong className="video-title">{row.data.title}</strong>
 												<small className="muted">
@@ -2238,6 +2254,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 														? `Last feed sync: ${new Date(row.data.lastPolledAt).toLocaleString()}`
 														: 'Last feed sync: never'}
 												</small>
+												<small className="muted cat-tags">{categoryNames(row.data.categoryIds, categories)}</small>
 											</span>
 										</button>
 										<button className="ghost tiny" type="button" onClick={() => setEditingPodcast(row.data)}>
@@ -2683,6 +2700,21 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							How many older episodes to catch up (0–500)
 							<input type="number" name="maxEpisodesToPull" min={0} max={500} defaultValue={editingPodcast.maxEpisodesToPull} />
 						</label>
+						<fieldset className="modal-cats">
+							<legend>Categories</legend>
+							{categories.length === 0 ? <p className="muted">Add a category on the By Category tab first.</p> : null}
+							{categories.map((cat) => (
+								<label key={cat.id} className="check">
+									<input
+										type="checkbox"
+										name="categoryIds"
+										value={cat.id}
+										defaultChecked={editingPodcast.categoryIds.includes(cat.id)}
+									/>
+									{cat.name}
+								</label>
+							))}
+						</fieldset>
 						<div className="modal-actions">
 							<button className="ghost" type="button" onClick={() => setEditingPodcast(null)}>
 								Cancel

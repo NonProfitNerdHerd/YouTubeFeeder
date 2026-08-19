@@ -545,11 +545,15 @@ export async function renameCategory(db: D1Database, userId: string, id: string,
 }
 
 export async function deleteCategory(db: D1Database, userId: string, id: string): Promise<void> {
-	const linked = await db
+	const linkedChannels = await db
 		.prepare(`SELECT COUNT(*) AS n FROM channel_categories WHERE user_id = ? AND category_id = ?`)
 		.bind(userId, id)
 		.first<{ n: number }>();
-	if ((linked?.n ?? 0) > 0) throw new Error('in_use');
+	const linkedPodcasts = await db
+		.prepare(`SELECT COUNT(*) AS n FROM podcast_categories WHERE user_id = ? AND category_id = ?`)
+		.bind(userId, id)
+		.first<{ n: number }>();
+	if ((linkedChannels?.n ?? 0) > 0 || (linkedPodcasts?.n ?? 0) > 0) throw new Error('in_use');
 	await db.prepare(`DELETE FROM categories WHERE user_id = ? AND id = ?`).bind(userId, id).run();
 }
 

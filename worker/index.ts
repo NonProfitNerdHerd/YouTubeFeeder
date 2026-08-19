@@ -288,7 +288,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 				return apiError(
 					409,
 					'in_use',
-					'Remove this category from all streams (Edit on Streams) before deleting it.',
+					'Remove this category from all subscriptions (Edit on Subscriptions) before deleting it.',
 				);
 			}
 			throw err;
@@ -442,11 +442,12 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		const podcastId = decodeURIComponent(path.slice('/api/podcasts/'.length));
-		const body = await readJson<{ followInInbox?: boolean; maxEpisodesToPull?: number }>(request);
+		const body = await readJson<{ followInInbox?: boolean; maxEpisodesToPull?: number; categoryIds?: string[] }>(request);
 		if (!body) return apiError(400, 'invalid_json', 'Expected JSON body.');
 		const ok = await updatePodcastPrefs(env.DB, user.id, podcastId, {
 			followInInbox: body.followInInbox !== false,
 			maxEpisodesToPull: typeof body.maxEpisodesToPull === 'number' ? body.maxEpisodesToPull : 20,
+			categoryIds: Array.isArray(body.categoryIds) ? body.categoryIds.filter((id) => typeof id === 'string') : [],
 		});
 		if (!ok) return apiError(404, 'not_found', 'Podcast subscription not found.');
 		return json({ ok: true });

@@ -225,6 +225,15 @@
 	background: #000;
 }
 
+.sub-avatar-placeholder {
+	display: inline-block;
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	background: #243044;
+	flex-shrink: 0;
+}
+
 .sub.active {
 	background: #243044;
 }

@@ -62,6 +62,17 @@ export async function listPodcastSubscriptions(db: D1Database, userId: string): 
 		.all<{ subscription_id: string; n: number }>();
 	const countBySub = new Map((counts.results ?? []).map((r) => [r.subscription_id, r.n]));
 
+	const tags = await db
+		.prepare(`SELECT podcast_id, category_id FROM podcast_categories WHERE user_id = ?`)
+		.bind(userId)
+		.all<{ podcast_id: string; category_id: string }>();
+	const byPodcast = new Map<string, string[]>();
+	for (const row of tags.results ?? []) {
+		const list = byPodcast.get(row.podcast_id) ?? [];
+		list.push(row.category_id);
+		byPodcast.set(row.podcast_id, list);
+	}
+
 	return (rows.results ?? []).map((row) => ({
 		podcastId: row.id,
 		externalFeedId: row.external_feed_id,
@@ -75,6 +86,7 @@ export async function listPodcastSubscriptions(db: D1Database, userId: string): 
 		inboxEpisodeCount: countBySub.get(row.id) ?? 0,
 		lastPolledAt: row.last_polled_at,
 		subscribedAt: row.subscribed_at,
+		categoryIds: byPodcast.get(row.id) ?? [],
 	}));
 }
 
@@ -128,7 +140,7 @@ export async function updatePodcastPrefs(
 	db: D1Database,
 	userId: string,
 	podcastId: string,
-	input: { followInInbox: boolean; maxEpisodesToPull: number },
+	input: { followInInbox: boolean; maxEpisodesToPull: number; categoryIds: string[] },
 ): Promise<boolean> {
 	const result = await db
 		.prepare(
@@ -138,7 +150,15 @@ export async function updatePodcastPrefs(
 		)
 		.bind(input.followInInbox ? 1 : 0, Math.min(500, Math.max(0, input.maxEpisodesToPull)), userId, podcastId)
 		.run();
-	return (result.meta.changes ?? 0) > 0;
+	if ((result.meta.changes ?? 0) < 1) return false;
+	await db.prepare(`DELETE FROM podcast_categories WHERE user_id = ? AND podcast_id = ?`).bind(userId, podcastId).run();
+	for (const categoryId of input.categoryIds) {
+		await db
+			.prepare(`INSERT OR IGNORE INTO podcast_categories (user_id, podcast_id, category_id) VALUES (?, ?, ?)`)
+			.bind(userId, podcastId, categoryId)
+			.run();
+	}
+	return true;
 }
 
 export async function getPodcastSubscription(

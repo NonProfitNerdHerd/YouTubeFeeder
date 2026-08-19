@@ -78,6 +78,7 @@ export interface PodcastSubscriptionRecord {
 	inboxEpisodeCount: number;
 	lastPolledAt: string | null;
 	subscribedAt: string;
+	categoryIds: string[];
 }
 
 export interface ChannelRecord {

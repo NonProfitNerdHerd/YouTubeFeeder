@@ -110,6 +110,7 @@ describe('Discover UI wiring', () => {
 		expect(source).toContain('DiscoverPage');
 		expect(source).toContain('editingPodcast');
 		expect(source).toContain('catchUpPodcast');
-		expect(source).toContain('subscriptionRows');
+		expect(source).toContain('categoryIds');
+		expect(source).toContain('sub-avatar-placeholder');
 	});
 });
