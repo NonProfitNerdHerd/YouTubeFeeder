@@ -130,6 +130,20 @@ function isShowingPopularFallback(
 	return serverItems.length === 0 && (popularCache[interestId]?.length ?? 0) > 0;
 }
 
+function tagGlobalPopularFallback(
+	channels: DiscoveryResult[],
+	interestId: string,
+	interestLabel: string,
+): DiscoverRecommendation[] {
+	return channels.map((row) => ({
+		...row,
+		subscribed: false,
+		interestId,
+		interestLabel,
+		recommendationReason: `Trending while we build ${interestLabel} recommendations`,
+	}));
+}
+
 export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPageProps) {
 	const [query, setQuery] = useState('');
 	const [filter, setFilter] = useState<DiscoverFilter>('all');
@@ -158,6 +172,8 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [popularInterestContext, setPopularInterestContext] = useState<string | undefined>();
 	const [forYouPopularCache, setForYouPopularCache] = useState<Record<string, DiscoverRecommendation[]>>({});
 	const [forYouPopularLoading, setForYouPopularLoading] = useState<string | null>(null);
+	const [forYouPopularLoaded, setForYouPopularLoaded] = useState<Record<string, boolean>>({});
+	const [forYouPopularUsedGlobal, setForYouPopularUsedGlobal] = useState<Record<string, boolean>>({});
 	const [notInterestedTarget, setNotInterestedTarget] = useState<DiscoverRecommendation | null>(null);
 	const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 	const [undoFeedback, setUndoFeedback] = useState<UndoFeedbackState | null>(null);
@@ -810,6 +826,13 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const showingPopularFallback = isShowingPopularFallback(forYouInterest, forYouItems, forYouPopularCache);
 	const popularFallbackLabel =
 		forYouInterests?.find((row) => row.id === forYouInterest)?.label ?? 'this interest';
+	const forYouPopularCacheKey = forYouInterest === 'all' ? FOR_YOU_ALL_POPULAR_KEY : forYouInterest;
+	const forYouPopularExhausted =
+		browseTab === 'forYou' &&
+		forYouPopularLoaded[forYouPopularCacheKey] &&
+		forYouDisplayItems.length === 0 &&
+		!forYouPopularLoading &&
+		!browseLoading;
 	const browseResults =
 		browseTab === 'forYou'
 			? forYouDisplayItems
@@ -817,7 +840,6 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				? activeBrowse?.recentlyFollowed ?? []
 				: [];
 	const showForYouSeeMore = browseTab === 'forYou' && forYouItems.length > 0 && forYouHasMore;
-	const forYouPopularCacheKey = forYouInterest === 'all' ? FOR_YOU_ALL_POPULAR_KEY : forYouInterest;
 	const forYouEmpty =
 		browseTab === 'forYou' &&
 		!browseLoading &&
@@ -854,11 +876,25 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				return;
 			}
 			const body = (await res.json()) as DiscoverBrowseResponse;
-			const channels =
-				forYouInterest === 'all'
-					? (body.popularChannels ?? [])
-					: (body.popularInterestChannels ?? []);
+			let channels: DiscoverRecommendation[] = [];
+			let usedGlobalFallback = false;
+
+			if (forYouInterest === 'all') {
+				channels = body.popularChannels ?? [];
+			} else {
+				const interestLabel = body.popularInterestLabel ?? popularFallbackLabel;
+				const interestChannels = body.popularInterestChannels ?? [];
+				if (interestChannels.length) {
+					channels = interestChannels;
+				} else {
+					usedGlobalFallback = true;
+					channels = tagGlobalPopularFallback(body.popularChannels ?? [], forYouInterest, interestLabel);
+				}
+			}
+
 			setForYouPopularCache((prev) => ({ ...prev, [cacheKey]: channels }));
+			setForYouPopularUsedGlobal((prev) => ({ ...prev, [cacheKey]: usedGlobalFallback }));
+			setForYouPopularLoaded((prev) => ({ ...prev, [cacheKey]: true }));
 		} catch {
 			onError('Could not load popular channels.');
 		} finally {
@@ -1004,20 +1040,30 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 				{!searchActive && browseTab === 'forYou' && forYouEmpty ? (
 					<div className="discover-section-block">
-						<p className="muted">{forYouMessage ?? 'Follow and categorize channels to improve For You.'}</p>
-						<button
-							className="ghost tiny"
-							type="button"
-							disabled={forYouPopularLoading === forYouPopularCacheKey}
-							onClick={() => void browsePopularFromInterest()}
-						>
-							{forYouPopularLoading === forYouPopularCacheKey ? 'Loading popular…' : 'Browse Popular'}
-						</button>
+						<p className="muted">
+							{forYouPopularExhausted
+								? `No popular channels available for ${popularFallbackLabel} right now.`
+								: (forYouMessage ?? 'Follow and categorize channels to improve For You.')}
+						</p>
+						{!forYouPopularExhausted ? (
+							<button
+								className="ghost tiny"
+								type="button"
+								disabled={forYouPopularLoading === forYouPopularCacheKey}
+								onClick={() => void browsePopularFromInterest()}
+							>
+								{forYouPopularLoading === forYouPopularCacheKey ? 'Loading popular…' : 'Browse Popular'}
+							</button>
+						) : null}
 					</div>
 				) : null}
 
 				{!searchActive && browseTab === 'forYou' && showingPopularFallback ? (
-					<p className="muted discover-hint">Popular {popularFallbackLabel} channels</p>
+					<p className="muted discover-hint">
+						{forYouPopularUsedGlobal[forYouPopularCacheKey]
+							? `Trending channels while we build ${popularFallbackLabel} recommendations`
+							: `Popular ${popularFallbackLabel} channels`}
+					</p>
 				) : null}
 
 				{!searchActive && browseTab === 'popular' && popularInterestChannels.length ? (

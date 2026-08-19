@@ -13,7 +13,7 @@ import { getSubscribedChannelIds, listRecentlyFollowedChannels } from '../db/que
 import { buildForYouRecommendations, FOR_YOU_PAGE_SIZE } from './discover/forYou';
 import { buildInterestFingerprints } from './discover/interestFingerprint';
 import { buildInterestSearchQuery } from './discover/queryConstruction';
-import { getTopicCandidates, loadCachedQueryResults } from './discover/topicDiscovery';
+import { getTopicCandidates, loadCachedQueryResults, normalizeTopic } from './discover/topicDiscovery';
 import { recordYoutubeCalls } from './websub';
 import { createYoutubeApiKeyClient } from './youtube';
 
@@ -118,6 +118,28 @@ async function browseGlobalPopularChannels(
 	return trendingToPopularChannels(rows, subscribed, excludeIds);
 }
 
+async function interestPopularFromQuery(
+	env: Env,
+	query: string,
+	fingerprint: { interestId: string; label: string },
+	subscribed: Set<string>,
+	now: Date,
+): Promise<DiscoverRecommendation[]> {
+	await getTopicCandidates(env, query, now);
+	return (await loadCachedQueryResults(env, query, now))
+		.filter((row) => !subscribed.has(row.externalId))
+		.slice(0, INTEREST_POPULAR_LIMIT)
+		.map(
+			(row): DiscoverRecommendation => ({
+				...row,
+				subscribed: false,
+				recommendationReason: `Popular in ${fingerprint.label}`,
+				interestId: fingerprint.interestId,
+				interestLabel: fingerprint.label,
+			}),
+		);
+}
+
 async function browseInterestPopularChannels(
 	env: Env,
 	userId: string,
@@ -128,21 +150,14 @@ async function browseInterestPopularChannels(
 	const fingerprint = fingerprints.find((row) => row.interestId === interestId);
 	if (!fingerprint) return { channels: [] };
 
-	const query = buildInterestSearchQuery(fingerprint);
-	await getTopicCandidates(env, query, now);
-
 	const subscribed = await getSubscribedChannelIds(env.DB, userId);
-	const channels = (await loadCachedQueryResults(env, query, now))
-		.filter((row) => !subscribed.has(row.externalId))
-		.slice(0, INTEREST_POPULAR_LIMIT)
-		.map(
-			(row): DiscoverRecommendation => ({
-				...row,
-				subscribed: false,
-				recommendationReason: `Popular in ${fingerprint.label}`,
-				interestId: fingerprint.interestId,
-			}),
-		);
+	const primaryQuery = buildInterestSearchQuery(fingerprint);
+	let channels = await interestPopularFromQuery(env, primaryQuery, fingerprint, subscribed, now);
+
+	const labelQuery = fingerprint.label.trim();
+	if (!channels.length && labelQuery && normalizeTopic(labelQuery) !== normalizeTopic(primaryQuery)) {
+		channels = await interestPopularFromQuery(env, labelQuery, fingerprint, subscribed, now);
+	}
 
 	return { channels, label: fingerprint.label };
 }
