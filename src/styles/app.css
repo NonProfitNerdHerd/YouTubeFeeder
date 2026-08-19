@@ -226,12 +226,11 @@
 }
 
 .sub-avatar-placeholder {
-	display: inline-block;
+	flex: 0 0 36px;
 	width: 36px;
 	height: 36px;
 	border-radius: 50%;
 	background: #243044;
-	flex-shrink: 0;
 }
 
 .sub.active {
@@ -859,7 +858,7 @@
 	background: #243044;
 }
 
-.sub span {
+.sub > span:not(.sub-avatar-placeholder) {
 	display: flex;
 	flex-direction: column;
 	align-items: flex-start;
