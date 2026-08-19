@@ -258,6 +258,8 @@ describe('Discover UI wiring', () => {
 		expect(source).toContain('/api/discover/follow/youtube');
 		expect(source).toContain('/api/discover/unfollow/youtube');
 		expect(source).toContain('Unfollow in VortiQuest');
+		expect(source).toContain('modal-backdrop');
+		expect(source).toContain('Are you sure you want to unfollow');
 		expect(source).toContain('/api/discover/browse?tab=');
 		expect(source).toContain('discover-browse-tabs');
 		expect(source).toContain("'forYou'");

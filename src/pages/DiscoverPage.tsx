@@ -68,6 +68,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [subscribing, setSubscribing] = useState<string | null>(null);
 	const [following, setFollowing] = useState<string | null>(null);
 	const [unfollowing, setUnfollowing] = useState<string | null>(null);
+	const [unfollowConfirm, setUnfollowConfirm] = useState<{ channelId: string; title: string } | null>(null);
 
 	async function loadBrowseTab(tab: DiscoverBrowseTab) {
 		if (browseCache[tab]) return;
@@ -131,11 +132,25 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			onStatus(body.wasFollowing ? `Unfollowed ${title} in VortiQuest.` : `${title} was not in your follows.`);
 			markUnsubscribed(channelId);
 			onSubscribed();
+			setUnfollowConfirm(null);
 		} catch (err: unknown) {
 			onError(err instanceof Error ? err.message : 'Unfollow failed.');
 		} finally {
 			setUnfollowing(null);
 		}
+	}
+
+	function youtubeChannelTitle(result: DiscoveryResult): string {
+		return result.type === 'channel' ? result.title : result.parentTitle ?? result.publisher ?? result.title;
+	}
+
+	function requestUnfollow(channelId: string, title: string) {
+		setUnfollowConfirm({ channelId, title });
+	}
+
+	async function confirmUnfollow() {
+		if (!unfollowConfirm) return;
+		await unfollowYoutube(unfollowConfirm.channelId, unfollowConfirm.title);
 	}
 
 	function renderYoutubeFollowAction(result: DiscoveryResult, channelId: string) {
@@ -145,7 +160,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 					className="ghost tiny discover-unfollow"
 					type="button"
 					disabled={unfollowing === channelId}
-					onClick={() => void unfollowYoutube(channelId, result.type === 'channel' ? result.title : result.parentTitle ?? result.publisher ?? result.title)}
+					onClick={() => requestUnfollow(channelId, youtubeChannelTitle(result))}
 				>
 					{unfollowing === channelId ? 'Unfollowing…' : 'Unfollow in VortiQuest'}
 				</button>
@@ -477,6 +492,29 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				</section>
 				</div>
 			</div>
+			{unfollowConfirm ? (
+				<div className="modal-backdrop" onClick={() => setUnfollowConfirm(null)}>
+					<div className="modal discover-unfollow-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="discover-unfollow-title">
+						<h2 id="discover-unfollow-title">Unfollow channel?</h2>
+						<p>
+							Are you sure you want to unfollow <strong>{unfollowConfirm.title}</strong>?
+						</p>
+						<div className="modal-actions">
+							<button className="ghost" type="button" onClick={() => setUnfollowConfirm(null)} disabled={unfollowing === unfollowConfirm.channelId}>
+								Cancel
+							</button>
+							<button
+								className="ghost discover-unfollow"
+								type="button"
+								disabled={unfollowing === unfollowConfirm.channelId}
+								onClick={() => void confirmUnfollow()}
+							>
+								{unfollowing === unfollowConfirm.channelId ? 'Unfollowing…' : 'Confirm'}
+							</button>
+						</div>
+					</div>
+				</div>
+			) : null}
 		</div>
 	);
 }

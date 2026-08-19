@@ -1401,6 +1401,11 @@
 	background: color-mix(in srgb, #c45 12%, transparent);
 }
 
+.discover-unfollow-modal p {
+	margin: 0;
+	line-height: 1.5;
+}
+
 .discover-section-block {
 	margin-top: 20px;
 }
