@@ -229,6 +229,9 @@ describe('Discover UI wiring', () => {
 		expect(source).toContain('onSubmit');
 		expect(source).not.toMatch(/onChange=\{[^}]*runSearch/);
 		expect(source).toContain('Follow in VortiQuest');
+		expect(source).not.toContain('Follow channel');
+		expect(source).toContain('discover-shell');
+		expect(source).toContain('discover-scroll');
 		expect(source).toContain('/api/discover/follow/youtube');
 		expect(source).toContain('/api/discover/browse');
 	});

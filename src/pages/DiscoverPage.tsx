@@ -229,7 +229,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 							disabled={following === result.parentExternalId}
 							onClick={() => void followYoutube(result)}
 						>
-							{following === result.parentExternalId ? 'Following…' : 'Follow channel'}
+							{following === result.parentExternalId ? 'Following…' : 'Follow in VortiQuest'}
 						</button>
 					)}
 				</div>
@@ -239,9 +239,19 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	}
 
 	function renderResult(result: DiscoveryResult) {
+		const isChannel = result.type === 'channel';
 		return (
-			<li key={`${result.provider}-${result.type}-${result.externalId}`} className="discover-result">
-				{result.imageUrl ? <img src={result.imageUrl} alt="" className="discover-thumb" /> : <span className="discover-thumb placeholder" />}
+			<li
+				key={`${result.provider}-${result.type}-${result.externalId}`}
+				className={isChannel ? 'discover-result discover-result-channel' : 'discover-result'}
+			>
+				<div className="discover-thumb-wrap">
+					{result.imageUrl ? (
+						<img src={result.imageUrl} alt="" className="discover-thumb" />
+					) : (
+						<span className="discover-thumb placeholder" aria-hidden="true" />
+					)}
+				</div>
 				<div className="discover-result-body">
 					<span className={badgeClass(result)}>{typeLabel(result)}</span>
 					<strong className="video-title">{result.title}</strong>
@@ -263,7 +273,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		}) ?? [];
 
 	return (
-		<div className="discover-page">
+		<div className="discover-shell">
+			<div className="discover-scroll">
+				<div className="discover-page">
 			<form className="discover-search" onSubmit={(e) => void runSearch(e)}>
 				<IconSearch />
 				<input
@@ -330,7 +342,9 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				{!browse?.recentlyFollowed.length && !browse?.popularVideos.length ? (
 					<p className="muted">Follow channels from search to see them here. Popular videos refresh every few hours.</p>
 				) : null}
-			</section>
+				</section>
+				</div>
+			</div>
 		</div>
 	);
 }
