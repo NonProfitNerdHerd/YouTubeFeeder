@@ -16,8 +16,12 @@ export type InboxView =
 
 export type InboxSort = 'newest' | 'oldest' | 'channel' | 'liveFirst';
 
+export type MediaKind = 'youtube' | 'podcast';
+
 export interface InboxItem {
 	videoId: string;
+	mediaKind?: MediaKind;
+	audioUrl?: string;
 	channelId: string;
 	channelTitle: string;
 	channelThumbnailUrl: string;
@@ -59,6 +63,21 @@ export interface InboxCounts {
 	unread: number;
 	live: number;
 	upcoming: number;
+}
+
+export interface PodcastSubscriptionRecord {
+	podcastId: string;
+	externalFeedId: number;
+	feedUrl: string;
+	title: string;
+	publisher: string;
+	description: string;
+	imageUrl: string;
+	followInInbox: boolean;
+	maxEpisodesToPull: number;
+	inboxEpisodeCount: number;
+	lastPolledAt: string | null;
+	subscribedAt: string;
 }
 
 export interface ChannelRecord {

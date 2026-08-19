@@ -541,6 +541,9 @@ describe('frontend sync warning messaging', () => {
 		expect(source).toContain('checkInboxFreshness');
 		expect(source).toContain('Playthrough');
 		expect(source).toContain('startPlaythrough');
+		expect(source).toContain('removeFromCurrentList');
+		expect(source).toContain("event.key !== 'Delete' && event.key !== 'Backspace'");
+		expect(source).toContain('currentFeedDeleteMode');
 	});
 });
 

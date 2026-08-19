@@ -16,7 +16,21 @@ import {
 	readOauthState,
 	readSessionUserId,
 } from './auth/session';
-import { lastSyncAt, listInbox, countInbox, countUnwatchedInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, applyInboxProgress, markInboxWatched, unwatchInboxItem, watchAllInbox, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist, INBOX_PAGE_LIMIT } from './db/queries';
+import { lastSyncAt, listInbox, listInboxMerged, countInbox, countUnwatchedInbox, listSubscribedChannels, listCategories, createCategory, renameCategory, deleteCategory, updateChannelPrefs, hideInboxItem, snoozeInboxItem, unsnoozeInboxItem, restoreInboxItem, updateInboxNotes, applyInboxProgress, markInboxWatched, unwatchInboxItem, watchAllInbox, listWatchlists, createWatchlist, renameWatchlist, deleteWatchlist, addToWatchlist, removeFromWatchlist, INBOX_PAGE_LIMIT } from './db/queries';
+import {
+	countPodcastInbox,
+	countUnwatchedPodcastInbox,
+	hidePodcastInboxItem,
+	isPodcastEpisodeId,
+	listPodcastSubscriptions,
+	restorePodcastInboxItem,
+	snoozePodcastInboxItem,
+	unsnoozePodcastInboxItem,
+	updatePodcastInboxNotes,
+	updatePodcastPrefs,
+} from './db/podcasts';
+import { discoverSearch, discoverSubscribePodcast } from './services/discover';
+import { catchUpPodcast } from './services/podcastCatchup';
 import {
 	applyLiveLayout,
 	assignLiveSlot,
@@ -210,7 +224,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const user = await requireUser(env, request);
 		if (user instanceof Response) return user;
 		const channels = await listSubscribedChannels(env.DB, user.id);
-		return json({ channels });
+		const podcasts = await listPodcastSubscriptions(env.DB, user.id);
+		return json({ channels, podcasts });
 	}
 
 	if (path.startsWith('/api/channels/') && request.method === 'PATCH') {
@@ -360,12 +375,81 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const watchlistId = url.searchParams.get('watchlistId');
 		const watched = parseWatchedFilter(url.searchParams.get('watched'));
 		const beforeId = url.searchParams.get('beforeId');
-		const items = await listInbox(env.DB, user.id, channelId, categoryId, view, watchlistId, watched, beforeId);
+		const items = await listInboxMerged(env.DB, user.id, channelId, categoryId, view, watchlistId, watched, beforeId);
 		const hasMore = items.length === INBOX_PAGE_LIMIT;
 		if (beforeId) return json({ items, hasMore });
-		const count = await countInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
-		const unwatchedCount = await countUnwatchedInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
+		const ytCount = await countInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
+		const podCount =
+			!channelId && !categoryId && view !== 'watchlist'
+				? await countPodcastInbox(env.DB, user.id, view)
+				: 0;
+		const count = ytCount + podCount;
+		const ytUnwatched = await countUnwatchedInbox(env.DB, user.id, channelId, categoryId, view, watchlistId);
+		const podUnwatched =
+			!channelId && !categoryId && view !== 'watchlist'
+				? await countUnwatchedPodcastInbox(env.DB, user.id, view)
+				: 0;
+		const unwatchedCount = ytUnwatched + podUnwatched;
 		return json({ items, count, unwatchedCount, hasMore });
+	}
+
+	if (path === '/api/discover/search' && request.method === 'GET') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const q = url.searchParams.get('q') ?? '';
+		const filter = url.searchParams.get('filter');
+		return json(await discoverSearch(env, user.id, q, filter));
+	}
+
+	if (path === '/api/discover/subscribe/podcast' && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const body = await readJson<{
+			externalFeedId?: number;
+			feedUrl?: string;
+			title?: string;
+			publisher?: string;
+			description?: string;
+			imageUrl?: string;
+		}>(request);
+		if (!body) return apiError(400, 'invalid_json', 'Expected JSON body.');
+		try {
+			return json(await discoverSubscribePodcast(env, user.id, body));
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : 'subscribe_failed';
+			if (msg === 'invalid_subscribe') return apiError(400, 'invalid_subscribe', 'Missing podcast feed details.');
+			return apiError(500, 'subscribe_failed', msg);
+		}
+	}
+
+	if (path.startsWith('/api/podcasts/') && path.endsWith('/catchup') && request.method === 'POST') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const podcastId = decodeURIComponent(path.slice('/api/podcasts/'.length, -'/catchup'.length));
+		const body = await readJson<{ pulled?: number }>(request);
+		const result = await catchUpPodcast(env, user.id, podcastId, body?.pulled ?? 0);
+		return json({
+			episodesAdded: result.episodesAdded,
+			pulled: result.pulled,
+			want: result.want,
+			done: result.done,
+			errorSummary: result.errorSummary,
+			status: result.status,
+		});
+	}
+
+	if (path.startsWith('/api/podcasts/') && request.method === 'PATCH') {
+		const user = await requireUser(env, request);
+		if (user instanceof Response) return user;
+		const podcastId = decodeURIComponent(path.slice('/api/podcasts/'.length));
+		const body = await readJson<{ followInInbox?: boolean; maxEpisodesToPull?: number }>(request);
+		if (!body) return apiError(400, 'invalid_json', 'Expected JSON body.');
+		const ok = await updatePodcastPrefs(env.DB, user.id, podcastId, {
+			followInInbox: body.followInInbox !== false,
+			maxEpisodesToPull: typeof body.maxEpisodesToPull === 'number' ? body.maxEpisodesToPull : 20,
+		});
+		if (!ok) return apiError(404, 'not_found', 'Podcast subscription not found.');
+		return json({ ok: true });
 	}
 
 	if (path === '/api/inbox/watch-all' && request.method === 'POST') {
@@ -395,6 +479,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			ended?: boolean;
 		}>(request);
 		if (!body?.action) return apiError(400, 'invalid_json', 'Expected an action.');
+		if (!isPodcastEpisodeId(videoId)) {
 		if (body.action === 'delete') {
 			const ok = await hideInboxItem(env.DB, user.id, videoId);
 			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
@@ -447,6 +532,47 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 			return json({ ok: true, ...watch });
 		}
 		return apiError(400, 'invalid_action', 'Unknown inbox action.');
+		}
+		if (body.action === 'delete') {
+			const ok = await hidePodcastInboxItem(env.DB, user.id, videoId);
+			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true });
+		}
+		if (body.action === 'restore') {
+			const ok = await restorePodcastInboxItem(env.DB, user.id, videoId);
+			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true });
+		}
+		if (body.action === 'unsnooze') {
+			const ok = await unsnoozePodcastInboxItem(env.DB, user.id, videoId);
+			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true });
+		}
+		if (body.action === 'snooze') {
+			const until = body.until ? Date.parse(body.until) : Number.NaN;
+			if (!Number.isFinite(until) || until <= Date.now()) {
+				return apiError(400, 'invalid_until', 'Pick a future date and time.');
+			}
+			const ok = await snoozePodcastInboxItem(env.DB, user.id, videoId, new Date(until).toISOString());
+			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true });
+		}
+		if (body.action === 'notes') {
+			const ok = await updatePodcastInboxNotes(env.DB, user.id, videoId, typeof body.notes === 'string' ? body.notes : '');
+			if (!ok) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true });
+		}
+		if (body.action === 'watch' || body.action === 'unwatch') {
+			const watchedAt = body.action === 'watch' ? new Date().toISOString() : null;
+			const result = await env.DB.prepare(
+				`UPDATE podcast_inbox_state SET watched_at = ?, watch_updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE user_id = ? AND episode_id = ?`,
+			)
+				.bind(watchedAt, user.id, videoId)
+				.run();
+			if ((result.meta.changes ?? 0) < 1) return apiError(404, 'not_found', 'Inbox item not found.');
+			return json({ ok: true, watchedAt });
+		}
+		return apiError(400, 'invalid_action', 'Unknown inbox action for podcast item.');
 	}
 
 	if (path === '/api/sync/status' && request.method === 'GET') {

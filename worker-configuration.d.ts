@@ -15,6 +15,8 @@ interface Env {
 	YOUTUBE_QUOTA_WARN?: string;
 	YOUTUBE_RECONCILE_RESERVE?: string;
 	YOUTUBE_BACKFILL_CUTOFF?: string;
+	PODCAST_INDEX_KEY?: string;
+	PODCAST_INDEX_SECRET?: string;
 }
 
 interface ExecutionContext {

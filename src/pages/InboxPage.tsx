@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import type { CategoryRecord, ChannelRecord, CurrentUser, InboxItem, InboxWatchFields, LiveGridSize, WatchedFilter, WatchlistRecord } from '../types';
+import type { CategoryRecord, ChannelRecord, CurrentUser, InboxItem, InboxWatchFields, LiveGridSize, PodcastSubscriptionRecord, WatchedFilter, WatchlistRecord } from '../types';
 import { LIVE_GRID_SIZES } from '../types';
 import { youtubeWatchUrl } from '../lib/youtubeUrl';
 import { FeedYouTubePlayer, type WatchPersistPayload } from '../components/FeedYouTubePlayer';
@@ -13,6 +13,7 @@ import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../
 import { formatFeedHealth, inboxIsStale, inboxItemHeadAt, inboxPageHasMore, prependNewerInboxItems, appendOlderInboxItems } from '../lib/inboxFreshness';
 import { playthroughNextId, playthroughQueue, playthroughStartId } from '../lib/playthrough';
 import { LivePage } from './LivePage';
+import { DiscoverPage } from './DiscoverPage';
 import '../styles/app.css';
 import '../styles/live.css';
 import '../styles/download.css';
@@ -45,6 +46,13 @@ interface FeedSyncStatusBody {
 
 function syncMessage(body: SyncApiBody, fallback: string): string {
 	return body.error?.message || body.errorSummary || fallback;
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+	if (!(target instanceof HTMLElement)) return false;
+	const tag = target.tagName;
+	if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+	return target.isContentEditable;
 }
 
 function buildInboxListQuery(opts: {
@@ -227,6 +235,7 @@ function categoryNames(channel: ChannelRecord, all: CategoryRecord[]): string {
 
 export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () => void }) {
 	const [channels, setChannels] = useState<ChannelRecord[]>([]);
+	const [podcasts, setPodcasts] = useState<PodcastSubscriptionRecord[]>([]);
 	const [categories, setCategories] = useState<CategoryRecord[]>([]);
 	const [items, setItems] = useState<InboxItem[] | null>(null);
 	const [inboxCount, setInboxCount] = useState<number | null>(null);
@@ -235,7 +244,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [channelId, setChannelId] = useState<string | null>(null);
 	const [categoryId, setCategoryId] = useState<string | null>(null);
 	const [leftTab, setLeftTab] = useState<'inbox' | 'snoozed' | 'deleted' | 'watchlist' | 'streams' | 'categories'>('inbox');
-	const [mainSection, setMainSection] = useState<'feed' | 'live'>('feed');
+	const [mainSection, setMainSection] = useState<'feed' | 'live' | 'discover'>('feed');
 	const [liveSidebarOpen, setLiveSidebarOpen] = useState(true);
 	const [liveHeaderStatus, setLiveHeaderStatus] = useState<{ text: string; error: boolean } | null>(null);
 	const [liveGridChrome, setLiveGridChrome] = useState<{
@@ -255,6 +264,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const [snoozing, setSnoozing] = useState<InboxItem | null>(null);
 	const [snoozeUntil, setSnoozeUntil] = useState(toLocalInputValue(tomorrowMorning()));
 	const [editing, setEditing] = useState<ChannelRecord | null>(null);
+	const [editingPodcast, setEditingPodcast] = useState<PodcastSubscriptionRecord | null>(null);
 	const [newCategory, setNewCategory] = useState('');
 	const [error, setError] = useState<string | null>(null);
 	const [syncing, setSyncing] = useState(false);
@@ -318,7 +328,9 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			if (!chRes.ok || !inRes.ok || !catRes.ok || !wlRes.ok || (inboxCountRes && !inboxCountRes.ok)) {
 				throw new Error('Could not load subscriptions.');
 			}
-			setChannels(((await chRes.json()) as { channels: ChannelRecord[] }).channels);
+			const chBody = (await chRes.json()) as { channels: ChannelRecord[]; podcasts?: PodcastSubscriptionRecord[] };
+			setChannels(chBody.channels);
+			setPodcasts(chBody.podcasts ?? []);
 			const inboxBody = (await inRes.json()) as { items: InboxItem[]; count?: number; unwatchedCount?: number; hasMore?: boolean };
 			setItems(inboxBody.items);
 			setCategories(((await catRes.json()) as { categories: CategoryRecord[] }).categories);
@@ -596,6 +608,52 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		}
 	}
 
+	async function catchUpPodcast(podcast: PodcastSubscriptionRecord) {
+		const pull = podcast.maxEpisodesToPull;
+		if (pull < 1) {
+			setError('Set max episodes to pull above 0 on Edit, then catch up.');
+			return;
+		}
+		setSyncing(true);
+		setError(null);
+		setStatus(`Catching up ${podcast.title}… 0 / ${pull}`);
+		try {
+			let pulled = 0;
+			let added = 0;
+			const want = Math.min(500, pull);
+			for (;;) {
+				setStatus(`Catching up ${podcast.title}… ${pulled} / ${want}`);
+				const res = await fetch(`/api/podcasts/${encodeURIComponent(podcast.podcastId)}/catchup`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					credentials: 'same-origin',
+					body: JSON.stringify({ pulled }),
+				});
+				const body = (await res.json().catch(() => ({}))) as SyncApiBody & {
+					episodesAdded?: number;
+					pulled?: number;
+					want?: number;
+					done?: boolean;
+					errorSummary?: string;
+				};
+				if (!res.ok) throw new Error(syncMessage(body, 'Catch up failed.'));
+				added += body.episodesAdded ?? 0;
+				pulled = body.pulled ?? pulled;
+				const nextWant = body.want ?? want;
+				setStatus(`Catching up ${podcast.title}… ${pulled} / ${nextWant}`);
+				await load();
+				if (body.done) break;
+				if ((body.episodesAdded ?? 0) < 1) break;
+			}
+			setStatus(`Added ${added} episodes from ${podcast.title}.`);
+		} catch (err: unknown) {
+			setError(err instanceof Error ? err.message : 'Catch up failed.');
+			await load().catch(() => undefined);
+		} finally {
+			setSyncing(false);
+		}
+	}
+
 	async function catchUpChannel(channelId: string, title: string, pull: number) {
 		if (pull < 1) {
 			setError('Set max videos to pull above 0 on Edit, then catch up.');
@@ -678,6 +736,44 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		if (!res.ok) return;
 		setNewCategory('');
 		await load();
+	}
+
+	async function persistPodcastEdit(podcast: PodcastSubscriptionRecord, form: FormData): Promise<number | null> {
+		const maxEpisodesToPull = Number(form.get('maxEpisodesToPull') || 0);
+		const res = await fetch(`/api/podcasts/${encodeURIComponent(podcast.podcastId)}`, {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify({
+				followInInbox: form.get('followInInbox') === 'on',
+				maxEpisodesToPull,
+			}),
+		});
+		if (!res.ok) return null;
+		return maxEpisodesToPull;
+	}
+
+	async function savePodcastEdit(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!editingPodcast) return;
+		const pull = await persistPodcastEdit(editingPodcast, new FormData(event.currentTarget));
+		setEditingPodcast(null);
+		if (pull === null) {
+			setError('Could not save podcast settings.');
+			return;
+		}
+		await load();
+	}
+
+	async function catchUpPodcastFromEdit(form: HTMLFormElement) {
+		if (!editingPodcast || syncing) return;
+		const formData = new FormData(form);
+		const pull = Number(formData.get('maxEpisodesToPull') || editingPodcast.maxEpisodesToPull);
+		const podcast = editingPodcast;
+		setEditingPodcast(null);
+		await persistPodcastEdit(podcast, formData);
+		await load();
+		await catchUpPodcast({ ...podcast, maxEpisodesToPull: pull });
 	}
 
 	async function persistChannelEdit(channel: ChannelRecord, form: FormData): Promise<number | null> {
@@ -1108,6 +1204,74 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		await bulkPatchSelected('restore', 'Could not restore some videos.');
 	}
 
+	function listDeleteKeyBlocked(): boolean {
+		if (androidClient || mainSection !== 'feed' || playthroughActive) return true;
+		if (snoozing || bulkSnoozeIds || watchlisting || bulkWatchlistIds || editing) return true;
+		if (mobilePanel === 'account' || androidQrOpen) return true;
+		return false;
+	}
+
+	function currentFeedDeleteMode(): 'inbox' | 'snoozed' | 'watchlist' | 'streams' | null {
+		switch (leftTab) {
+			case 'inbox':
+				return 'inbox';
+			case 'snoozed':
+				return 'snoozed';
+			case 'deleted':
+				return null;
+			case 'watchlist':
+				return watchlistId ? 'watchlist' : null;
+			case 'streams':
+				return channelId ? 'streams' : null;
+			case 'categories':
+				return categoryId ? 'inbox' : null;
+			default:
+				return null;
+		}
+	}
+
+	async function removeFromCurrentList() {
+		if (listDeleteKeyBlocked()) return;
+		const mode = currentFeedDeleteMode();
+		if (inboxSelectedIds.length > 0 && listMultiSelectEnabled && (mode === 'inbox' || mode === 'snoozed')) {
+			await bulkDeleteSelected();
+			return;
+		}
+		if (!mode || !selectedVideoId) return;
+		switch (mode) {
+			case 'inbox':
+			case 'snoozed':
+			case 'streams':
+				await patchInbox(selectedVideoId, { action: 'delete' });
+				break;
+			case 'watchlist':
+				await takeOffWatchlist(selectedVideoId);
+				break;
+		}
+	}
+
+	const listDeleteKeyRef = useRef<(event: KeyboardEvent) => void>(() => {});
+	listDeleteKeyRef.current = (event: KeyboardEvent) => {
+		if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+		if (isTypingTarget(event.target)) return;
+		if (event.metaKey || event.ctrlKey || event.altKey) return;
+		if (listDeleteKeyBlocked()) return;
+		const mode = currentFeedDeleteMode();
+		const hasBulkDelete =
+			inboxSelectedIds.length > 0 && listMultiSelectEnabled && (mode === 'inbox' || mode === 'snoozed');
+		if (!hasBulkDelete && (!mode || !selectedVideoId)) return;
+		event.preventDefault();
+		void removeFromCurrentList();
+	};
+
+	useEffect(() => {
+		function onListDeleteKey(event: KeyboardEvent) {
+			listDeleteKeyRef.current(event);
+		}
+		window.addEventListener('keydown', onListDeleteKey);
+		return () => window.removeEventListener('keydown', onListDeleteKey);
+	}, []);
+
 	function toggleInboxSelect(videoId: string) {
 		setInboxSelectedIds((current) =>
 			current.includes(videoId) ? current.filter((id) => id !== videoId) : [...current, videoId],
@@ -1120,6 +1284,13 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 	const categoryThreeCol = !androidClient && !phoneLayout && leftTab === 'categories';
 	const feedThreeCol = streamsThreeCol || watchlistThreeCol || categoryThreeCol;
 	const streamsList = categoryId ? channels.filter((ch) => channelMatchesCategory(ch, categoryId)) : channels;
+	type SubscriptionRow =
+		| { kind: 'youtube'; data: ChannelRecord }
+		| { kind: 'podcast'; data: PodcastSubscriptionRecord };
+	const subscriptionRows: SubscriptionRow[] = [
+		...streamsList.map((data) => ({ kind: 'youtube' as const, data })),
+		...(categoryId ? [] : podcasts.map((data) => ({ kind: 'podcast' as const, data }))),
+	].sort((a, b) => a.data.title.localeCompare(b.data.title));
 	const visibleItems = items?.filter((item) => matchesWatchedFilter(item.watchedAt, watchedFilter)) ?? null;
 	const playthroughCurrent = playthroughActive
 		? playthroughItems.find((item) => item.videoId === selectedVideoId) ?? null
@@ -1317,7 +1488,11 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					</div>
 				</header>
 				<div className={`preview-player${playthroughActive ? ' playthrough-shell' : ''}`} ref={playerShellRef}>
-					{item.embeddable ? (
+					{item.mediaKind === 'podcast' && item.audioUrl ? (
+						<audio className="podcast-player" controls src={item.audioUrl} preload="metadata">
+							Your browser does not support audio playback.
+						</audio>
+					) : item.embeddable ? (
 						<FeedYouTubePlayer
 							videoId={item.videoId}
 							title={item.title}
@@ -1335,7 +1510,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						</button>
 					) : null}
 				</div>
-				{item.embeddable ? null : (
+				{item.mediaKind === 'podcast' ? null : item.embeddable ? null : (
 					<div className="preview-unavailable">
 						<p className="muted">This video can’t be embedded. Opening it on YouTube does not mark it watched.</p>
 						<button className="ghost tiny" type="button" onClick={() => void toggleWatched(item)}>
@@ -1429,6 +1604,7 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 						<img className="video-thumb" src={item.thumbnailUrl} alt="" />
 						<span>
 							<strong className="video-title">
+								{item.mediaKind === 'podcast' ? <span className="badge podcast">Podcast</span> : null}
 								{item.title}
 								{item.watchedAt ? (
 									<span className="watch-mark" aria-hidden="true">
@@ -1596,6 +1772,18 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 							onClick={() => setMainSection('live')}
 						>
 							Live
+						</button>
+						<button
+							className={mainSection === 'discover' ? 'tab active' : 'tab'}
+							type="button"
+							role="tab"
+							aria-selected={mainSection === 'discover'}
+							onClick={() => {
+								stopPlaythrough();
+								setMainSection('discover');
+							}}
+						>
+							Discover
 						</button>
 					</div>
 					)}
@@ -1796,6 +1984,12 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 			) : null}
 			{mainSection === 'live' ? (
 				<LivePage sidebarOpen={liveSidebarOpen} onHeaderStatus={setLiveHeaderStatus} onGridChrome={setLiveGridChrome} />
+			) : mainSection === 'discover' ? (
+				<DiscoverPage
+					onSubscribed={() => void load()}
+					onError={setError}
+					onStatus={setStatus}
+				/>
 			) : (
 			<div
 				className={`${phoneLayout && selectedVideo ? 'home mobile-detail' : 'home'}${feedThreeCol ? ' home-streams' : ''}`}
@@ -1998,42 +2192,67 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 					) : null}
 					{leftTab === 'streams' ? (
 						<div className="left-scroll">
-							{streamsList.map((ch) => (
-								<div key={ch.channelId} className={channelId === ch.channelId ? 'sub-row active' : 'sub-row'}>
-									<button
-										className="sub"
-										type="button"
-										onClick={() => {
-											setChannelId(ch.channelId);
-											setSelectedVideoId(null);
-										}}
-									>
-										<img src={ch.thumbnailUrl} alt="" />
-										<span>
-											<strong className="video-title">{ch.title}</strong>
-											<small className="muted">
-												{`${ch.inboxVideoCount} video${ch.inboxVideoCount === 1 ? '' : 's'} - ${ch.followInInbox ? 'Following' : 'Not following'}`}
-											</small>
-											<small className="muted">
-												{ch.lastSynchronizedAt
-													? `Last video sync: ${new Date(ch.lastSynchronizedAt).toLocaleString()}`
-													: 'Last video sync: never'}
-											</small>
-											<small className="muted cat-tags">{categoryNames(ch, categories)}</small>
-										</span>
-									</button>
-									<button className="ghost tiny" type="button" onClick={() => setEditing(ch)}>
-										Edit
-									</button>
-								</div>
-							))}
-							{streamsList.length === 0 && !syncing ? (
+							{subscriptionRows.map((row) =>
+								row.kind === 'youtube' ? (
+									<div key={row.data.channelId} className={channelId === row.data.channelId ? 'sub-row active' : 'sub-row'}>
+										<button
+											className="sub"
+											type="button"
+											onClick={() => {
+												setChannelId(row.data.channelId);
+												setSelectedVideoId(null);
+											}}
+										>
+											<img src={row.data.thumbnailUrl} alt="" />
+											<span>
+												<strong className="video-title">{row.data.title}</strong>
+												<small className="muted">
+													<span className="badge video">YouTube</span>{' '}
+													{`${row.data.inboxVideoCount} video${row.data.inboxVideoCount === 1 ? '' : 's'} - ${row.data.followInInbox ? 'Following' : 'Not following'}`}
+												</small>
+												<small className="muted">
+													{row.data.lastSynchronizedAt
+														? `Last video sync: ${new Date(row.data.lastSynchronizedAt).toLocaleString()}`
+														: 'Last video sync: never'}
+												</small>
+												<small className="muted cat-tags">{categoryNames(row.data, categories)}</small>
+											</span>
+										</button>
+										<button className="ghost tiny" type="button" onClick={() => setEditing(row.data)}>
+											Edit
+										</button>
+									</div>
+								) : (
+									<div key={row.data.podcastId} className="sub-row">
+										<button className="sub" type="button" onClick={() => setSelectedVideoId(null)}>
+											{row.data.imageUrl ? <img src={row.data.imageUrl} alt="" /> : <span className="discover-thumb placeholder" />}
+											<span>
+												<strong className="video-title">{row.data.title}</strong>
+												<small className="muted">
+													<span className="badge podcast">Podcast</span>{' '}
+													{`${row.data.inboxEpisodeCount} episode${row.data.inboxEpisodeCount === 1 ? '' : 's'} - ${row.data.followInInbox ? 'Following' : 'Not following'}`}
+												</small>
+												{row.data.publisher ? <small className="muted">{row.data.publisher}</small> : null}
+												<small className="muted">
+													{row.data.lastPolledAt
+														? `Last feed sync: ${new Date(row.data.lastPolledAt).toLocaleString()}`
+														: 'Last feed sync: never'}
+												</small>
+											</span>
+										</button>
+										<button className="ghost tiny" type="button" onClick={() => setEditingPodcast(row.data)}>
+											Edit
+										</button>
+									</div>
+								),
+							)}
+							{subscriptionRows.length === 0 && !syncing ? (
 								<p className="muted pad">
-									{channels.length === 0
-										? 'No streams yet. Use Sync now.'
+									{channels.length === 0 && podcasts.length === 0
+										? 'No subscriptions yet. Use Discover or Sync now.'
 										: categoryId
 											? 'No streams in this category.'
-											: 'No streams yet. Use Sync now.'}
+											: 'No subscriptions yet.'}
 								</p>
 							) : null}
 						</div>
@@ -2440,6 +2659,41 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 								onClick={(event) => {
 									const form = event.currentTarget.form;
 									if (form) void catchUpFromEdit(form);
+								}}
+							>
+								{syncing ? 'Catching up…' : 'Catch up'}
+							</button>
+							<button className="ghost" type="submit">
+								Save
+							</button>
+						</div>
+					</form>
+				</div>
+			) : null}
+			{editingPodcast ? (
+				<div className="modal-backdrop" onClick={() => setEditingPodcast(null)}>
+					<form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={(e) => void savePodcastEdit(e)}>
+						<h2>Edit {editingPodcast.title}</h2>
+						<p className="muted">Podcast · {editingPodcast.publisher || 'Unknown publisher'}</p>
+						<label className="check">
+							<input type="checkbox" name="followInInbox" defaultChecked={editingPodcast.followInInbox} />
+							Follow in inbox (pull new episodes)
+						</label>
+						<label>
+							How many older episodes to catch up (0–500)
+							<input type="number" name="maxEpisodesToPull" min={0} max={500} defaultValue={editingPodcast.maxEpisodesToPull} />
+						</label>
+						<div className="modal-actions">
+							<button className="ghost" type="button" onClick={() => setEditingPodcast(null)}>
+								Cancel
+							</button>
+							<button
+								className="ghost"
+								type="button"
+								disabled={syncing}
+								onClick={(event) => {
+									const form = event.currentTarget.form;
+									if (form) void catchUpPodcastFromEdit(form);
 								}}
 							>
 								{syncing ? 'Catching up…' : 'Catch up'}

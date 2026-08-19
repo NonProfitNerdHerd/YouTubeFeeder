@@ -2,6 +2,13 @@ import type { CategoryRecord, ChannelRecord, InboxItem, InboxWatchFields, Watchl
 import { isUncategorizedFilter } from '../../src/lib/categories';
 import { meetsWatchThreshold, mergeStoredPlayback } from '../../src/lib/watchProgress';
 import { randomToken } from '../auth/crypto';
+import {
+	countPodcastInbox,
+	countUnwatchedPodcastInbox,
+	isPodcastEpisodeId,
+	listPodcastInbox,
+	mergeInboxItems,
+} from './podcasts';
 
 export async function listSubscribedChannels(db: D1Database, userId: string): Promise<ChannelRecord[]> {
 	const rows = await db
@@ -250,6 +257,7 @@ export async function listInbox(
 		}>();
 	return (rows.results ?? []).map((row) => ({
 		videoId: row.video_id,
+		mediaKind: 'youtube' as const,
 		channelId: row.channel_id,
 		channelTitle: row.channel_title,
 		channelThumbnailUrl: row.channel_thumbnail,
@@ -276,6 +284,33 @@ export async function listInbox(
 		lastPositionSeconds: Number(row.last_position_seconds ?? 0),
 		watchUpdatedAt: row.watch_updated_at,
 	}));
+}
+
+function includePodcastsInInbox(
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist',
+): view is 'inbox' | 'snoozed' | 'deleted' {
+	return !channelId && !categoryId && view !== 'watchlist';
+}
+
+export async function listInboxMerged(
+	db: D1Database,
+	userId: string,
+	channelId: string | null,
+	categoryId: string | null,
+	view: 'inbox' | 'snoozed' | 'deleted' | 'watchlist' = 'inbox',
+	watchlistId: string | null = null,
+	watched: WatchedFilter = 'all',
+	beforeId: string | null = null,
+): Promise<InboxItem[]> {
+	const youtube = await listInbox(db, userId, channelId, categoryId, view, watchlistId, watched, beforeId);
+	if (!includePodcastsInInbox(channelId, categoryId, view)) return youtube;
+	const podcastView = view === 'inbox' || view === 'snoozed' || view === 'deleted' ? view : 'inbox';
+	const podcastBefore = beforeId && isPodcastEpisodeId(beforeId) ? beforeId : null;
+	const podcasts = await listPodcastInbox(db, userId, podcastView, watched, podcastBefore, INBOX_PAGE_LIMIT);
+	if (beforeId && !isPodcastEpisodeId(beforeId)) return youtube;
+	return mergeInboxItems(youtube, podcasts, INBOX_PAGE_LIMIT);
 }
 
 export async function hideInboxItem(db: D1Database, userId: string, videoId: string): Promise<boolean> {
