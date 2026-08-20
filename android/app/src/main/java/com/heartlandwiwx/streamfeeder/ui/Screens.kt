@@ -63,14 +63,18 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -155,7 +159,9 @@ import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.Abs
 import org.json.JSONObject
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Instant
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 private val PlayerBaseUrl = "https://youtube-feeder-worker.ike-j-rebout.workers.dev/"
 
@@ -178,6 +184,35 @@ private fun liveSlotAssignment(sourceId: String, videoId: String): String = "$so
 
 private fun FeedView.pageTitle(): String =
     if (isLiveSection) "Live · $label" else label
+
+/** Matches web `relativeRelease` in InboxPage.tsx */
+private fun relativeRelease(iso: String?): String {
+    if (iso.isNullOrBlank()) return "Unknown date"
+    val then = try {
+        Instant.parse(iso)
+    } catch (_: Exception) {
+        return "Unknown date"
+    }
+    val deltaMs = Instant.now().toEpochMilli() - then.toEpochMilli()
+    val future = deltaMs < 0
+    val seconds = kotlin.math.abs(deltaMs / 1000.0).roundToLong()
+    fun phrase(unit: String, n: Long): String {
+        val label = if (n == 1L) "1 $unit" else "$n ${unit}s"
+        return if (future) "In $label" else "$label ago"
+    }
+    if (seconds < 60) return if (future) "Soon" else "Just now"
+    val minutes = (seconds / 60.0).roundToLong()
+    if (minutes < 60) return phrase("minute", minutes)
+    val hours = (minutes / 60.0).roundToLong()
+    if (hours < 24) return phrase("hour", hours)
+    val days = (hours / 24.0).roundToLong()
+    if (days < 14) return phrase("day", days)
+    val weeks = (days / 7.0).roundToLong()
+    if (weeks < 8) return phrase("week", weeks)
+    val months = (days / 30.0).roundToLong()
+    if (months < 18) return phrase("month", months)
+    return phrase("year", (days / 365.0).roundToLong())
+}
 
 private fun openOnYouTube(context: android.content.Context, videoId: String) {
     val app = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:$videoId"))
@@ -273,7 +308,10 @@ fun FeedScreen(
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
     onFlushPlayback: () -> Unit,
     onPlaythrough: () -> Unit = {},
+    onPlaythroughFrom: (String) -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
+    onPlaythroughNext: () -> Unit = {},
+    onPlaythroughPrevious: () -> Unit = {},
     onLoadMore: () -> Unit = {},
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -406,8 +444,14 @@ fun FeedScreen(
     val selected = state.selected
     if (state.playthroughActive && selected != null) {
         BackHandler(enabled = true) { onClose() }
+        val queue = state.playthroughQueue
+        val index = queue.indexOfFirst { it.videoId == selected.videoId }
         PlaythroughOverlay(
             item = selected,
+            canGoPrevious = index > 0,
+            canGoNext = index >= 0 && index < queue.lastIndex,
+            onPrevious = onPlaythroughPrevious,
+            onNext = onPlaythroughNext,
             onExit = onClose,
             onPlayerEvent = onPlayerEvent,
             onFlushPlayback = onFlushPlayback,
@@ -709,6 +753,10 @@ fun FeedScreen(
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
                                     onPlaythrough = onPlaythrough,
+                                    onPlaythroughFrom = { videoId ->
+                                        selectedVideoIds = emptySet()
+                                        onPlaythroughFrom(videoId)
+                                    },
                                     onStopPlaythrough = onStopPlaythrough,
             onLoadMore = onLoadMore,
                                 )
@@ -1147,6 +1195,10 @@ fun FeedScreen(
                                     },
                                     onEnterSelection = { id -> selectedVideoIds = selectedVideoIds + id },
                                     onPlaythrough = onPlaythrough,
+                                    onPlaythroughFrom = { videoId ->
+                                        selectedVideoIds = emptySet()
+                                        onPlaythroughFrom(videoId)
+                                    },
                                     onStopPlaythrough = onStopPlaythrough,
             onLoadMore = onLoadMore,
                                 )
@@ -1259,6 +1311,7 @@ private fun InboxListPane(
     onEnterSelection: (String) -> Unit,
     onCompleteSnoozeExit: () -> Unit = {},
     onPlaythrough: () -> Unit = {},
+    onPlaythroughFrom: (String) -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
     onLoadMore: () -> Unit = {},
 ) {
@@ -1311,6 +1364,7 @@ private fun InboxListPane(
         onToggleSelect = onToggleSelect,
         onEnterSelection = onEnterSelection,
         onPlaythrough = onPlaythrough,
+        onPlaythroughFrom = onPlaythroughFrom,
         onStopPlaythrough = onStopPlaythrough,
             onLoadMore = onLoadMore,
     )
@@ -1349,6 +1403,7 @@ private fun VideoList(
     onToggleSelect: (String) -> Unit = {},
     onEnterSelection: (String) -> Unit = {},
     onPlaythrough: () -> Unit = {},
+    onPlaythroughFrom: (String) -> Unit = {},
     onStopPlaythrough: () -> Unit = {},
     onLoadMore: () -> Unit = {},
 ) {
@@ -1370,9 +1425,14 @@ private fun VideoList(
                 listState.scrollToItem(0)
             }
             if (state.items.any { it.embeddable }) {
+                val fromSelectedId = selectedIds.singleOrNull()?.takeIf { id ->
+                    state.items.any { it.videoId == id && it.embeddable }
+                }
                 PlaythroughBar(
                     active = state.playthroughActive,
                     onClick = { if (state.playthroughActive) onStopPlaythrough() else onPlaythrough() },
+                    fromSelectedVideoId = fromSelectedId,
+                    onPlaythroughFrom = onPlaythroughFrom,
                 )
             }
             LoadMoreOnEnd(listState, state.feedHasMore, state.feedLoadingMore, onLoadMore)
@@ -1938,12 +1998,18 @@ private fun StreamDetailScreen(
 }
 
 @Composable
-private fun PlaythroughBar(active: Boolean, onClick: () -> Unit) {
+private fun PlaythroughBar(
+    active: Boolean,
+    onClick: () -> Unit,
+    fromSelectedVideoId: String? = null,
+    onPlaythroughFrom: ((String) -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         TextButton(onClick = onClick) {
             Icon(
@@ -1954,16 +2020,40 @@ private fun PlaythroughBar(active: Boolean, onClick: () -> Unit) {
             Spacer(Modifier.width(6.dp))
             Text(if (active) "Exit playthrough" else "Playthrough")
         }
+        if (!active && fromSelectedVideoId != null && onPlaythroughFrom != null) {
+            TextButton(onClick = { onPlaythroughFrom(fromSelectedVideoId) }) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("From selected")
+            }
+        }
     }
 }
 
 @Composable
 private fun PlaythroughOverlay(
     item: InboxItem,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
     onExit: () -> Unit,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
     onFlushPlayback: () -> Unit,
 ) {
+    var playing by remember(item.videoId) { mutableStateOf(true) }
+    var controlCommand by remember { mutableStateOf<String?>(null) }
+    var controlEpoch by remember { mutableStateOf(0) }
+
+    fun issueControl(command: String) {
+        controlCommand = command
+        controlEpoch += 1
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1974,7 +2064,15 @@ private fun PlaythroughOverlay(
             embeddable = item.embeddable,
             thumbnailUrl = item.thumbnailUrl,
             autoplay = true,
-            onPlayerEvent = onPlayerEvent,
+            controlCommand = controlCommand,
+            controlEpoch = controlEpoch,
+            onPlayerEvent = { videoId, type, currentTime, rate, duration ->
+                when (type) {
+                    "playing" -> playing = true
+                    "paused", "ended" -> playing = false
+                }
+                onPlayerEvent(videoId, type, currentTime, rate, duration)
+            },
             onFlushPlayback = onFlushPlayback,
             modifier = Modifier.fillMaxSize(),
         )
@@ -1986,6 +2084,62 @@ private fun PlaythroughOverlay(
                 .padding(8.dp),
         ) {
             Icon(Icons.Default.Close, contentDescription = "Exit playthrough", tint = Color.White)
+        }
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.72f))
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(
+                onClick = onPrevious,
+                enabled = canGoPrevious,
+                modifier = Modifier.size(56.dp),
+            ) {
+                Icon(
+                    Icons.Default.SkipPrevious,
+                    contentDescription = "Previous",
+                    tint = if (canGoPrevious) Color.White else Color.White.copy(alpha = 0.35f),
+                    modifier = Modifier.size(36.dp),
+                )
+            }
+            Spacer(modifier = Modifier.width(20.dp))
+            IconButton(
+                onClick = {
+                    if (playing) {
+                        playing = false
+                        issueControl("pause")
+                    } else {
+                        playing = true
+                        issueControl("play")
+                    }
+                },
+                modifier = Modifier.size(72.dp),
+            ) {
+                Icon(
+                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (playing) "Pause" else "Play",
+                    tint = Color.White,
+                    modifier = Modifier.size(52.dp),
+                )
+            }
+            Spacer(modifier = Modifier.width(20.dp))
+            IconButton(
+                onClick = onNext,
+                enabled = canGoNext,
+                modifier = Modifier.size(56.dp),
+            ) {
+                Icon(
+                    Icons.Default.SkipNext,
+                    contentDescription = "Next",
+                    tint = if (canGoNext) Color.White else Color.White.copy(alpha = 0.35f),
+                    modifier = Modifier.size(36.dp),
+                )
+            }
         }
     }
 }
@@ -2293,6 +2447,16 @@ private fun AppDrawer(
     onSelectWatchlist: (String) -> Unit,
     onSignOut: () -> Unit,
 ) {
+    var watchlistExpanded by remember { mutableStateOf(current == FeedView.Watchlist) }
+    var liveExpanded by remember { mutableStateOf(current.isLiveSection) }
+    var settingsExpanded by remember { mutableStateOf(current == FeedView.Settings) }
+
+    LaunchedEffect(current) {
+        if (current == FeedView.Watchlist) watchlistExpanded = true
+        if (current.isLiveSection) liveExpanded = true
+        if (current == FeedView.Settings) settingsExpanded = true
+    }
+
     Column(
         modifier = Modifier
             .fillMaxHeight()
@@ -2329,48 +2493,66 @@ private fun AppDrawer(
             selected = current == FeedView.Deleted,
             onClick = { onSelect(FeedView.Deleted) },
         )
-        NavTopItem(
+        NavCollapsibleItem(
             label = FeedView.Watchlist.label,
             selected = current == FeedView.Watchlist,
-            onClick = { onSelect(FeedView.Watchlist) },
+            expanded = watchlistExpanded,
+            onToggle = { watchlistExpanded = !watchlistExpanded },
+            onLabelClick = {
+                watchlistExpanded = true
+                onSelect(FeedView.Watchlist)
+            },
         )
-        watchlists.forEach { list ->
-            NavSubItem(
-                label = "${list.name} (${list.videoCount})",
-                selected = current == FeedView.Watchlist && currentWatchlistId == list.id,
-                onClick = { onSelectWatchlist(list.id) },
-            )
+        if (watchlistExpanded) {
+            watchlists.forEach { list ->
+                NavSubItem(
+                    label = "${list.name} (${list.videoCount})",
+                    selected = current == FeedView.Watchlist && currentWatchlistId == list.id,
+                    onClick = { onSelectWatchlist(list.id) },
+                )
+            }
         }
-        NavTopItem(
+        NavCollapsibleItem(
             label = "Live",
             selected = current.isLiveSection,
-            onClick = null,
+            expanded = liveExpanded,
+            onToggle = { liveExpanded = !liveExpanded },
+            onLabelClick = { liveExpanded = !liveExpanded },
         )
-        NavSubItem(
-            label = FeedView.LiveGrid.label,
-            selected = current == FeedView.LiveGrid,
-            onClick = { onSelect(FeedView.LiveGrid) },
-        )
-        NavSubItem(
-            label = FeedView.LiveStreams.label,
-            selected = current == FeedView.LiveStreams,
-            onClick = { onSelect(FeedView.LiveStreams) },
-        )
-        NavSubItem(
-            label = FeedView.LiveCategories.label,
-            selected = current == FeedView.LiveCategories,
-            onClick = { onSelect(FeedView.LiveCategories) },
-        )
-        NavTopItem(
+        if (liveExpanded) {
+            NavSubItem(
+                label = FeedView.LiveGrid.label,
+                selected = current == FeedView.LiveGrid,
+                onClick = { onSelect(FeedView.LiveGrid) },
+            )
+            NavSubItem(
+                label = FeedView.LiveStreams.label,
+                selected = current == FeedView.LiveStreams,
+                onClick = { onSelect(FeedView.LiveStreams) },
+            )
+            NavSubItem(
+                label = FeedView.LiveCategories.label,
+                selected = current == FeedView.LiveCategories,
+                onClick = { onSelect(FeedView.LiveCategories) },
+            )
+        }
+        NavCollapsibleItem(
             label = FeedView.Settings.label,
             selected = current == FeedView.Settings,
-            onClick = { onSelect(FeedView.Settings) },
+            expanded = settingsExpanded,
+            onToggle = { settingsExpanded = !settingsExpanded },
+            onLabelClick = {
+                settingsExpanded = true
+                onSelect(FeedView.Settings)
+            },
         )
-        NavSubItem(
-            label = "Sign Out",
-            selected = false,
-            onClick = onSignOut,
-        )
+        if (settingsExpanded) {
+            NavSubItem(
+                label = "Sign Out",
+                selected = false,
+                onClick = onSignOut,
+            )
+        }
     }
 }
 
@@ -3179,6 +3361,46 @@ private fun NavTopItem(
 }
 
 @Composable
+private fun NavCollapsibleItem(
+    label: String,
+    selected: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onLabelClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(
+            onClick = onToggle,
+            modifier = Modifier.size(48.dp),
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                contentDescription = if (expanded) "Collapse $label" else "Expand $label",
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Text(
+            text = label,
+            modifier = Modifier
+                .weight(1f)
+                .clickable(onClick = onLabelClick)
+                .padding(end = 16.dp, top = 14.dp, bottom = 14.dp),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
 private fun NavSubItem(
     label: String,
     selected: Boolean,
@@ -3374,7 +3596,7 @@ private fun FeedRow(
                     modifier = Modifier.weight(1f),
                 )
             }
-            val date = item.publishedAt?.take(10).orEmpty()
+            val date = relativeRelease(item.publishedAt)
             val meta = if (showChannelInMeta) {
                 listOf(item.channelTitle, date).filter { it.isNotBlank() }.joinToString(" · ")
             } else {
@@ -3663,6 +3885,8 @@ private fun YoutubePlayer(
     embeddable: Boolean,
     thumbnailUrl: String,
     autoplay: Boolean = false,
+    controlCommand: String? = null,
+    controlEpoch: Int = 0,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit = { _, _, _, _, _ -> },
     onFlushPlayback: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -3685,6 +3909,7 @@ private fun YoutubePlayer(
     val activity = LocalContext.current as? Activity
     val eventHandler = remember { arrayOf(onPlayerEvent) }
     eventHandler[0] = onPlayerEvent
+    val appliedControlEpoch = remember { mutableStateOf(-1) }
     DisposableEffect(videoId) {
         onDispose { onFlushPlayback() }
     }
@@ -3816,7 +4041,18 @@ private fun YoutubePlayer(
         update = { webView ->
             if (webView.tag as? String != videoId) {
                 webView.tag = videoId
+                appliedControlEpoch.value = -1
                 webView.loadDataWithBaseURL(PlayerBaseUrl, html, "text/html", "utf-8", null)
+            }
+            val command = controlCommand
+            if (command != null && controlEpoch != appliedControlEpoch.value) {
+                appliedControlEpoch.value = controlEpoch
+                val js = when (command) {
+                    "play" -> "if (player && player.playVideo) player.playVideo();"
+                    "pause" -> "if (player && player.pauseVideo) player.pauseVideo();"
+                    else -> null
+                }
+                if (js != null) webView.evaluateJavascript(js, null)
             }
         },
         onRelease = {

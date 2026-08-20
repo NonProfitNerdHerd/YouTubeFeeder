@@ -259,16 +259,51 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startPlaythrough() {
-        val state = _state.value
-        val queue = state.items.filter { it.embeddable }
+        val queue = _state.value.items.filter { it.embeddable }
         if (queue.isEmpty()) return
-        val start = queue.firstOrNull { it.videoId == state.selected?.videoId } ?: queue.first()
-        _state.update { it.copy(playthroughActive = true, playthroughQueue = queue, selected = start) }
+        _state.update {
+            it.copy(playthroughActive = true, playthroughQueue = queue, selected = queue.first())
+        }
+    }
+
+    fun startPlaythroughFrom(videoId: String) {
+        val queue = _state.value.items.filter { it.embeddable }
+        val index = queue.indexOfFirst { it.videoId == videoId }
+        if (index < 0) return
+        val fromSelected = queue.subList(index, queue.size)
+        _state.update {
+            it.copy(
+                playthroughActive = true,
+                playthroughQueue = fromSelected,
+                selected = fromSelected.first(),
+            )
+        }
     }
 
     fun stopPlaythrough() {
         if (!_state.value.playthroughActive && _state.value.playthroughQueue.isEmpty()) return
         _state.update { it.copy(playthroughActive = false, playthroughQueue = emptyList()) }
+    }
+
+    fun playthroughNext() {
+        val state = _state.value
+        if (!state.playthroughActive) return
+        val currentId = state.selected?.videoId ?: return
+        flushPlayback()
+        advancePlaythrough(currentId)
+    }
+
+    fun playthroughPrevious() {
+        val state = _state.value
+        if (!state.playthroughActive) return
+        val queue = state.playthroughQueue
+        val currentId = state.selected?.videoId ?: return
+        val index = queue.indexOfFirst { it.videoId == currentId }
+        if (index <= 0) return
+        flushPlayback()
+        samplerVideoId = null
+        playbackEnded = false
+        _state.update { it.copy(selected = queue[index - 1]) }
     }
 
     fun selectWatchedFilter(filter: WatchedFilter) {
