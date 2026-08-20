@@ -211,6 +211,20 @@ class ApiClient(
         parseLiveSources(obj) to liveRefreshStatus(obj)
     }
 
+    suspend fun refreshOneLiveSource(sourceId: String): Pair<LiveSourceRecord, String> = withContext(Dispatchers.IO) {
+        val encoded = java.net.URLEncoder.encode(sourceId, Charsets.UTF_8.name())
+        val obj = requestJson("POST", "/api/live/sources/$encoded/refresh", JSONObject())
+        val sourceObj = obj.optJSONObject("source")
+            ?: throw ApiException(500, "Missing source in refresh response")
+        val source = parseLiveSource(sourceObj)
+        val live = source.liveCount()
+        source to if (live > 0) {
+            "Recovered ${source.displayName} — $live live."
+        } else {
+            "Recovered ${source.displayName}."
+        }
+    }
+
     fun loginUrl(): String = "$base/api/auth/google?intent=login&client=android"
 
     private fun parseChannel(o: JSONObject): ChannelRecord {

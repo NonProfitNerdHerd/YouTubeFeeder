@@ -81,6 +81,7 @@ class MainActivity : AppCompatActivity() {
                             onToggleWatched = viewModel::toggleWatched,
                             onSelectTheme = viewModel::setTheme,
                             onRefreshLive = viewModel::refreshLiveStatuses,
+                            onRefreshOneLiveSource = viewModel::refreshOneLiveSource,
                             onPlayerEvent = viewModel::onPlayerEvent,
                             onFlushPlayback = viewModel::flushPlayback,
                             onPlaythrough = viewModel::startPlaythrough,

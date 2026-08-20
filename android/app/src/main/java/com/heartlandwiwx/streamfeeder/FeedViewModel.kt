@@ -87,6 +87,7 @@ data class FeedUiState(
     val liveSources: List<LiveSourceRecord> = emptyList(),
     val liveCategories: List<CategoryRecord> = emptyList(),
     val liveRefreshing: Boolean = false,
+    val liveRefreshingSourceId: String? = null,
     val playthroughActive: Boolean = false,
     val playthroughQueue: List<InboxItem> = emptyList(),
     val feedHasMore: Boolean = false,
@@ -293,7 +294,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshLiveStatuses() {
-        if (_state.value.liveRefreshing) return
+        if (_state.value.liveRefreshing || _state.value.liveRefreshingSourceId != null) return
         viewModelScope.launch {
             _state.update { it.copy(liveRefreshing = true, error = null) }
             try {
@@ -304,6 +305,32 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 _state.update {
                     it.copy(liveRefreshing = false, error = e.message ?: "Could not refresh live statuses")
+                }
+            }
+        }
+    }
+
+    fun refreshOneLiveSource(sourceId: String) {
+        if (_state.value.liveRefreshing || _state.value.liveRefreshingSourceId != null) return
+        viewModelScope.launch {
+            _state.update { it.copy(liveRefreshingSourceId = sourceId, error = null) }
+            try {
+                val (source, status) = api.refreshOneLiveSource(sourceId)
+                _state.update { state ->
+                    val sources = state.liveSources.map { if (it.id == source.id) source else it }
+                    val nextSources = if (sources.any { it.id == source.id }) sources else sources + source
+                    state.copy(
+                        liveRefreshingSourceId = null,
+                        liveSources = nextSources,
+                        message = status,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        liveRefreshingSourceId = null,
+                        error = e.message ?: "Could not refresh live source",
+                    )
                 }
             }
         }

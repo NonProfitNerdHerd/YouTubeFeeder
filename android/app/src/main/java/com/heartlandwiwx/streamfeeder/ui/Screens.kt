@@ -59,6 +59,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -143,6 +144,7 @@ import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.LiveSourceRecord
+import com.heartlandwiwx.streamfeeder.data.LiveVideoRecord
 import com.heartlandwiwx.streamfeeder.data.AppTheme
 import com.heartlandwiwx.streamfeeder.data.WatchedFilter
 import com.heartlandwiwx.streamfeeder.data.WatchlistRecord
@@ -267,6 +269,7 @@ fun FeedScreen(
     onToggleWatched: () -> Unit,
     onSelectTheme: (AppTheme) -> Unit,
     onRefreshLive: () -> Unit,
+    onRefreshOneLiveSource: (String) -> Unit,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
     onFlushPlayback: () -> Unit,
     onPlaythrough: () -> Unit = {},
@@ -300,12 +303,43 @@ fun FeedScreen(
     var liveFullscreenSlot by remember { mutableStateOf<Int?>(null) }
     var liveActiveSlot by remember { mutableStateOf(0) }
     var liveGridImmersive by remember { mutableStateOf(false) }
+    var browsingLiveSourceId by remember { mutableStateOf<String?>(null) }
+    var browsingLiveCategoryId by remember { mutableStateOf<String?>(null) }
+
+    fun playLiveVideo(sourceId: String, videoId: String) {
+        browsingLiveSourceId = null
+        liveGridSize = 1
+        liveSlotFeeds = List(12) { null as String? }.toMutableList().also {
+            it[0] = liveSlotAssignment(sourceId, videoId)
+        }
+        liveActiveSlot = 0
+        liveFullscreenSlot = null
+        liveGridImmersive = false
+        onSelectView(FeedView.LiveGrid)
+    }
+
+    fun openLiveSource(source: LiveSourceRecord) {
+        val playable = source.playableLive()
+        when {
+            playable.size == 1 -> playLiveVideo(source.id, playable.first().videoId)
+            playable.size > 1 -> browsingLiveSourceId = source.id
+            source.blockedLive().isNotEmpty() || source.upcoming().isNotEmpty() -> {
+                browsingLiveSourceId = source.id
+            }
+        }
+    }
 
     LaunchedEffect(state.view) {
         selectedVideoIds = emptySet()
         confirmArchiveOpen = false
         watchlistBulkOpen = false
         bulkSnoozeOpen = false
+        if (state.view != FeedView.LiveStreams && state.view != FeedView.LiveCategories) {
+            browsingLiveSourceId = null
+        }
+        if (state.view != FeedView.LiveCategories) {
+            browsingLiveCategoryId = null
+        }
         if (state.view != FeedView.LiveGrid) {
             liveFullscreenSlot = null
             liveGridImmersive = false
@@ -315,6 +349,15 @@ fun FeedScreen(
     val overlaysClear = state.pendingSnoozeItem == null && state.editingChannel == null &&
         !confirmArchiveOpen && !watchlistBulkOpen && !bulkSnoozeOpen
     val browsingCategory = state.view == FeedView.Categories && state.categoryId != null
+    val browsingLiveSource =
+        (state.view == FeedView.LiveStreams || state.view == FeedView.LiveCategories) &&
+            browsingLiveSourceId != null
+    val browsingLiveCategory =
+        state.view == FeedView.LiveCategories &&
+            browsingLiveCategoryId != null &&
+            browsingLiveSourceId == null
+    val inLiveCategoryDrilldown =
+        state.view == FeedView.LiveCategories && browsingLiveCategoryId != null
     val atRootInbox = state.view == FeedView.Inbox &&
         !navOpen &&
         state.selected == null &&
@@ -328,6 +371,8 @@ fun FeedScreen(
         state.selected == null &&
         browsingChannel == null &&
         !browsingCategory &&
+        !browsingLiveSource &&
+        !inLiveCategoryDrilldown &&
         !selectionMode &&
         overlaysClear &&
         liveFullscreenSlot == null &&
@@ -337,6 +382,12 @@ fun FeedScreen(
     BackHandler(enabled = browsingChannel != null && state.selected == null) { onCloseStream() }
     BackHandler(enabled = browsingCategory && state.selected == null && !navOpen && overlaysClear && !selectionMode) {
         onSelectCategory(null)
+    }
+    BackHandler(enabled = browsingLiveSource && !navOpen && overlaysClear) {
+        browsingLiveSourceId = null
+    }
+    BackHandler(enabled = browsingLiveCategory && !navOpen && overlaysClear) {
+        browsingLiveCategoryId = null
     }
     BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) {
         scope.launch { drawerState.close() }
@@ -535,7 +586,7 @@ fun FeedScreen(
                                 Icon(Icons.Default.GridView, contentDescription = "Full screen grid")
                             }
                         }
-                        if (state.liveRefreshing) {
+                        if (state.liveRefreshing || state.liveRefreshingSourceId != null) {
                             Box(
                                 modifier = Modifier.size(48.dp),
                                 contentAlignment = Alignment.Center,
@@ -886,6 +937,60 @@ fun FeedScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        } else if (browsingLiveSource) {
+                            IconButton(onClick = { browsingLiveSourceId = null }) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = if (inLiveCategoryDrilldown) {
+                                        "Back to category"
+                                    } else {
+                                        "Back to streams"
+                                    },
+                                )
+                            }
+                            Text(
+                                state.liveSources.firstOrNull { it.id == browsingLiveSourceId }?.displayName
+                                    ?: "Live videos",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val browseId = browsingLiveSourceId
+                            if (browseId != null) {
+                                if (state.liveRefreshingSourceId == browseId) {
+                                    Box(
+                                        modifier = Modifier.size(48.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(22.dp),
+                                            strokeWidth = 2.dp,
+                                        )
+                                    }
+                                } else {
+                                    IconButton(
+                                        onClick = { onRefreshOneLiveSource(browseId) },
+                                        enabled = !state.liveRefreshing && !state.loading,
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh this source")
+                                    }
+                                }
+                            }
+                        } else if (browsingLiveCategory) {
+                            IconButton(onClick = { browsingLiveCategoryId = null }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to live categories")
+                            }
+                            Text(
+                                state.liveCategories.firstOrNull { it.id == browsingLiveCategoryId }?.name
+                                    ?: "Category",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         } else {
                             Text(
                                 state.view.pageTitle(),
@@ -1004,10 +1109,24 @@ fun FeedScreen(
                             sources = state.liveSources,
                             loading = state.loading,
                             refreshing = state.liveRefreshing,
+                            refreshingSourceId = state.liveRefreshingSourceId,
+                            browsingSourceId = browsingLiveSourceId,
+                            onOpenSource = { openLiveSource(it) },
+                            onPlayVideo = { sourceId, videoId -> playLiveVideo(sourceId, videoId) },
+                            onRefreshSource = onRefreshOneLiveSource,
                         )
                         FeedView.LiveCategories -> LiveCategoriesPane(
                             categories = state.liveCategories,
+                            sources = state.liveSources,
                             loading = state.loading,
+                            refreshing = state.liveRefreshing,
+                            refreshingSourceId = state.liveRefreshingSourceId,
+                            browsingCategoryId = browsingLiveCategoryId,
+                            browsingSourceId = browsingLiveSourceId,
+                            onSelectCategory = { browsingLiveCategoryId = it },
+                            onOpenSource = { openLiveSource(it) },
+                            onPlayVideo = { sourceId, videoId -> playLiveVideo(sourceId, videoId) },
+                            onRefreshSource = onRefreshOneLiveSource,
                         )
                         else -> {
                             if (state.view == FeedView.Inbox) {
@@ -2633,7 +2752,23 @@ private fun LiveStreamsPane(
     sources: List<LiveSourceRecord>,
     loading: Boolean,
     refreshing: Boolean,
+    refreshingSourceId: String?,
+    browsingSourceId: String?,
+    onOpenSource: (LiveSourceRecord) -> Unit,
+    onPlayVideo: (sourceId: String, videoId: String) -> Unit,
+    onRefreshSource: (String) -> Unit,
+    hint: String = "Tap a live source to play it. Sources with multiple cameras open a picker first.",
+    emptyMessage: String = "No live sources yet. Add a YouTube channel on the website, then refresh here.",
 ) {
+    val browsingSource = browsingSourceId?.let { id -> sources.firstOrNull { it.id == id } }
+    if (browsingSource != null) {
+        LiveSourceVideosPane(
+            source = browsingSource,
+            onPlayVideo = { videoId -> onPlayVideo(browsingSource.id, videoId) },
+        )
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2642,12 +2777,7 @@ private fun LiveStreamsPane(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            "Live Streams",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            "Refresh rechecks whether these channels are live. It uses the same Live API as the website.",
+            hint,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2664,7 +2794,7 @@ private fun LiveStreamsPane(
             }
             sources.isEmpty() -> {
                 Text(
-                    "No live sources yet. Add a YouTube channel on the website, then refresh here.",
+                    emptyMessage,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2678,50 +2808,13 @@ private fun LiveStreamsPane(
                     )
                 }
                 sources.forEach { source ->
-                    val status = source.statusLabel()
-                    val liveTitle = source.playableLive().firstOrNull()?.title
-                        ?: source.blockedLive().firstOrNull()?.title
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                source.displayName,
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            if (source.liveCount() > 0) {
-                                Text(
-                                    "${source.liveCount()} LIVE",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                        }
-                        Text(
-                            buildString {
-                                append(status)
-                                if (!source.enabled) append(" · Off")
-                                if (liveTitle != null) append(" · ").append(liveTitle)
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (!source.verifyError.isNullOrBlank()) {
-                            Text(
-                                source.verifyError,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
-                    }
+                    LiveSourceRow(
+                        source = source,
+                        refreshing = refreshing,
+                        refreshingSourceId = refreshingSourceId,
+                        onOpen = { onOpenSource(source) },
+                        onRefresh = { onRefreshSource(source.id) },
+                    )
                 }
             }
         }
@@ -2729,10 +2822,114 @@ private fun LiveStreamsPane(
 }
 
 @Composable
-private fun LiveCategoriesPane(
-    categories: List<CategoryRecord>,
-    loading: Boolean,
+private fun LiveSourceRow(
+    source: LiveSourceRecord,
+    refreshing: Boolean,
+    refreshingSourceId: String?,
+    onOpen: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
+    val playable = source.playableLive()
+    val status = source.statusLabel()
+    val liveTitle = playable.firstOrNull()?.title
+        ?: source.blockedLive().firstOrNull()?.title
+    val canOpen = playable.isNotEmpty() ||
+        source.blockedLive().isNotEmpty() ||
+        source.upcoming().isNotEmpty()
+    val refreshingThis = refreshingSourceId == source.id
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            .then(
+                if (canOpen) {
+                    Modifier.clickable(onClick = onOpen)
+                } else {
+                    Modifier
+                },
+            )
+            .padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    source.displayName,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (source.liveCount() > 0) {
+                    Text(
+                        "${source.liveCount()} LIVE",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            Text(
+                buildString {
+                    append(status)
+                    if (!source.enabled) append(" · Off")
+                    if (playable.size > 1) {
+                        append(" · ").append(playable.size).append(" cameras")
+                    } else if (liveTitle != null) {
+                        append(" · ").append(liveTitle)
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!source.verifyError.isNullOrBlank()) {
+                Text(
+                    source.verifyError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+        if (refreshingThis) {
+            Box(
+                modifier = Modifier.size(48.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+        } else {
+            IconButton(
+                onClick = onRefresh,
+                enabled = !refreshing && refreshingSourceId == null,
+            ) {
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = "Refresh ${source.displayName}",
+                )
+            }
+        }
+        if (canOpen) {
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LiveSourceVideosPane(
+    source: LiveSourceRecord,
+    onPlayVideo: (videoId: String) -> Unit,
+) {
+    val playable = source.playableLive()
+    val blocked = source.blockedLive()
+    val upcoming = source.upcoming()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2741,12 +2938,159 @@ private fun LiveCategoriesPane(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            "Live Categories",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
+            "Choose a live video to play in a single grid slot.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (playable.isEmpty() && blocked.isEmpty() && upcoming.isEmpty()) {
+            Text(
+                "No live videos right now. Refresh this source and try again.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (playable.isNotEmpty()) {
+            Text(
+                "Live",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            playable.forEach { video ->
+                LiveVideoRow(
+                    video = video,
+                    subtitle = "Live · Tap to play",
+                    enabled = true,
+                    onClick = { onPlayVideo(video.videoId) },
+                )
+            }
+        }
+        if (blocked.isNotEmpty()) {
+            Text(
+                "Not embeddable",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            blocked.forEach { video ->
+                LiveVideoRow(
+                    video = video,
+                    subtitle = "Live on YouTube, but embedding is blocked",
+                    enabled = false,
+                    onClick = {},
+                )
+            }
+        }
+        if (upcoming.isNotEmpty()) {
+            Text(
+                "Upcoming",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            upcoming.forEach { video ->
+                LiveVideoRow(
+                    video = video,
+                    subtitle = "Upcoming",
+                    enabled = false,
+                    onClick = {},
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveVideoRow(
+    video: LiveVideoRecord,
+    subtitle: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                video.title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (enabled) {
+            Icon(
+                Icons.Default.PlayArrow,
+                contentDescription = "Play",
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LiveCategoriesPane(
+    categories: List<CategoryRecord>,
+    sources: List<LiveSourceRecord>,
+    loading: Boolean,
+    refreshing: Boolean,
+    refreshingSourceId: String?,
+    browsingCategoryId: String?,
+    browsingSourceId: String?,
+    onSelectCategory: (String?) -> Unit,
+    onOpenSource: (LiveSourceRecord) -> Unit,
+    onPlayVideo: (sourceId: String, videoId: String) -> Unit,
+    onRefreshSource: (String) -> Unit,
+) {
+    val browsingSource = browsingSourceId?.let { id -> sources.firstOrNull { it.id == id } }
+    if (browsingSource != null) {
+        LiveSourceVideosPane(
+            source = browsingSource,
+            onPlayVideo = { videoId -> onPlayVideo(browsingSource.id, videoId) },
+        )
+        return
+    }
+
+    val categoryId = browsingCategoryId
+    if (categoryId != null) {
+        val filtered = sources.filter { categoryId in it.categoryIds }
+        LiveStreamsPane(
+            sources = filtered,
+            loading = loading,
+            refreshing = refreshing,
+            refreshingSourceId = refreshingSourceId,
+            browsingSourceId = null,
+            onOpenSource = onOpenSource,
+            onPlayVideo = onPlayVideo,
+            onRefreshSource = onRefreshSource,
+            hint = "Tap a source in this category to play it. Multi-camera sources open a picker first.",
+            emptyMessage = "No live sources in this category yet. Tag streams on the website, then refresh.",
+        )
+        return
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text(
-            "Live categories are separate from Feed. Tag streams on the website.",
+            "Tap a category to see its live sources. Live categories are separate from Feed.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2763,22 +3107,49 @@ private fun LiveCategoriesPane(
             }
             categories.isEmpty() -> {
                 Text(
-                    "No live categories yet.",
+                    "No live categories yet. Create and tag streams on the website.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             else -> {
                 categories.forEach { category ->
-                    Text(
-                        category.name,
+                    val tagged = sources.filter { category.id in it.categoryIds }
+                    val liveTagged = tagged.count { it.liveCount() > 0 }
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
                             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                            .clickable { onSelectCategory(category.id) }
                             .padding(horizontal = 14.dp, vertical = 14.dp),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                category.name,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                buildString {
+                                    append(tagged.size)
+                                    append(if (tagged.size == 1) " source" else " sources")
+                                    if (liveTagged > 0) {
+                                        append(" · ")
+                                        append(liveTagged)
+                                        append(" live")
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
