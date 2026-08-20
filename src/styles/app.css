@@ -155,6 +155,9 @@
 	position: sticky;
 	top: 0;
 	z-index: 2;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
 	padding: 6px 8px 10px;
 	background: color-mix(in srgb, var(--panel) 92%, transparent);
 	border-bottom: 1px solid var(--border);
@@ -174,8 +177,22 @@
 	cursor: pointer;
 }
 
-.playthrough-btn:hover {
+.playthrough-btn:hover:not(:disabled) {
 	background: color-mix(in srgb, var(--accent) 42%, #0f1115);
+}
+
+.playthrough-btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.playthrough-btn-secondary {
+	border-color: var(--border);
+	background: color-mix(in srgb, var(--panel) 80%, #0f1115);
+}
+
+.playthrough-btn-secondary:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--accent) 18%, #0f1115);
 }
 
 .playthrough-exit {

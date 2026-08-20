@@ -540,6 +540,7 @@ describe('frontend sync warning messaging', () => {
 		expect(source).toContain('loadMoreInbox');
 		expect(source).toContain('checkInboxFreshness');
 		expect(source).toContain('Playthrough');
+		expect(source).toContain('Playthrough from selected');
 		expect(source).toContain('startPlaythrough');
 		expect(source).toContain('removeFromCurrentList');
 		expect(source).toContain("event.key !== 'Delete' && event.key !== 'Backspace'");

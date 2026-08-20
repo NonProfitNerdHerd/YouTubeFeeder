@@ -11,7 +11,13 @@ import { UNCATEGORIZED_CATEGORY_ID, isUncategorizedFilter } from '../lib/categor
 import { qrSvgForUrl } from '../lib/qrSvg';
 import { formatSyncCompletion, skippedChannelNames, type SyncWarning } from '../lib/syncStatus';
 import { formatFeedHealth, inboxIsStale, inboxItemHeadAt, inboxPageHasMore, prependNewerInboxItems, appendOlderInboxItems } from '../lib/inboxFreshness';
-import { playthroughNextId, playthroughQueue, playthroughStartId } from '../lib/playthrough';
+import {
+	playthroughNextId,
+	playthroughQueue,
+	playthroughQueueFromSelected,
+	playthroughStartId,
+	type PlaythroughStartMode,
+} from '../lib/playthrough';
 import { LivePage } from './LivePage';
 import { DiscoverPage } from './DiscoverPage';
 import '../styles/app.css';
@@ -1341,10 +1347,11 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		playthroughAdvancingRef.current = false;
 	}
 
-	function startPlaythrough(list: InboxItem[]) {
-		const queue = playthroughQueue(list);
+	function startPlaythrough(list: InboxItem[], mode: PlaythroughStartMode = 'top') {
+		const queue =
+			mode === 'selected' ? playthroughQueueFromSelected(list, selectedVideoId) : playthroughQueue(list);
 		const ids = queue.map((item) => item.videoId);
-		const startId = playthroughStartId(ids, selectedVideoId);
+		const startId = playthroughStartId(ids, selectedVideoId, mode);
 		if (!startId) return;
 		playthroughQueueRef.current = queue;
 		playthroughActiveRef.current = true;
@@ -1563,18 +1570,42 @@ export function InboxPage({ user, onLogout }: { user: CurrentUser; onLogout: () 
 		if (list?.length === 0) return <p className="muted">No videos in this view.</p>;
 		const allowMultiSelect = !androidClient && (actions === 'inbox' || actions === 'snoozed' || actions === 'deleted');
 		const queue = playthroughQueue(list);
+		const selectedInQueue = Boolean(selectedVideoId && queue.some((item) => item.videoId === selectedVideoId));
 		return (
 			<>
 				{!androidClient && queue.length > 0 ? (
 					<div className="playthrough-bar">
-						<button
-							className="playthrough-btn"
-							type="button"
-							onClick={() => (playthroughActive ? stopPlaythrough() : startPlaythrough(list ?? []))}
-						>
-							<IconPlay />
-							{playthroughActive ? 'Exit playthrough' : 'Playthrough'}
-						</button>
+						{playthroughActive ? (
+							<button className="playthrough-btn" type="button" onClick={() => stopPlaythrough()}>
+								<IconPlay />
+								Exit playthrough
+							</button>
+						) : (
+							<>
+								<button
+									className="playthrough-btn"
+									type="button"
+									onClick={() => startPlaythrough(list ?? [], 'top')}
+								>
+									<IconPlay />
+									Playthrough
+								</button>
+								<button
+									className="playthrough-btn playthrough-btn-secondary"
+									type="button"
+									disabled={!selectedInQueue}
+									title={
+										selectedInQueue
+											? 'Start playthrough from the selected video'
+											: 'Select a playable video in this list first'
+									}
+									onClick={() => startPlaythrough(list ?? [], 'selected')}
+								>
+									<IconPlay />
+									Playthrough from selected
+								</button>
+							</>
+						)}
 					</div>
 				) : null}
 				{(list ?? []).map((item) =>
