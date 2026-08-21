@@ -332,6 +332,8 @@ fun FeedScreen(
     onConfirmDiscoverFollow: (Boolean, Int, List<String>) -> Unit = { _, _, _ -> },
     onUnfollowDiscoverYoutube: (String, String) -> Unit = { _, _ -> },
     onSubscribeDiscoverPodcast: (DiscoveryResult) -> Unit = {},
+    onSubmitDiscoverNotInterested: (DiscoveryResult, String) -> Unit = { _, _ -> },
+    onUndoDiscoverFeedback: () -> Unit = {},
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -1210,6 +1212,7 @@ fun FeedScreen(
                                     onRequestFollow = onRequestDiscoverFollow,
                                     onUnfollow = onUnfollowDiscoverYoutube,
                                     onSubscribe = onSubscribeDiscoverPodcast,
+                                    onNotInterested = onSubmitDiscoverNotInterested,
                                 )
                             } else {
                                 DiscoverHomePane(
@@ -1382,7 +1385,7 @@ fun FeedScreen(
         onDismiss = onCancelDiscoverFollow,
         onConfirm = onConfirmDiscoverFollow,
     )
-    MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
+    MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist, onUndoDiscoverFeedback)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2362,17 +2365,23 @@ private fun MessageDialogs(
     onClearMessage: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onUndoArchive: () -> Unit,
     onUndoWatchlist: () -> Unit,
+    onUndoDiscoverFeedback: () -> Unit = {},
 ) {
     val message = state.message
     if (!message.isNullOrBlank() && message != "Archived" && !message.startsWith("Archived ")) {
         val canUndoWatchlist = !state.undoWatchlistVideoId.isNullOrBlank() && message.startsWith("Added to ")
+        val canUndoDiscover = !state.discoverUndoFeedbackId.isNullOrBlank()
         AlertDialog(
             onDismissRequest = onClearMessage,
             confirmButton = { TextButton(onClick = onClearMessage) { Text("OK") } },
-            dismissButton = if (canUndoWatchlist) {
-                { TextButton(onClick = onUndoWatchlist) { Text("Undo") } }
-            } else {
-                null
+            dismissButton = when {
+                canUndoDiscover -> {
+                    { TextButton(onClick = onUndoDiscoverFeedback) { Text("Undo") } }
+                }
+                canUndoWatchlist -> {
+                    { TextButton(onClick = onUndoWatchlist) { Text("Undo") } }
+                }
+                else -> null
             },
             text = { Text(message) },
         )
@@ -2597,11 +2606,13 @@ private fun AppDrawer(
     onSignOut: () -> Unit,
 ) {
     var watchlistExpanded by remember { mutableStateOf(current == FeedView.Watchlist) }
+    var discoverExpanded by remember { mutableStateOf(current.isDiscoverSection) }
     var liveExpanded by remember { mutableStateOf(current.isLiveSection) }
     var settingsExpanded by remember { mutableStateOf(current == FeedView.Settings) }
 
     LaunchedEffect(current) {
         if (current == FeedView.Watchlist) watchlistExpanded = true
+        if (current.isDiscoverSection) discoverExpanded = true
         if (current.isLiveSection) liveExpanded = true
         if (current == FeedView.Settings) settingsExpanded = true
     }
@@ -2661,10 +2672,15 @@ private fun AppDrawer(
                 )
             }
         }
-        NavTopItem(
+        NavCollapsibleItem(
             label = FeedView.Discover.label,
             selected = current.isDiscoverSection,
-            onClick = { onSelect(FeedView.Discover) },
+            expanded = discoverExpanded,
+            onToggle = { discoverExpanded = !discoverExpanded },
+            onLabelClick = {
+                discoverExpanded = true
+                onSelect(FeedView.Discover)
+            },
         )
         NavCollapsibleItem(
             label = "Live",
@@ -2816,26 +2832,6 @@ private fun DiscoverHomePane(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            "Browse",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        DiscoverBrowseTab.entries.forEach { tab ->
-            Button(
-                onClick = { onBrowse(tab) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(tab.label)
-            }
-        }
-        Text(
-            "Or",
-            modifier = Modifier.padding(vertical = 8.dp),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChange,
@@ -2856,6 +2852,20 @@ private fun DiscoverHomePane(
         ) {
             Text("Search")
         }
+        Text(
+            "Or",
+            modifier = Modifier.padding(vertical = 8.dp),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        DiscoverBrowseTab.entries.forEach { tab ->
+            Button(
+                onClick = { onBrowse(tab) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(tab.label)
+            }
+        }
     }
 }
 
@@ -2867,11 +2877,15 @@ private fun DiscoverResultsPane(
     onRequestFollow: (DiscoveryResult) -> Unit,
     onUnfollow: (channelId: String, title: String) -> Unit,
     onSubscribe: (DiscoveryResult) -> Unit,
+    onNotInterested: (DiscoveryResult, String) -> Unit,
 ) {
     val filtered = remember(state.discoverResults, state.discoverFilter, state.discoverMode) {
         filterDiscoverResults(state.discoverResults, state.discoverFilter, state.discoverMode)
     }
     var unfollowConfirm by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var notInterestedTarget by remember { mutableStateOf<DiscoveryResult?>(null) }
+    val showForYouActions = state.discoverMode == DiscoverResultsMode.Browse &&
+        state.discoverBrowseTab == DiscoverBrowseTab.ForYou
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -2927,9 +2941,11 @@ private fun DiscoverResultsPane(
                         DiscoverResultCard(
                             result = result,
                             busyId = state.discoverBusyId,
+                            showNotInterested = showForYouActions && !result.recommendationToken.isNullOrBlank(),
                             onFollow = { onRequestFollow(result) },
                             onUnfollow = { channelId, title -> unfollowConfirm = channelId to title },
                             onSubscribe = { onSubscribe(result) },
+                            onNotInterested = { notInterestedTarget = result },
                         )
                     }
                     if (state.discoverHasMore && filtered.isNotEmpty()) {
@@ -2975,6 +2991,89 @@ private fun DiscoverResultsPane(
             },
         )
     }
+
+    notInterestedTarget?.let { target ->
+        val busy = state.discoverBusyId == target.externalId
+        AlertDialog(
+            onDismissRequest = { if (!busy) notInterestedTarget = null },
+            title = { Text("Why don't you want this recommendation?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            notInterestedTarget = null
+                            onNotInterested(target, "channel_not_interested")
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text("Not interested in this channel", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Hide this channel without changing your topics.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            notInterestedTarget = null
+                            onNotInterested(target, "not_relevant")
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text("Not relevant to this topic", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Hide this channel and improve recommendations for this topic.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { notInterestedTarget = null }, enabled = !busy) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+private fun discoveryExternalUrl(result: DiscoveryResult): String? {
+    if (!result.watchUrl.isNullOrBlank()) return result.watchUrl
+    val channelId = when {
+        result.provider == "youtube" && result.type == "channel" -> result.externalId
+        result.provider == "youtube" && !result.parentExternalId.isNullOrBlank() -> result.parentExternalId
+        else -> null
+    }
+    return channelId?.let { "https://www.youtube.com/channel/$it" }
+}
+
+private fun openDiscoverExternal(context: android.content.Context, result: DiscoveryResult) {
+    val url = discoveryExternalUrl(result) ?: return
+    val uri = Uri.parse(url)
+    val ytIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+        setPackage("com.google.android.youtube")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(ytIntent)
+    } catch (_: ActivityNotFoundException) {
+        runCatching {
+            CustomTabsIntent.Builder().build().launchUrl(context, uri)
+        }.onFailure {
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -3005,11 +3104,14 @@ private fun FilterTab(
 private fun DiscoverResultCard(
     result: DiscoveryResult,
     busyId: String?,
+    showNotInterested: Boolean,
     onFollow: () -> Unit,
     onUnfollow: (channelId: String, title: String) -> Unit,
     onSubscribe: () -> Unit,
+    onNotInterested: () -> Unit,
 ) {
     val context = LocalContext.current
+    val canOpenExternal = discoveryExternalUrl(result) != null
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -3027,12 +3129,8 @@ private fun DiscoverResultCard(
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable(enabled = !result.watchUrl.isNullOrBlank()) {
-                        result.watchUrl?.let { url ->
-                            runCatching {
-                                CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url))
-                            }
-                        }
+                    .clickable(enabled = canOpenExternal) {
+                        openDiscoverExternal(context, result)
                     },
                 contentScale = ContentScale.Crop,
             )
@@ -3042,7 +3140,10 @@ private fun DiscoverResultCard(
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable(enabled = canOpenExternal) {
+                        openDiscoverExternal(context, result)
+                    },
             )
         }
         Text(
@@ -3054,6 +3155,10 @@ private fun DiscoverResultCard(
             result.title,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
+            color = if (canOpenExternal) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.clickable(enabled = canOpenExternal) {
+                openDiscoverExternal(context, result)
+            },
         )
         if (!result.publisher.isNullOrBlank() && result.type != "channel") {
             Text(
@@ -3088,9 +3193,11 @@ private fun DiscoverResultCard(
         DiscoverResultActions(
             result = result,
             busyId = busyId,
+            showNotInterested = showNotInterested,
             onFollow = onFollow,
             onUnfollow = onUnfollow,
             onSubscribe = onSubscribe,
+            onNotInterested = onNotInterested,
         )
     }
 }
@@ -3099,9 +3206,11 @@ private fun DiscoverResultCard(
 private fun DiscoverResultActions(
     result: DiscoveryResult,
     busyId: String?,
+    showNotInterested: Boolean,
     onFollow: () -> Unit,
     onUnfollow: (channelId: String, title: String) -> Unit,
     onSubscribe: () -> Unit,
+    onNotInterested: () -> Unit,
 ) {
     when {
         result.type == "podcast" -> {
@@ -3127,26 +3236,29 @@ private fun DiscoverResultActions(
             }
         }
         result.provider == "youtube" && result.type == "channel" -> {
-            YoutubeFollowButton(
-                result = result,
-                channelId = result.externalId,
-                busyId = busyId,
-                onFollow = onFollow,
-                onUnfollow = onUnfollow,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                YoutubeFollowButton(
+                    result = result,
+                    channelId = result.externalId,
+                    busyId = busyId,
+                    onFollow = onFollow,
+                    onUnfollow = onUnfollow,
+                )
+                if (showNotInterested) {
+                    TextButton(
+                        onClick = onNotInterested,
+                        enabled = busyId != result.externalId,
+                    ) {
+                        Text("Not interested")
+                    }
+                }
+            }
         }
         result.provider == "youtube" && result.type == "video" && !result.parentExternalId.isNullOrBlank() -> {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                val watchUrl = result.watchUrl
                 val context = LocalContext.current
-                if (!watchUrl.isNullOrBlank()) {
-                    TextButton(
-                        onClick = {
-                            runCatching {
-                                CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(watchUrl))
-                            }
-                        },
-                    ) { Text("Watch") }
+                TextButton(onClick = { openDiscoverExternal(context, result) }) {
+                    Text("Watch")
                 }
                 YoutubeFollowButton(
                     result = result,
@@ -3155,6 +3267,14 @@ private fun DiscoverResultActions(
                     onFollow = onFollow,
                     onUnfollow = onUnfollow,
                 )
+                if (showNotInterested) {
+                    TextButton(
+                        onClick = onNotInterested,
+                        enabled = busyId != result.externalId,
+                    ) {
+                        Text("Not interested")
+                    }
+                }
             }
         }
     }

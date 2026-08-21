@@ -334,6 +334,26 @@ class ApiClient(
         obj.optInt("episodesAdded", 0)
     }
 
+    suspend fun discoverFeedback(
+        recommendationToken: String,
+        action: String,
+    ): String = withContext(Dispatchers.IO) {
+        val obj = requestJson(
+            "POST",
+            "/api/discover/feedback",
+            JSONObject()
+                .put("recommendationToken", recommendationToken)
+                .put("action", action),
+        )
+        obj.optString("feedbackId", "")
+    }
+
+    suspend fun restoreDiscoverFeedback(feedbackId: String) = withContext(Dispatchers.IO) {
+        val encoded = enc(feedbackId)
+        requestJson("POST", "/api/discover/feedback/$encoded/restore", JSONObject())
+        Unit
+    }
+
     fun loginUrl(): String = "$base/api/auth/google?intent=login&client=android"
 
     private fun enc(value: String): String =

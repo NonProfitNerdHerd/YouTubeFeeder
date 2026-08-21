@@ -102,6 +102,8 @@ class MainActivity : AppCompatActivity() {
                             onConfirmDiscoverFollow = viewModel::confirmDiscoverFollow,
                             onUnfollowDiscoverYoutube = viewModel::unfollowDiscoverYoutube,
                             onSubscribeDiscoverPodcast = viewModel::subscribeDiscoverPodcast,
+                            onSubmitDiscoverNotInterested = viewModel::submitDiscoverNotInterested,
+                            onUndoDiscoverFeedback = viewModel::undoDiscoverFeedback,
                         )
                     }
                 }

@@ -117,6 +117,7 @@ data class FeedUiState(
     val discoverBusyId: String? = null,
     val discoverFollowSetup: DiscoverFollowSetup? = null,
     val discoverWarnings: List<String> = emptyList(),
+    val discoverUndoFeedbackId: String? = null,
 )
 
 class FeedViewModel(app: Application) : AndroidViewModel(app) {
@@ -226,6 +227,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 discoverFilter = DiscoverFilter.All,
                 discoverForYouRefreshOffset = 0,
                 discoverForYouTotal = 0,
+                discoverUndoFeedbackId = null,
             )
         }
         if (view.isLiveSection) {
@@ -562,6 +564,71 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun submitDiscoverNotInterested(result: DiscoveryResult, action: String) {
+        val token = result.recommendationToken ?: return
+        if (action != "channel_not_interested" && action != "not_relevant") return
+        viewModelScope.launch {
+            _state.update { it.copy(discoverBusyId = result.externalId, error = null) }
+            try {
+                val feedbackId = api.discoverFeedback(token, action)
+                _state.update { state ->
+                    state.copy(
+                        discoverBusyId = null,
+                        discoverResults = state.discoverResults.filterNot {
+                            it.externalId == result.externalId || it.parentExternalId == result.externalId
+                        },
+                        discoverForYouTotal = (state.discoverForYouTotal - 1).coerceAtLeast(0),
+                        message = if (action == "not_relevant") {
+                            "${result.title} marked not relevant."
+                        } else {
+                            "${result.title} hidden."
+                        },
+                        discoverUndoFeedbackId = feedbackId.ifBlank { null },
+                        undoArchiveVideoId = null,
+                        undoWatchlistVideoId = null,
+                        undoWatchlistId = null,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverBusyId = null,
+                        error = e.message ?: "Could not record feedback",
+                    )
+                }
+            }
+        }
+    }
+
+    fun undoDiscoverFeedback() {
+        val feedbackId = _state.value.discoverUndoFeedbackId ?: return
+        viewModelScope.launch {
+            try {
+                api.restoreDiscoverFeedback(feedbackId)
+                _state.update {
+                    it.copy(
+                        discoverUndoFeedbackId = null,
+                        message = "Recommendation restored.",
+                    )
+                }
+                if (
+                    _state.value.discoverShowingResults &&
+                    _state.value.discoverMode == DiscoverResultsMode.Browse &&
+                    _state.value.discoverBrowseTab == DiscoverBrowseTab.ForYou
+                ) {
+                    openDiscoverBrowse(DiscoverBrowseTab.ForYou)
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverUndoFeedbackId = null,
+                        error = e.message ?: "Undo failed",
+                    )
+                }
+            }
+        }
+    }
+
     private fun markDiscoverSubscribed(externalId: String) {
         _state.update { state ->
             state.copy(
@@ -741,6 +808,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 undoArchiveVideoId = null,
                 undoWatchlistVideoId = null,
                 undoWatchlistId = null,
+                discoverUndoFeedbackId = null,
             )
         }
     }
