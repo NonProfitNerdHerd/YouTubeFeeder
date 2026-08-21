@@ -300,6 +300,54 @@ export async function fetchVideosByIds(yt: YoutubeClient, ids: string[]): Promis
 	return found;
 }
 
+const YOUTUBE_VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
+
+/**
+ * Resolve video → channelId for Discover Brave verification.
+ * Uses part=snippet only. Soft-fails invalid batches / IDs so one bad Brave URL
+ * cannot abort the whole Discover request (avoids "YouTube API videos failed (400)").
+ */
+export async function fetchVideoChannelIdsSoft(
+	yt: YoutubeClient,
+	ids: string[],
+): Promise<{ channelByVideoId: Map<string, string>; failedIds: number }> {
+	const channelByVideoId = new Map<string, string>();
+	const unique = [...new Set(ids.filter((id) => YOUTUBE_VIDEO_ID_RE.test(id)))];
+	let failedIds = 0;
+
+	async function loadGroup(group: string[]): Promise<void> {
+		if (!group.length) return;
+		try {
+			const page = await yt.getJson<{
+				items?: Array<{ id?: string; snippet?: { channelId?: string } }>;
+			}>('videos', {
+				part: 'snippet',
+				id: group.join(','),
+			});
+			for (const item of page.items ?? []) {
+				const videoId = item.id;
+				const channelId = item.snippet?.channelId;
+				if (videoId && channelId) channelByVideoId.set(videoId, channelId);
+			}
+		} catch (err) {
+			if (err instanceof YoutubeApiError && err.isGlobalFatal) throw err;
+			// Batch rejected (often one malformed id) — retry individually.
+			if (group.length === 1) {
+				failedIds += 1;
+				return;
+			}
+			for (const id of group) {
+				await loadGroup([id]);
+			}
+		}
+	}
+
+	for (const group of chunk(unique, 50)) {
+		await loadGroup(group);
+	}
+	return { channelByVideoId, failedIds };
+}
+
 export async function fetchUploadsPlaylistIds(yt: YoutubeClient, channelIds: string[]): Promise<Map<string, string>> {
 	const map = new Map<string, string>();
 	const unique = [...new Set(channelIds.filter(Boolean))];

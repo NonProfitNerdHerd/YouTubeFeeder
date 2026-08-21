@@ -1,4 +1,4 @@
-import { chunk, fetchVideosByIds, type YoutubeClient } from '../../youtube';
+import { chunk, fetchVideoChannelIdsSoft, YoutubeApiError, type YoutubeClient } from '../../youtube';
 import { candidateWatchUrl, classifyBraveYoutubeHit, type ClassifiedYoutubeHit } from './youtubeCandidateNormalize';
 import type { DiscoveryProviderCandidate, DiscoveryProviderRawHit } from './types';
 
@@ -15,6 +15,7 @@ export interface BatchResolveStats {
 	videosListCalls: number;
 	channelsListCalls: number;
 	searchListCalls: number;
+	videoResolveFailures?: number;
 }
 
 interface ChannelSnippetItem {
@@ -32,23 +33,47 @@ async function fetchChannelsByIds(yt: YoutubeClient, ids: string[]): Promise<Map
 	const unique = [...new Set(ids.filter(Boolean))];
 	for (const group of chunk(unique, 50)) {
 		if (!group.length) continue;
-		const page = await yt.getJson<{ items?: ChannelSnippetItem[] }>('channels', {
-			part: 'snippet',
-			id: group.join(','),
-		});
-		for (const item of page.items ?? []) {
-			if (item.id) found.set(item.id, item);
+		try {
+			const page = await yt.getJson<{ items?: ChannelSnippetItem[] }>('channels', {
+				part: 'snippet',
+				id: group.join(','),
+			});
+			for (const item of page.items ?? []) {
+				if (item.id) found.set(item.id, item);
+			}
+		} catch (err) {
+			if (err instanceof YoutubeApiError && err.isGlobalFatal) throw err;
+			// Soft-fail batch: try individually so one bad id cannot wipe the page.
+			if (group.length === 1) continue;
+			for (const id of group) {
+				try {
+					const page = await yt.getJson<{ items?: ChannelSnippetItem[] }>('channels', {
+						part: 'snippet',
+						id,
+					});
+					for (const item of page.items ?? []) {
+						if (item.id) found.set(item.id, item);
+					}
+				} catch (inner) {
+					if (inner instanceof YoutubeApiError && inner.isGlobalFatal) throw inner;
+				}
+			}
 		}
 	}
 	return found;
 }
 
 async function fetchChannelByHandle(yt: YoutubeClient, handle: string): Promise<ChannelSnippetItem | null> {
-	const page = await yt.getJson<{ items?: ChannelSnippetItem[] }>('channels', {
-		part: 'snippet',
-		forHandle: handle,
-	});
-	return page.items?.[0] ?? null;
+	try {
+		const page = await yt.getJson<{ items?: ChannelSnippetItem[] }>('channels', {
+			part: 'snippet',
+			forHandle: handle,
+		});
+		return page.items?.[0] ?? null;
+	} catch (err) {
+		if (err instanceof YoutubeApiError && err.isGlobalFatal) throw err;
+		return null;
+	}
 }
 
 function thumb(item: ChannelSnippetItem | undefined): string {
@@ -63,6 +88,7 @@ function thumb(item: ChannelSnippetItem | undefined): string {
 /**
  * Resolve Brave web hits to unique YouTube channel candidates.
  * Never calls search.list — custom /c /user URLs are dropped as unresolved.
+ * videos.list / channels.list failures are soft where possible so Discover does not abort.
  */
 export async function resolveBraveHitsToChannels(
 	yt: YoutubeClient,
@@ -81,6 +107,7 @@ export async function resolveBraveHitsToChannels(
 		videosListCalls: 0,
 		channelsListCalls: 0,
 		searchListCalls: 0,
+		videoResolveFailures: 0,
 	};
 
 	const classified: ClassifiedYoutubeHit[] = hits.map(classifyBraveYoutubeHit);
@@ -125,19 +152,19 @@ export async function resolveBraveHitsToChannels(
 	const searchBefore = yt.calls.search;
 
 	if (videoIds.size) {
-		const videos = await fetchVideosByIds(yt, [...videoIds]);
-		for (const [videoId, item] of videos) {
-			const channelId = item.snippet?.channelId;
-			if (!channelId) {
-				stats.unresolvedResults += 1;
-				continue;
-			}
+		const { channelByVideoId, failedIds } = await fetchVideoChannelIdsSoft(yt, [...videoIds]);
+		stats.videoResolveFailures = failedIds;
+		for (const [videoId, channelId] of channelByVideoId) {
 			channelIds.add(channelId);
 			const hit = classified.find((c) => c.kind === 'videoId' && c.videoId === videoId);
-			noteSource(channelId, hit && hit.kind === 'videoId' ? hit.url : `https://www.youtube.com/watch?v=${videoId}`, hit?.title ?? '');
+			noteSource(
+				channelId,
+				hit && hit.kind === 'videoId' ? hit.url : `https://www.youtube.com/watch?v=${videoId}`,
+				hit?.title ?? '',
+			);
 		}
 		for (const id of videoIds) {
-			if (!videos.has(id)) stats.unresolvedResults += 1;
+			if (!channelByVideoId.has(id)) stats.unresolvedResults += 1;
 		}
 	}
 
@@ -184,8 +211,6 @@ export async function resolveBraveHitsToChannels(
 	}
 
 	stats.resolvedChannels = candidates.length;
-	stats.duplicateChannels = Math.max(0, stats.validYoutubeUrls - stats.customUrls - stats.resolvedChannels - stats.unresolvedResults);
-	// Recompute duplicates more cleanly: sources mapped minus unique channels
 	const totalMappedSources = [...sourceByChannel.values()].reduce((n, urls) => n + urls.length, 0);
 	stats.duplicateChannels = Math.max(0, totalMappedSources - candidates.length);
 

@@ -9,6 +9,7 @@ import { classifyBraveYoutubeHit, scoreTypedBraveCandidate } from '../../worker/
 import { buildBraveYoutubeSearchQuery } from '../../worker/services/discover/provider/braveQueryStrategy';
 import type { DiscoverySearchProvider } from '../../worker/services/discover/provider/types';
 import type { YoutubeClient } from '../../worker/services/youtube';
+import { YoutubeApiError } from '../../worker/services/youtube';
 import * as podcastIndex from '../../worker/services/discover/podcastIndex';
 
 const USER = 'user-typed-brave';
@@ -182,6 +183,63 @@ describe('typed Brave Discover Phase 3', () => {
 		]);
 		expect(candidates).toHaveLength(1);
 		expect(candidates[0]?.externalId).toBe(CHANNEL_A);
+	});
+
+	it('soft-fails videos.list 400 and still resolves channel URL candidates', async () => {
+		const yt = mockYt(async (path, params) => {
+			if (path === 'videos') {
+				throw new YoutubeApiError('YouTube API videos failed (400).', 400, false, 'videos', 'invalidVideoId');
+			}
+			if (path === 'search') throw new Error('search.list must not be called');
+			if (path === 'channels') {
+				return {
+					items: [
+						{
+							id: CHANNEL_A,
+							snippet: { title: 'Microsoft Channel', description: 'microsoft', thumbnails: {} },
+						},
+					],
+				};
+			}
+			throw new Error(`${path}:${JSON.stringify(Object.fromEntries(params))}`);
+		});
+		const { candidates, stats } = await resolveBraveHitsToChannels(yt, [
+			{ title: 'bad vid', url: 'https://www.youtube.com/watch?v=abcdefghijk' },
+			{ title: 'channel', url: `https://www.youtube.com/channel/${CHANNEL_A}` },
+		]);
+		expect(stats.searchListCalls).toBe(0);
+		expect(stats.videoResolveFailures).toBeGreaterThanOrEqual(1);
+		expect(candidates.some((c) => c.externalId === CHANNEL_A)).toBe(true);
+	});
+
+	it('soft-fails a bad video id in a batch and keeps good video→channel mappings', async () => {
+		const yt = mockYt(async (path, params) => {
+			if (path === 'videos') {
+				const ids = String(params.id ?? '')
+					.split(',')
+					.filter(Boolean);
+				if (ids.length > 1) {
+					throw new YoutubeApiError('YouTube API videos failed (400).', 400, false, 'videos', 'invalidVideoId');
+				}
+				if (ids[0] === 'abcdefghijk') {
+					return { items: [{ id: 'abcdefghijk', snippet: { channelId: CHANNEL_B } }] };
+				}
+				throw new YoutubeApiError('YouTube API videos failed (400).', 400, false, 'videos', 'invalidVideoId');
+			}
+			if (path === 'channels') {
+				return {
+					items: [{ id: CHANNEL_B, snippet: { title: 'From Video', description: 'ok', thumbnails: {} } }],
+				};
+			}
+			throw new Error(path);
+		});
+		const { candidates, stats } = await resolveBraveHitsToChannels(yt, [
+			{ title: 'good', url: 'https://www.youtube.com/watch?v=abcdefghijk' },
+			{ title: 'bad', url: 'https://www.youtube.com/watch?v=zzzzzzzzzzz' },
+		]);
+		expect(stats.searchListCalls).toBe(0);
+		expect(candidates.some((c) => c.externalId === CHANNEL_B)).toBe(true);
+		expect(stats.videoResolveFailures).toBeGreaterThanOrEqual(1);
 	});
 
 	it('filters subscribed channels per user without mutating global cache', async () => {
