@@ -1,4 +1,4 @@
-import { isYouTubeChannelId, parseYouTubeVideoId } from '../../../../src/lib/youtubeUrl';
+import { isYouTubeChannelId } from '../../../../src/lib/youtubeUrl';
 import {
 	chunk,
 	fetchVideoChannelIdsSoft,
