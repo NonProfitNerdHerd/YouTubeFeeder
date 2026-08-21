@@ -93,7 +93,8 @@ export class BraveSearchProvider implements DiscoverySearchProvider {
 	constructor(opts: BraveSearchProviderOptions) {
 		this.#apiKey = opts.apiKey?.trim() ?? '';
 		this.#timeoutMs = opts.timeoutMs ?? DEFAULT_BRAVE_TIMEOUT_MS;
-		this.#fetchImpl = opts.fetchImpl ?? fetch;
+		this.#fetchImpl =
+			opts.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init));
 		this.#defaultStrategyVersion = opts.strategyVersion ?? DEFAULT_BRAVE_YOUTUBE_STRATEGY_VERSION;
 	}
 
