@@ -33,6 +33,9 @@ export class MemorySyncDb {
 	discoverInterestCandidates: Row[] = [];
 	categories = new Map<string, Row>();
 	channelCategories: Row[] = [];
+	podcastSubscriptions = new Map<string, Row>();
+	podcastEpisodes = new Map<string, Row>();
+	podcastInbox: Row[] = [];
 	failFanout = false;
 
 	prepare(sql: string) {
@@ -498,7 +501,6 @@ export class MemorySyncDb {
 				String(existing.expires_at) > lockedAt &&
 				String(existing.lock_owner) !== String(bound[1])
 			) {
-				// Simulate ON CONFLICT DO UPDATE WHERE failing to steal active lock
 				return 0;
 			}
 			this.discoverProviderLocks.set(key, {
@@ -506,6 +508,50 @@ export class MemorySyncDb {
 				lock_owner: bound[1],
 				locked_at: bound[2],
 				expires_at: bound[3],
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO podcast_subscriptions')) {
+			const id = String(bound[0]);
+			this.podcastSubscriptions.set(id, {
+				id,
+				user_id: bound[1],
+				external_feed_id: bound[2],
+				feed_url: bound[3],
+				feed_url_normalized: bound[4],
+				provider_external_id: bound[5],
+				title: bound[6],
+				publisher: bound[7],
+				description: bound[8],
+				image_url: bound[9],
+				follow_in_inbox: 1,
+				max_episodes_to_pull: 20,
+				catchup_pulled: 0,
+				etag: null,
+				last_modified: null,
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO podcast_episodes') || normalized.includes('INSERT OR REPLACE INTO podcast_episodes') || normalized.includes('INSERT OR IGNORE INTO podcast_episodes')) {
+			const episodeId = String(bound[0]);
+			this.podcastEpisodes.set(episodeId, {
+				episode_id: episodeId,
+				feed_url: bound[1],
+				guid: bound[2],
+				subscription_id: bound[3],
+				title: bound[4],
+				description_excerpt: bound[5],
+				image_url: bound[6],
+				audio_url: bound[7],
+				published_at: bound[8],
+				duration_seconds: bound[9],
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT OR IGNORE INTO podcast_inbox_state') || normalized.includes('INSERT INTO podcast_inbox_state')) {
+			this.podcastInbox.push({
+				user_id: bound[0],
+				episode_id: bound[1],
 			});
 			return 1;
 		}
@@ -832,6 +878,22 @@ export class MemorySyncDb {
 			for (const [key, row] of [...this.discoverProviderCache.entries()]) {
 				if (String(row.expires_at) <= cutoff) this.discoverProviderCache.delete(key);
 			}
+			return 1;
+		}
+		if (
+			normalized.includes('UPDATE podcast_subscriptions') &&
+			normalized.includes('feed_url_normalized')
+		) {
+			const id = String(bound[bound.length - 2]);
+			const row = this.podcastSubscriptions.get(id);
+			if (!row) return 0;
+			row.feed_url = bound[0];
+			row.feed_url_normalized = bound[1];
+			row.provider_external_id = bound[2] ?? row.provider_external_id;
+			row.title = bound[3];
+			row.publisher = bound[4];
+			row.description = bound[5];
+			row.image_url = bound[6];
 			return 1;
 		}
 		if (normalized.includes('UPDATE discover_provider_cache') && normalized.includes('candidate_consume_offset')) {
@@ -1184,6 +1246,37 @@ export class MemorySyncDb {
 		if (normalized.includes('FROM discover_provider_cache WHERE cache_key = ?')) {
 			const row = this.discoverProviderCache.get(String(bound[0]));
 			return row ? [row] : [];
+		}
+		if (normalized.includes('FROM podcast_subscriptions WHERE user_id = ? AND feed_url_normalized = ?')) {
+			const userId = String(bound[0]);
+			const feedNorm = String(bound[1]);
+			return [...this.podcastSubscriptions.values()]
+				.filter((r) => r.user_id === userId && r.feed_url_normalized === feedNorm)
+				.map((r) => ({ id: r.id }));
+		}
+		if (normalized.includes('FROM podcast_subscriptions WHERE user_id = ? AND external_feed_id = ?')) {
+			const userId = String(bound[0]);
+			const ext = Number(bound[1]);
+			return [...this.podcastSubscriptions.values()]
+				.filter((r) => r.user_id === userId && Number(r.external_feed_id) === ext)
+				.map((r) => ({ id: r.id }));
+		}
+		if (
+			normalized.includes('SELECT feed_url_normalized, feed_url FROM podcast_subscriptions WHERE user_id = ?')
+		) {
+			const userId = String(bound[0]);
+			return [...this.podcastSubscriptions.values()]
+				.filter((r) => r.user_id === userId)
+				.map((r) => ({
+					feed_url_normalized: r.feed_url_normalized ?? null,
+					feed_url: r.feed_url,
+				}));
+		}
+		if (normalized.includes('SELECT external_feed_id FROM podcast_subscriptions WHERE user_id = ?')) {
+			const userId = String(bound[0]);
+			return [...this.podcastSubscriptions.values()]
+				.filter((r) => r.user_id === userId)
+				.map((r) => ({ external_feed_id: r.external_feed_id }));
 		}
 		if (normalized.includes('FROM discover_provider_locks WHERE cache_key = ?')) {
 			const row = this.discoverProviderLocks.get(String(bound[0]));

@@ -32,8 +32,10 @@ interface Env {
 	BRAVE_SEARCH_TIMEOUT_MS?: string;
 	/** Max Brave pages fetched per typed Discover search request (default 3). */
 	DISCOVER_BRAVE_MAX_PAGES_PER_REQUEST?: string;
-	/** Target usable channel count for typed Brave Discover (default 20). */
+	/** Target usable channel count for typed Brave Discover (default 42). */
 	DISCOVER_BRAVE_TYPED_RESULT_LIMIT?: string;
+	/** Podcast Discover provider: `apple` (default) | `podcastindex`. */
+	DISCOVER_PODCAST_PROVIDER?: string;
 }
 
 interface ExecutionContext {

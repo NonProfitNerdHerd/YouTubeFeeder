@@ -546,8 +546,8 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	}
 
 	async function subscribePodcast(result: DiscoveryResult) {
+		if (result.type !== 'podcast' || !result.feedUrl) return;
 		const feedId = Number(result.externalId);
-		if (!Number.isFinite(feedId) || result.type !== 'podcast') return;
 		setSubscribing(result.externalId);
 		onError('');
 		try {
@@ -556,7 +556,8 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				headers: { 'content-type': 'application/json' },
 				credentials: 'same-origin',
 				body: JSON.stringify({
-					externalFeedId: feedId,
+					externalFeedId: Number.isFinite(feedId) ? feedId : undefined,
+					providerExternalId: result.externalId,
 					feedUrl: result.feedUrl,
 					title: result.title,
 					publisher: result.publisher,

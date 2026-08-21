@@ -128,6 +128,11 @@ export interface TypedBraveSearchOptions {
 	provider?: DiscoverySearchProvider;
 	youtubeClient?: YoutubeClient;
 	lockOwner?: string;
+	/**
+	 * When true, expand only until `offset+limit` usable exist, then return the
+	 * entire usable pool (not a page slice). Used by mixed All ranking.
+	 */
+	returnFullUsablePool?: boolean;
 }
 
 export interface TypedBraveSearchResult extends YoutubeDiscoverSearchResult {
@@ -185,6 +190,16 @@ export async function searchYoutubeDiscoverViaBrave(
 	const maxPages = config.maxPagesPerRequest;
 	const subscribed = await getSubscribedChannelIds(env.DB, userId);
 	const lockOwner = opts.lockOwner ?? crypto.randomUUID();
+	const fullPool = Boolean(opts.returnFullUsablePool);
+
+	const sliceUsable = (usable: DiscoveryResult[], moreProviderPages: boolean) =>
+		pageFromUsable(
+			usable,
+			subscribed,
+			fullPool ? 0 : offset,
+			fullPool ? Math.max(usable.length, 1) : limit,
+			moreProviderPages,
+		);
 
 	await cleanupExpiredDiscoverProviderRows(env.DB, now);
 
@@ -230,7 +245,7 @@ export async function searchYoutubeDiscoverViaBrave(
 		if (!needMoreFromProvider) {
 			funnel.stopReason = usable.length ? 'cache_satisfied' : 'cache_empty_after_filters';
 			if (yt) await recordYoutubeCalls(env.DB, yt);
-			const page = pageFromUsable(usable, subscribed, offset, limit, false);
+			const page = sliceUsable(usable, false);
 			return {
 				...page,
 				cached: true,
@@ -249,7 +264,7 @@ export async function searchYoutubeDiscoverViaBrave(
 			const usable = filterForUser(record.candidates, subscribed, normalized, funnel);
 			if (yt) await recordYoutubeCalls(env.DB, yt);
 			return {
-				...pageFromUsable(usable, subscribed, offset, limit, false),
+				...sliceUsable(usable, false),
 				cached: true,
 				searchedAt: record.searchedAt,
 				warning: 'Brave Search API key is not configured. Showing cached results.',
@@ -271,7 +286,7 @@ export async function searchYoutubeDiscoverViaBrave(
 		if (record) {
 			const usable = filterForUser(record.candidates, subscribed, normalized, funnel);
 			return {
-				...pageFromUsable(usable, subscribed, offset, limit, false),
+				...sliceUsable(usable, false),
 				cached: true,
 				searchedAt: record.searchedAt,
 				warning: 'YouTube API key is not configured for channel verification. Showing cached results.',
@@ -452,13 +467,7 @@ export async function searchYoutubeDiscoverViaBrave(
 	if (usable.length === 0 && pagesFetched > 0) {
 		await recordBraveZeroResultSearch(env.DB, userId);
 	}
-	const page = pageFromUsable(
-		usable,
-		subscribed,
-		offset,
-		limit,
-		Boolean(record?.moreResultsAvailable),
-	);
+	const page = sliceUsable(usable, Boolean(record?.moreResultsAvailable));
 	if (page.results.length > 0) {
 		await recordBraveUsableCandidates(env.DB, userId, page.results.length);
 	}

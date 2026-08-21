@@ -83,10 +83,10 @@ describe('discover podcasts', () => {
 		expect(merged[1]?.videoId).toBe('yt1');
 	});
 
-	it('returns mock discovery results when query is non-empty', () => {
+	it('keeps mockDiscoveryResults as a test fixture helper only', () => {
 		const results = mockDiscoveryResults('weather', new Set());
 		expect(results.length).toBeGreaterThan(0);
-		expect(results[0]?.provider).toBe('podcast');
+		expect(results.every((r) => r.type === 'podcast' || r.type === 'episode')).toBe(true);
 	});
 
 	it('parses RSS items', () => {

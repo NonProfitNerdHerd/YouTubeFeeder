@@ -33,7 +33,7 @@ function parseHits(json: string): DiscoveryProviderRawHit[] {
 	}
 }
 
-function parseCandidates(json: string): DiscoveryProviderCandidate[] {
+function parseYoutubeCandidates(json: string): DiscoveryProviderCandidate[] {
 	try {
 		const parsed = JSON.parse(json) as unknown;
 		if (!Array.isArray(parsed)) return [];
@@ -50,6 +50,31 @@ function parseCandidates(json: string): DiscoveryProviderCandidate[] {
 	} catch {
 		return [];
 	}
+}
+
+function parseCandidates(json: string, contentType: string): DiscoveryProviderCandidate[] {
+	if (contentType === 'podcast') {
+		// Podcast candidates are stored as DiscoveryProviderCandidate-shaped rows with feedUrlNormalized.
+		try {
+			const parsed = JSON.parse(json) as unknown;
+			if (!Array.isArray(parsed)) return [];
+			return parsed.filter((row): row is DiscoveryProviderCandidate => {
+				const c = row as DiscoveryProviderCandidate & { feedUrlNormalized?: string; feedUrl?: string };
+				return Boolean(
+					c &&
+						typeof c === 'object' &&
+						typeof c.title === 'string' &&
+						typeof c.feedUrlNormalized === 'string' &&
+						c.feedUrlNormalized.length > 0 &&
+						typeof c.feedUrl === 'string' &&
+						c.feedUrl.length > 0,
+				);
+			});
+		} catch {
+			return [];
+		}
+	}
+	return parseYoutubeCandidates(json);
 }
 
 function mapRow(
@@ -82,7 +107,7 @@ function mapRow(
 		resolverVersion: row.resolver_version ?? 'v1',
 		resolutionStatus: row.resolution_status ?? 'ok',
 		rawResults: parseHits(row.raw_results_json),
-		candidates: parseCandidates(row.candidates_json),
+		candidates: parseCandidates(row.candidates_json, row.content_type),
 		providerOffset: Number(row.provider_offset ?? 0),
 		moreResultsAvailable: Boolean(row.more_results_available),
 		candidateConsumeOffset: Number(row.candidate_consume_offset ?? 0),

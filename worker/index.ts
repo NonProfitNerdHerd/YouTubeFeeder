@@ -412,7 +412,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
 		const limitRaw = url.searchParams.get('limit');
 		const limit = limitRaw != null ? Math.min(100, Math.max(1, Number(limitRaw) || 0)) || undefined : undefined;
-		return json(await discoverSearch(env, user.id, q, filter, { offset, limit }));
+		const includeDebug = url.searchParams.get('debug') === '1' && env.DISCOVER_RELEVANCE_DEBUG === 'true';
+		return json(await discoverSearch(env, user.id, q, filter, { offset, limit, includeDebug }));
 	}
 
 	if (path === '/api/discover/browse' && request.method === 'GET') {

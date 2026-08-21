@@ -1,6 +1,7 @@
 import { randomToken } from '../auth/crypto';
 import type { DiscoveryResult } from '../../src/types/discover';
 import type { InboxItem, PodcastSubscriptionRecord, WatchedFilter } from '../../src/types';
+import { feedUrlToExternalFeedId } from '../services/discover/provider/podcastFeedUrl';
 
 const EPISODE_ID_PREFIX = 'pe_';
 
@@ -98,35 +99,97 @@ export async function getSubscribedFeedIds(db: D1Database, userId: string): Prom
 	return new Set((rows.results ?? []).map((r) => r.external_feed_id));
 }
 
+export async function getSubscribedPodcastFeedUrls(db: D1Database, userId: string): Promise<Set<string>> {
+	const rows = await db
+		.prepare(
+			`SELECT feed_url_normalized, feed_url FROM podcast_subscriptions WHERE user_id = ?`,
+		)
+		.bind(userId)
+		.all<{ feed_url_normalized: string | null; feed_url: string }>();
+	const set = new Set<string>();
+	for (const row of rows.results ?? []) {
+		const norm = (row.feed_url_normalized ?? '').trim() || row.feed_url.trim().toLowerCase();
+		if (norm) set.add(norm);
+	}
+	return set;
+}
+
 export async function subscribePodcast(
 	db: D1Database,
 	userId: string,
 	input: {
-		externalFeedId: number;
 		feedUrl: string;
+		feedUrlNormalized: string;
 		title: string;
 		publisher?: string;
 		description?: string;
 		imageUrl?: string;
+		providerExternalId?: string;
+		/** Legacy Podcast Index numeric id when available. */
+		externalFeedId?: number;
 	},
 ): Promise<{ podcastId: string; created: boolean }> {
-	const existing = await db
-		.prepare(`SELECT id FROM podcast_subscriptions WHERE user_id = ? AND external_feed_id = ?`)
-		.bind(userId, input.externalFeedId)
+	const existingByFeed = await db
+		.prepare(
+			`SELECT id FROM podcast_subscriptions WHERE user_id = ? AND feed_url_normalized = ?`,
+		)
+		.bind(userId, input.feedUrlNormalized)
 		.first<{ id: string }>();
-	if (existing) return { podcastId: existing.id, created: false };
+	if (existingByFeed) return { podcastId: existingByFeed.id, created: false };
+
+	const externalFeedId =
+		input.externalFeedId && Number.isFinite(input.externalFeedId)
+			? input.externalFeedId
+			: (() => {
+					const n = Number(input.providerExternalId);
+					return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+				})();
+
+	const resolvedExternalId =
+		externalFeedId ?? feedUrlToExternalFeedId(input.feedUrlNormalized);
+
+	const existingByExternal = await db
+		.prepare(`SELECT id FROM podcast_subscriptions WHERE user_id = ? AND external_feed_id = ?`)
+		.bind(userId, resolvedExternalId)
+		.first<{ id: string }>();
+	if (existingByExternal) {
+		await db
+			.prepare(
+				`UPDATE podcast_subscriptions
+				 SET feed_url = ?, feed_url_normalized = ?, provider_external_id = COALESCE(?, provider_external_id),
+				     title = ?, publisher = ?, description = ?, image_url = ?
+				 WHERE id = ? AND user_id = ?`,
+			)
+			.bind(
+				input.feedUrl,
+				input.feedUrlNormalized,
+				input.providerExternalId ?? null,
+				input.title.slice(0, 200),
+				(input.publisher ?? '').slice(0, 200),
+				(input.description ?? '').slice(0, 500),
+				(input.imageUrl ?? '').slice(0, 500),
+				existingByExternal.id,
+				userId,
+			)
+			.run();
+		return { podcastId: existingByExternal.id, created: false };
+	}
 
 	const id = randomToken(16);
 	await db
 		.prepare(
-			`INSERT INTO podcast_subscriptions (id, user_id, external_feed_id, feed_url, title, publisher, description, image_url)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO podcast_subscriptions (
+				id, user_id, external_feed_id, feed_url, feed_url_normalized, provider_external_id,
+				title, publisher, description, image_url
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		.bind(
 			id,
 			userId,
-			input.externalFeedId,
+			resolvedExternalId,
 			input.feedUrl,
+			input.feedUrlNormalized,
+			input.providerExternalId ?? String(resolvedExternalId),
 			input.title.slice(0, 200),
 			(input.publisher ?? '').slice(0, 200),
 			(input.description ?? '').slice(0, 500),

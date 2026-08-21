@@ -22,10 +22,10 @@ export interface DiscoveryProviderRawHit {
 	meta?: Record<string, unknown>;
 }
 
-/** Resolved YouTube channel candidate stored in the global provider cache (pre user-filter). */
+/** Resolved channel/show candidate stored in the global provider cache (pre user-filter). */
 export interface DiscoveryProviderCandidate {
-	provider: 'youtube';
-	type: 'channel';
+	provider: 'youtube' | 'podcast';
+	type: 'channel' | 'podcast';
 	externalId: string;
 	title: string;
 	description?: string;
@@ -34,6 +34,15 @@ export interface DiscoveryProviderCandidate {
 	watchUrl?: string;
 	/** Source Brave URLs that mapped to this channel (debug). */
 	sourceUrls?: string[];
+	/** Podcast-only: raw RSS URL. */
+	feedUrl?: string;
+	/** Podcast-only: normalized feed identity. */
+	feedUrlNormalized?: string;
+	providerBackend?: string;
+	providerExternalId?: string;
+	relevance?: number;
+	websiteUrl?: string;
+	genres?: string[];
 }
 
 export interface DiscoverySearchResult {

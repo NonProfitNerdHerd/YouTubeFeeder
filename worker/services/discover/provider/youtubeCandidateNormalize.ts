@@ -1,4 +1,5 @@
 import { parseYouTubeChannelInput, parseYouTubeVideoId, youtubeChannelUrl } from '../../../../src/lib/youtubeUrl';
+import { scoreDiscoverTextMatch } from './scoreDiscoverTextMatch';
 import type { DiscoveryProviderRawHit } from './types';
 
 export type ClassifiedYoutubeHit =
@@ -50,29 +51,12 @@ export function classifyBraveYoutubeHit(hit: DiscoveryProviderRawHit): Classifie
 	return { kind: 'invalid', url: hit.url, title, reason: parsed.error ?? 'unrecognized_youtube_url' };
 }
 
-/** Deterministic typed-search relevance: query token overlap with title/description. */
+/** Deterministic typed-search relevance via shared Discover text match. */
 export function scoreTypedBraveCandidate(
 	query: string,
 	candidate: { title: string; description?: string; publisher?: string },
 ): number {
-	const tokens = query
-		.toLowerCase()
-		.split(/[^a-z0-9]+/)
-		.filter((t) => t.length >= 2);
-	if (!tokens.length) return 0;
-	const hay = `${candidate.title} ${candidate.description ?? ''} ${candidate.publisher ?? ''}`.toLowerCase();
-	let hits = 0;
-	for (const token of tokens) {
-		if (hay.includes(token)) hits += 1;
-	}
-	const coverage = hits / tokens.length;
-	// Prefer title hits lightly by re-checking title-only coverage.
-	const titleHay = candidate.title.toLowerCase();
-	let titleHits = 0;
-	for (const token of tokens) {
-		if (titleHay.includes(token)) titleHits += 1;
-	}
-	return Math.round(coverage * 70 + (titleHits / tokens.length) * 30);
+	return scoreDiscoverTextMatch(query, candidate);
 }
 
 export const TYPED_BRAVE_MIN_RELEVANCE = 20;
