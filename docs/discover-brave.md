@@ -1,14 +1,35 @@
-# Discover Brave provider (Phases 1–2)
+# Discover Brave provider (Phases 1–4)
 
-Infrastructure only. Production Discover still uses YouTube `search.list` until Phase 3.
+Brave backs **typed YouTube Discover** and **For You / topic / Discover More** when `DISCOVER_SEARCH_PROVIDER=brave`. Podcasts, Popular, Live, and WebSub are unchanged.
 
 ## Architecture split
 
 | Concern | Source |
 | --- | --- |
-| Typed Discover **YouTube search** (when `DISCOVER_SEARCH_PROVIDER=brave`) | Brave Search API + batch `videos.list` / `channels.list` |
-| For You / Discover More / topic fill | Still YouTube `search.list` (Phase 4+) |
+| Typed Discover **YouTube search** | Brave + batch `videos.list` / `channels.list` |
+| For You interest chip / Discover More | Same Brave provider pool + For You fingerprint scoring (`MIN_ACCEPT=55`) |
 | Subscribed channel/video data | Existing YouTube APIs + WebSub + feed ingestion |
+
+Typed relevance scoring and For You fingerprint scoring stay separate. Brave only supplies candidates.
+
+### Shared 30-day cache
+
+`discover_provider_cache` key:
+
+```text
+brave:youtube:{strategyVersion}:{normalizeDiscoverQuery(query)}
+```
+
+Typed `Microsoft` and interest-label `Microsoft` share the same pool when strategy/query match. User subscribed / Not Interested filters apply after load and never mutate the global pool.
+
+### Discover More
+
+1. Score unused provider/topic candidates against the interest fingerprint  
+2. Persist qualifying rows  
+3. Only if still short: fetch the **next** Brave provider page (no restart at offset 0)  
+4. Repeat within `DISCOVER_BRAVE_MAX_PAGES_PER_REQUEST` and soft caps  
+
+Zero qualifying candidates → empty state (HTTP 200), not `Could not discover recommendations.`
 
 ### V1 Brave query strategy
 
@@ -16,42 +37,23 @@ Infrastructure only. Production Discover still uses YouTube `search.list` until 
 site:youtube.com {query}
 ```
 
-Selected for usable unique channels per Brave request: includes channel pages and videos (resolved via `videos.list`). Alternate `site:youtube.com/@ {query}` is retained as strategy `v1-at` for offline comparison only.
+For You prefers one primary query (interest label) + pagination over many paid expansions.
 
 ### Attribution
 
-Brave Search API Terms say customers **may** provide “POWERED BY BRAVE” attribution (with logo) when attributing; they do not state a mandatory UI badge for all integrations. Confirm with your Brave plan/ToS before production launch. Phase 3 does not add Brave branding to the Discover UI.
-
+Brave Search API Terms say customers **may** provide “POWERED BY BRAVE” attribution. Confirm with your plan/ToS before production launch. No UI badge is added yet.
 
 ## Secrets / vars
 
 ```bash
-# Production
 npx wrangler secret put BRAVE_SEARCH_API_KEY
-
-# Local: add to .dev.vars (never commit real keys)
-BRAVE_SEARCH_API_KEY=...
 ```
 
-Configurable vars (also in `wrangler.jsonc`):
-
-- `DISCOVER_SEARCH_PROVIDER=youtube` — leave as `youtube` until Phase 3
+- `DISCOVER_SEARCH_PROVIDER=brave` — required to activate Brave for typed + For You
 - `DISCOVER_PROVIDER_STRATEGY_VERSION=v1`
-- `BRAVE_USER_DAILY_SOFT_CAP=100` — actual Brave HTTP requests / user / UTC day
-- `BRAVE_GLOBAL_DAILY_SOFT_CAP=750` — actual Brave HTTP requests / UTC day
-- Cache hits do **not** count against these caps
+- `BRAVE_USER_DAILY_SOFT_CAP=100`
+- `BRAVE_GLOBAL_DAILY_SOFT_CAP=750`
+- `DISCOVER_BRAVE_MAX_PAGES_PER_REQUEST=3`
+- Migration `0027_discover_brave_provider.sql` must be applied remotely
 
-## Migration
-
-```bash
-npx wrangler d1 migrations apply youtube-feeder --local
-npx wrangler d1 migrations apply youtube-feeder --remote
-```
-
-Tables: `discover_provider_cache`, `discover_provider_locks`, `discover_brave_usage_daily`.
-
-Cache key: `brave:youtube:{strategyVersion}:{normalizedQuery}` · TTL 30 days.
-
-Expired cache rows are retained ~7 days after `expires_at` for stale-while-error, then removed by lazy cleanup.
-
-Provider-page exhaustion (`provider_offset` / `more_results_available`) is separate from usable-candidate exhaustion (`candidate_consume_offset` vs `candidates_json`).
+No silent fallback from Brave to YouTube `search.list`.

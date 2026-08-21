@@ -8,7 +8,7 @@ export const DEFAULT_TYPED_BRAVE_RESULT_LIMIT = 20;
 
 export interface BraveDiscoverConfig {
 	apiKey: string;
-	/** `brave` enables typed Discover Brave path; default `youtube` keeps legacy search.list. */
+	/** `brave` enables typed + For You/topic Discover Brave path; default `youtube` keeps legacy search.list. */
 	providerMode: 'youtube' | 'brave';
 	strategyVersion: string;
 	userDailySoftCap: number;

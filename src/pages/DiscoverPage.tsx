@@ -796,13 +796,8 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 				onError('Could not discover recommendations.');
 				return;
 			}
-			const body = (await res.json()) as {
-				channels?: DiscoverRecommendation[];
-				error?: { message: string };
-			};
-			if (!body.channels?.length) {
-				return;
-			}
+			await res.json();
+			// Always reload For You: zero qualifying candidates is an empty state, not an error.
 			await loadForYou(forYouInterest);
 		} catch {
 			onError('Could not discover recommendations.');

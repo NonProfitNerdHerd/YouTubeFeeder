@@ -5,7 +5,7 @@ import {
 } from '../../db/discoverInterestCandidates';
 import { getSubscribedChannelIds } from '../../db/queries';
 import { DISCOVER_TOPIC_REFRESH_PER_REQUEST } from '../discoverQuota';
-import { buildInterestSearchQueries } from './clusterQueries';
+import { buildBraveInterestPrimaryQuery, buildInterestSearchQueries } from './clusterQueries';
 import {
 	loadCachedCandidatesWithFallback,
 	loadPhraseCacheCandidates,
@@ -21,12 +21,13 @@ import { computeFeedbackAdjustment, buildFeedbackAdjustmentIndex } from './feedb
 import { loadActiveFeedbackRows } from '../../db/recommendationFeedback';
 import { matchedConceptsFromDebug } from './recommendationFeedbackService';
 import type { InterestFingerprint } from './interestFingerprint';
-import { getTopicCandidates, normalizeTopic } from './topicDiscovery';
+import { fetchNextInterestPage, getTopicCandidates, normalizeTopic } from './topicDiscovery';
 import {
 	loadActiveInterestCandidates,
 	retireInterestCandidateByRelevance,
 	type DiscoverInterestCandidateRow,
 } from '../../db/discoverInterestCandidates';
+import { braveDiscoverConfigFromEnv } from './provider/braveConfig';
 
 export interface InterestDiscoveryMetrics {
 	persistedActive: number;
@@ -37,6 +38,9 @@ export interface InterestDiscoveryMetrics {
 	rejected: number;
 	accepted: number;
 	newlyPersisted: number;
+	scoreRejected: number;
+	subscribedFiltered: number;
+	providerPagesFetched: number;
 }
 
 export interface InterestDiscoveryDebug {
@@ -53,6 +57,9 @@ export interface InterestDiscoveryDebug {
 	rejected: number;
 	accepted: number;
 	persistedActive: number;
+	providerPagesFetched?: number;
+	scoreRejected?: number;
+	subscribedFiltered?: number;
 }
 
 function scoredToInsert(
@@ -113,6 +120,34 @@ export async function evaluatePersistedCandidates(
 	return { active, retired };
 }
 
+function scoreAndCollect(
+	candidates: DiscoveryResult[],
+	fingerprint: InterestFingerprint,
+	subscribed: Set<string>,
+	seen: Set<string>,
+	originatingQuery: string,
+	toPersist: DiscoverInterestCandidateInsert[],
+	counters: { raw: number; rejected: number; accepted: number; subscribedFiltered: number; scoreRejected: number },
+): void {
+	for (const candidate of candidates) {
+		if (subscribed.has(candidate.externalId)) {
+			counters.subscribedFiltered += 1;
+			continue;
+		}
+		if (seen.has(`${candidate.provider}:${candidate.externalId}`)) continue;
+		counters.raw += 1;
+		const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
+		if (shouldPersistNewCandidate(scored.score)) {
+			counters.accepted += 1;
+			seen.add(`${candidate.provider}:${candidate.externalId}`);
+			toPersist.push(scoredToInsert(scored, fingerprint, originatingQuery));
+		} else {
+			counters.rejected += 1;
+			counters.scoreRejected += 1;
+		}
+	}
+}
+
 export async function discoverCandidatesForInterest(
 	env: Env,
 	userId: string,
@@ -126,18 +161,22 @@ export async function discoverCandidatesForInterest(
 ): Promise<{
 	metrics: InterestDiscoveryMetrics;
 	debug?: InterestDiscoveryDebug;
+	warning?: string;
 }> {
 	const allowLiveSearch = opts?.allowLiveSearch ?? false;
 	const maxLiveSearches = opts?.maxLiveSearches ?? DISCOVER_TOPIC_REFRESH_PER_REQUEST;
+	const config = braveDiscoverConfigFromEnv(env);
+	const isBrave = config.providerMode === 'brave';
 	const subscribed = await getSubscribedChannelIds(env.DB, userId);
-	const queries = buildInterestSearchQueries(fingerprint).sort((a, b) => b.confidence - a.confidence);
+	const queries = isBrave
+		? [buildBraveInterestPrimaryQuery(fingerprint)].filter((row) => Boolean(row.query.trim()))
+		: buildInterestSearchQueries(fingerprint).sort((a, b) => b.confidence - a.confidence);
 
 	let cacheHits = 0;
 	let liveSearches = 0;
-	let rawCandidates = 0;
-	let rejected = 0;
-	let accepted = 0;
-	let newlyPersisted = 0;
+	let providerPagesFetched = 0;
+	let warning: string | undefined;
+	const counters = { raw: 0, rejected: 0, accepted: 0, subscribedFiltered: 0, scoreRejected: 0 };
 
 	const persistedRows = await loadActiveInterestCandidates(env.DB, userId, fingerprint.interestId);
 	const { active: activePersisted, retired: persistedRetired } = await evaluatePersistedCandidates(
@@ -149,69 +188,93 @@ export async function discoverCandidatesForInterest(
 
 	const seen = new Set(activePersisted.map((row) => `${row.provider}:${row.external_id}`));
 	const toPersist: DiscoverInterestCandidateInsert[] = [];
+	const beforePersistCount = activePersisted.length;
 
 	for (const clusterQuery of queries) {
 		const cacheLookup = await loadCachedCandidatesWithFallback(env, clusterQuery, fingerprint, now);
 		let candidates = cacheLookup.results;
 		if (cacheLookup.hitKeys.length) cacheHits += 1;
 		else if (allowLiveSearch && liveSearches < maxLiveSearches) {
-			const refreshed = await getTopicCandidates(env, clusterQuery.query, now, { allowRefresh: true });
-			if (refreshed.refreshed) liveSearches += 1;
+			const refreshed = await getTopicCandidates(env, clusterQuery.query, now, {
+				allowRefresh: true,
+				userId,
+			});
+			if (refreshed.refreshed) {
+				liveSearches += 1;
+				if (isBrave) providerPagesFetched += 1;
+			}
+			if (refreshed.warning) warning = refreshed.warning;
 			candidates = refreshed.results;
 		}
 
-		const filtered = candidates.filter(
-			(row) => !subscribed.has(row.externalId) && !seen.has(`${row.provider}:${row.externalId}`),
+		scoreAndCollect(
+			candidates,
+			fingerprint,
+			subscribed,
+			seen,
+			normalizeTopic(clusterQuery.query) || clusterQuery.cacheKey,
+			toPersist,
+			counters,
 		);
-		rawCandidates += filtered.length;
 
-		for (const candidate of filtered) {
-			const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
-			if (shouldPersistNewCandidate(scored.score)) {
-				accepted += 1;
-				seen.add(`${candidate.provider}:${candidate.externalId}`);
-				toPersist.push(scoredToInsert(scored, fingerprint, normalizeTopic(clusterQuery.query)));
-			} else {
-				rejected += 1;
-			}
+		// Low-yield Brave pages: keep paginating until we accept enough or hit safety limits.
+		const minNewAccepts = Math.max(1, Math.min(5, maxLiveSearches));
+		while (
+			isBrave &&
+			allowLiveSearch &&
+			toPersist.length < minNewAccepts &&
+			liveSearches < maxLiveSearches
+		) {
+			const next = await fetchNextInterestPage(env, clusterQuery.query, now, { userId });
+			if (!next.fetched) break;
+			liveSearches += next.searchCalls;
+			providerPagesFetched += next.searchCalls;
+			if (next.warning) warning = next.warning;
+			const priorSeen = seen.size;
+			scoreAndCollect(
+				next.results,
+				fingerprint,
+				subscribed,
+				seen,
+				normalizeTopic(clusterQuery.query) || clusterQuery.cacheKey,
+				toPersist,
+				counters,
+			);
+			if (seen.size === priorSeen && !next.nextPageToken) break;
 		}
 	}
 
-	if (rawCandidates === 0) {
+	if (counters.raw === 0 && !isBrave) {
 		const phraseLookup = await loadPhraseCacheCandidates(env, fingerprint, now);
 		if (phraseLookup.hitKeys.length) cacheHits += 1;
-		const filtered = phraseLookup.results.filter(
-			(row) => !subscribed.has(row.externalId) && !seen.has(`${row.provider}:${row.externalId}`),
+		scoreAndCollect(
+			phraseLookup.results,
+			fingerprint,
+			subscribed,
+			seen,
+			phraseLookup.hitKeys[0] ?? normalizeTopic(fingerprint.phrases[0]?.text ?? ''),
+			toPersist,
+			counters,
 		);
-		rawCandidates += filtered.length;
-		for (const candidate of filtered) {
-			const scored = scoreCandidateAgainstFingerprint(candidate, fingerprint);
-			if (shouldPersistNewCandidate(scored.score)) {
-				accepted += 1;
-				seen.add(`${candidate.provider}:${candidate.externalId}`);
-				toPersist.push(
-					scoredToInsert(scored, fingerprint, phraseLookup.hitKeys[0] ?? normalizeTopic(fingerprint.phrases[0]?.text ?? '')),
-				);
-			} else {
-				rejected += 1;
-			}
-		}
 	}
 
 	if (toPersist.length) {
 		await upsertInterestCandidates(env.DB, userId, toPersist, now);
-		newlyPersisted = toPersist.length;
 	}
 
+	const newlyPersisted = toPersist.length;
 	const metrics: InterestDiscoveryMetrics = {
-		persistedActive: activePersisted.length + newlyPersisted,
+		persistedActive: beforePersistCount + newlyPersisted,
 		persistedRetired: persistedRetired,
 		cacheHits,
 		liveSearches,
-		rawCandidates,
-		rejected,
-		accepted,
+		rawCandidates: counters.raw,
+		rejected: counters.rejected,
+		accepted: counters.accepted,
 		newlyPersisted,
+		scoreRejected: counters.scoreRejected,
+		subscribedFiltered: counters.subscribedFiltered,
+		providerPagesFetched,
 	};
 
 	const debug: InterestDiscoveryDebug | undefined = opts?.includeDebug
@@ -232,14 +295,17 @@ export async function discoverCandidatesForInterest(
 				queries: queries.map((row) => row.query),
 				cacheHits,
 				liveSearches,
-				rawCandidates,
-				rejected,
-				accepted,
+				rawCandidates: counters.raw,
+				rejected: counters.rejected,
+				accepted: counters.accepted,
 				persistedActive: metrics.persistedActive,
+				providerPagesFetched,
+				scoreRejected: counters.scoreRejected,
+				subscribedFiltered: counters.subscribedFiltered,
 			}
 		: undefined;
 
-	return { metrics, debug };
+	return { metrics, debug, warning };
 }
 
 export { shouldPersistNewCandidate, shouldRetainPersistedCandidate, MIN_ACCEPT_SCORE };

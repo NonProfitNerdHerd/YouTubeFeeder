@@ -20,7 +20,7 @@ import {
 } from './candidateScoring';
 import { buildFeedbackAdjustmentIndex, computeFeedbackAdjustment } from './feedbackScoring';
 import { buildInterestFingerprints, isInterestFingerprintEmpty, type InterestFingerprint } from './interestFingerprint';
-import { buildInterestSearchQueries } from './clusterQueries';
+import { buildBraveInterestPrimaryQuery, buildInterestSearchQueries } from './clusterQueries';
 import {
 	loadCachedCandidatesWithFallback,
 	loadPhraseCacheCandidates,
@@ -35,6 +35,7 @@ import {
 	getInterestNextPageToken,
 	normalizeTopic,
 } from './topicDiscovery';
+import { braveDiscoverConfigFromEnv } from './provider/braveConfig';
 
 export const FOR_YOU_PAGE_SIZE = 25;
 const INTERESTS_TO_MERGE = 12;
@@ -216,10 +217,13 @@ export async function buildForYouRecommendations(
 
 	let searchCalls = 0;
 	if (opts?.loadMore && opts.interestId && activeFingerprints[0]) {
-		const queries = buildInterestSearchQueries(activeFingerprints[0]);
-		const query = queries[0]?.query;
+		const config = braveDiscoverConfigFromEnv(env);
+		const query =
+			config.providerMode === 'brave'
+				? buildBraveInterestPrimaryQuery(activeFingerprints[0]).query
+				: buildInterestSearchQueries(activeFingerprints[0])[0]?.query;
 		if (query) {
-			const next = await fetchNextInterestPage(env, query, now);
+			const next = await fetchNextInterestPage(env, query, now, { userId });
 			searchCalls += next.searchCalls;
 		}
 	}

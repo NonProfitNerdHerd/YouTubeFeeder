@@ -91,6 +91,32 @@ export function buildInterestSearchQueries(fingerprint: InterestFingerprint): Cl
 	];
 }
 
+/**
+ * Single strong Brave provider query for For You / Discover More.
+ * Prefer the interest label (e.g. "Microsoft") so typed Discover and topic chips share cache keys.
+ */
+export function buildBraveInterestPrimaryQuery(fingerprint: InterestFingerprint): ClusterQuery {
+	const label = fingerprint.label.trim();
+	if (label) {
+		return {
+			query: label,
+			cacheKey: normalizeDiscoverQuery(label),
+			confidence: fingerprint.confidence,
+			clusterId: 'brave-primary',
+			phrases: [label],
+		};
+	}
+	const queries = buildInterestSearchQueries(fingerprint);
+	if (queries[0]) return queries[0];
+	return {
+		query: '',
+		cacheKey: '',
+		confidence: 0,
+		clusterId: 'brave-primary',
+		phrases: [],
+	};
+}
+
 /** Keys that may exist from pre-refactor query construction or partial term caches. */
 export function buildLegacyInterestQueryKeys(fingerprint: InterestFingerprint): string[] {
 	const keys: string[] = [];

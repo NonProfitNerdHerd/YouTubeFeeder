@@ -1,5 +1,6 @@
 import type { DiscoveryResult } from '../../../src/types/discover';
 import { getTopicDiscoveryCache } from '../../db/discoverCache';
+import { discoverProviderCacheKey, getDiscoverProviderCache } from '../../db/discoverProviderCache';
 import { normalizeDiscoverQuery } from './youtube';
 import {
 	buildLegacyInterestQueryKeys,
@@ -8,6 +9,8 @@ import {
 	type ClusterQuery,
 } from './clusterQueries';
 import type { InterestFingerprint } from './interestFingerprint';
+import { braveDiscoverConfigFromEnv } from './provider/braveConfig';
+import { providerCandidatesToDiscoveryResults } from './provider/braveProviderPool';
 
 export interface CacheLookupResult {
 	results: DiscoveryResult[];
@@ -38,6 +41,28 @@ export function collectCacheLookupKeys(clusterQuery: ClusterQuery, fingerprint: 
 	return keys;
 }
 
+async function loadFromProviderCache(
+	env: Env,
+	queryOrKey: string,
+	now: Date,
+	seen: Set<string>,
+	merged: DiscoveryResult[],
+): Promise<string | null> {
+	const config = braveDiscoverConfigFromEnv(env);
+	if (config.providerMode !== 'brave') return null;
+	const normalized = normalizeDiscoverQuery(queryOrKey);
+	if (!normalized) return null;
+	const cacheKey = discoverProviderCacheKey('brave', 'youtube', config.strategyVersion, normalized);
+	const record = await getDiscoverProviderCache(env.DB, cacheKey, now);
+	if (!record?.candidates.length) return null;
+	for (const row of providerCandidatesToDiscoveryResults(record.candidates)) {
+		if (seen.has(row.externalId)) continue;
+		seen.add(row.externalId);
+		merged.push(row);
+	}
+	return cacheKey;
+}
+
 export async function loadCachedCandidatesWithFallback(
 	env: Env,
 	clusterQuery: ClusterQuery,
@@ -49,6 +74,9 @@ export async function loadCachedCandidatesWithFallback(
 	const hitKeys: string[] = [];
 	const missKeys: string[] = [];
 	const seen = new Set<string>();
+
+	const providerHit = await loadFromProviderCache(env, clusterQuery.query || clusterQuery.cacheKey, now, seen, merged);
+	if (providerHit) hitKeys.push(providerHit);
 
 	for (const key of keys) {
 		const cached = await getTopicDiscoveryCache(env.DB, key, now);
@@ -77,6 +105,12 @@ export async function loadPhraseCacheCandidates(
 	const hitKeys: string[] = [];
 	const missKeys: string[] = [];
 	const seen = new Set<string>();
+
+	const config = braveDiscoverConfigFromEnv(env);
+	if (config.providerMode === 'brave' && fingerprint.label.trim()) {
+		const providerHit = await loadFromProviderCache(env, fingerprint.label, now, seen, merged);
+		if (providerHit) hitKeys.push(providerHit);
+	}
 
 	for (const key of buildPhraseLookupKeys(fingerprint, maxPhrases)) {
 		const cached = await getTopicDiscoveryCache(env.DB, key, now);

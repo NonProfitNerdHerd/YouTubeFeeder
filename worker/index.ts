@@ -470,16 +470,23 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 		if (user instanceof Response) return user;
 		const body = await readJson<{ interestId?: string }>(request);
 		const interestId = body?.interestId?.trim();
-		const result = await loadAndPersistInterestPopular(
-			env,
-			user.id,
-			interestId && interestId !== 'all' ? interestId : undefined,
-		);
-		return json({
-			channels: result.channels,
-			interestLabel: result.interestLabel,
-			fromPersisted: result.fromPersisted,
-		});
+		try {
+			const result = await loadAndPersistInterestPopular(
+				env,
+				user.id,
+				interestId && interestId !== 'all' ? interestId : undefined,
+			);
+			return json({
+				channels: result.channels,
+				interestLabel: result.interestLabel,
+				fromPersisted: result.fromPersisted,
+				empty: result.empty === true,
+				warning: result.warning,
+			});
+		} catch (err) {
+			console.error('interest-popular failed', err);
+			return apiError(500, 'discover_failed', 'Could not discover recommendations.');
+		}
 	}
 
 	if (path === '/api/discover/feedback' && request.method === 'POST') {

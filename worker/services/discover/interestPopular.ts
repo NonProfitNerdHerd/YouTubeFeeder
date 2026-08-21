@@ -2,17 +2,21 @@ import type { DiscoverRecommendation } from '../../../src/types/discover';
 import {
 	candidateRowToRecommendation,
 	FOR_YOU_GLOBAL_INTEREST_ID,
-	hasActiveInterestCandidates,
 	loadActiveInterestCandidates,
 } from '../../db/discoverInterestCandidates';
 import { buildInterestFingerprints } from './interestFingerprint';
-import { discoverCandidatesForInterest } from './interestDiscovery';
+import { discoverCandidatesForInterest, type InterestDiscoveryMetrics } from './interestDiscovery';
 import { DISCOVER_TOPIC_REFRESH_PER_REQUEST } from '../discoverQuota';
+import { braveDiscoverConfigFromEnv } from './provider/braveConfig';
 
 export interface InterestPopularResult {
 	channels: DiscoverRecommendation[];
 	interestLabel?: string;
 	fromPersisted: boolean;
+	metrics?: InterestDiscoveryMetrics;
+	warning?: string;
+	/** True when discovery completed without a system failure but found nothing qualifying. */
+	empty?: boolean;
 }
 
 export async function loadPersistedInterestPopular(
@@ -32,6 +36,10 @@ export async function loadAllPersistedInterestPopular(
 	return rows.map(candidateRowToRecommendation);
 }
 
+/**
+ * Discover more for an interest chip: score unused provider/topic candidates,
+ * then fetch next Brave (or legacy YouTube) pages only if needed.
+ */
 export async function loadAndPersistInterestPopular(
 	env: Env,
 	userId: string,
@@ -40,32 +48,31 @@ export async function loadAndPersistInterestPopular(
 ): Promise<InterestPopularResult> {
 	const cacheInterestId = interestId ?? FOR_YOU_GLOBAL_INTEREST_ID;
 
-	if (interestId && (await hasActiveInterestCandidates(env.DB, userId, cacheInterestId))) {
-		const channels = await loadPersistedInterestPopular(env.DB, userId, cacheInterestId);
-		return {
-			channels,
-			interestLabel: channels[0]?.interestLabel,
-			fromPersisted: true,
-		};
-	}
-
 	if (!interestId) {
-		return { channels: [], interestLabel: 'All', fromPersisted: false };
+		return { channels: [], interestLabel: 'All', fromPersisted: false, empty: true };
 	}
 
 	const fingerprints = await buildInterestFingerprints(env.DB, userId);
 	const fingerprint = fingerprints.find((row) => row.interestId === interestId);
 	if (!fingerprint) {
-		return { channels: [], interestLabel: '', fromPersisted: false };
+		return { channels: [], interestLabel: '', fromPersisted: false, empty: true };
 	}
 
-	await discoverCandidatesForInterest(
+	const existing = await loadPersistedInterestPopular(env.DB, userId, cacheInterestId);
+	const config = braveDiscoverConfigFromEnv(env);
+	// Brave: always allow replenish (cache first, then next provider page).
+	// Legacy YouTube: only live-search when nothing is persisted (preserves topic quota).
+	const allowLiveSearch = config.providerMode === 'brave' || existing.length === 0;
+	const maxLiveSearches =
+		config.providerMode === 'brave' ? config.maxPagesPerRequest : DISCOVER_TOPIC_REFRESH_PER_REQUEST;
+
+	const discovery = await discoverCandidatesForInterest(
 		env,
 		userId,
 		fingerprint,
 		{
-			allowLiveSearch: true,
-			maxLiveSearches: DISCOVER_TOPIC_REFRESH_PER_REQUEST,
+			allowLiveSearch,
+			maxLiveSearches,
 		},
 		now,
 	);
@@ -74,6 +81,9 @@ export async function loadAndPersistInterestPopular(
 	return {
 		channels,
 		interestLabel: fingerprint.label,
-		fromPersisted: false,
+		fromPersisted: discovery.metrics.liveSearches === 0 && discovery.metrics.newlyPersisted === 0,
+		metrics: discovery.metrics,
+		warning: discovery.warning,
+		empty: channels.length === 0,
 	};
 }
