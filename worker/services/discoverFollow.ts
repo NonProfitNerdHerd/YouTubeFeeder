@@ -1,5 +1,5 @@
 import { enqueueHubSubscriptions, unsubscribeIfOrphaned } from './websub';
-import { createYoutubeApiKeyClient, fetchUploadsPlaylistIds, YoutubeApiError } from './youtube';
+import { createYoutubeApiKeyClient, fetchUploadsPlaylistIds } from './youtube';
 
 export interface FollowYoutubeInput {
 	channelId: string;
@@ -73,8 +73,8 @@ export async function followYoutubeChannel(
 					.bind(playlistId, channelId)
 					.run();
 			}
-		} catch (error) {
-			if (error instanceof YoutubeApiError && error.isGlobalFatal) throw error;
+		} catch {
+			// Optional enrichment only — invalid API keys / transient YouTube errors must not undo follow.
 		}
 	}
 

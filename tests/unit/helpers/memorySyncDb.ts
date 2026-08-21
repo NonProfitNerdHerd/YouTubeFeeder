@@ -484,6 +484,8 @@ export class MemorySyncDb {
 				searched_at: bound[11],
 				updated_at: bound[12],
 				expires_at: bound[13],
+				resolver_version: bound[14] ?? 'v1',
+				resolution_status: bound[15] ?? 'ok',
 			});
 			return 1;
 		}
@@ -837,6 +839,20 @@ export class MemorySyncDb {
 			if (!row) return 0;
 			row.candidate_consume_offset = bound[0];
 			row.updated_at = bound[1];
+			return 1;
+		}
+		if (
+			normalized.includes('UPDATE discover_provider_cache') &&
+			normalized.includes('candidates_json') &&
+			normalized.includes('resolver_version')
+		) {
+			const row = this.discoverProviderCache.get(String(bound[5]));
+			if (!row) return 0;
+			row.candidates_json = bound[0];
+			row.resolver_version = bound[1];
+			row.resolution_status = bound[2];
+			row.updated_at = bound[3];
+			row.expires_at = bound[4];
 			return 1;
 		}
 		return 0;

@@ -6,6 +6,8 @@ import type {
 } from '../services/discover/provider/types';
 
 export const DISCOVER_PROVIDER_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Short TTL when resolution failed so we do not poison Discover for 30 days. */
+export const DISCOVER_PROVIDER_FAILED_TTL_MS = 60 * 60 * 1000;
 /** Keep expired rows briefly so stale-while-error can still serve them. */
 export const DISCOVER_PROVIDER_STALE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const DISCOVER_PROVIDER_LOCK_TTL_MS = 25_000;
@@ -66,6 +68,8 @@ function mapRow(
 		searched_at: string;
 		updated_at: string;
 		expires_at: string;
+		resolver_version?: string | null;
+		resolution_status?: string | null;
 	},
 	now: Date,
 ): DiscoverProviderCacheRecord {
@@ -75,6 +79,8 @@ function mapRow(
 		contentType: row.content_type,
 		normalizedQuery: row.normalized_query,
 		strategyVersion: row.strategy_version,
+		resolverVersion: row.resolver_version ?? 'v1',
+		resolutionStatus: row.resolution_status ?? 'ok',
 		rawResults: parseHits(row.raw_results_json),
 		candidates: parseCandidates(row.candidates_json),
 		providerOffset: Number(row.provider_offset ?? 0),
@@ -106,7 +112,8 @@ export async function getDiscoverProviderCache(
 		.prepare(
 			`SELECT cache_key, provider, content_type, normalized_query, strategy_version,
 			        raw_results_json, candidates_json, provider_offset, more_results_available,
-			        candidate_consume_offset, raw_result_count, searched_at, updated_at, expires_at
+			        candidate_consume_offset, raw_result_count, searched_at, updated_at, expires_at,
+			        resolver_version, resolution_status
 			 FROM discover_provider_cache WHERE cache_key = ?`,
 		)
 		.bind(cacheKey)
@@ -125,6 +132,8 @@ export async function getDiscoverProviderCache(
 			searched_at: string;
 			updated_at: string;
 			expires_at: string;
+			resolver_version?: string | null;
+			resolution_status?: string | null;
 		}>();
 	if (!row) return null;
 	return mapRow(row, now);
@@ -147,14 +156,17 @@ export async function putDiscoverProviderCache(
 	const candidates = write.candidates ?? [];
 	const rawResultCount = write.rawResults.length;
 	const candidateConsumeOffset = write.candidateConsumeOffset ?? 0;
+	const resolverVersion = write.resolverVersion ?? 'v1';
+	const resolutionStatus = write.resolutionStatus ?? 'ok';
 
 	await db
 		.prepare(
 			`INSERT INTO discover_provider_cache (
 				cache_key, provider, content_type, normalized_query, strategy_version,
 				raw_results_json, candidates_json, provider_offset, more_results_available,
-				candidate_consume_offset, raw_result_count, searched_at, updated_at, expires_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				candidate_consume_offset, raw_result_count, searched_at, updated_at, expires_at,
+				resolver_version, resolution_status
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(cache_key) DO UPDATE SET
 				raw_results_json = excluded.raw_results_json,
 				candidates_json = excluded.candidates_json,
@@ -164,7 +176,9 @@ export async function putDiscoverProviderCache(
 				raw_result_count = excluded.raw_result_count,
 				searched_at = excluded.searched_at,
 				updated_at = excluded.updated_at,
-				expires_at = excluded.expires_at`,
+				expires_at = excluded.expires_at,
+				resolver_version = excluded.resolver_version,
+				resolution_status = excluded.resolution_status`,
 		)
 		.bind(
 			cacheKey,
@@ -181,6 +195,8 @@ export async function putDiscoverProviderCache(
 			searchedAt,
 			searchedAt,
 			expiresAt,
+			resolverVersion,
+			resolutionStatus,
 		)
 		.run();
 
@@ -190,6 +206,8 @@ export async function putDiscoverProviderCache(
 		contentType: write.contentType,
 		normalizedQuery: write.normalizedQuery,
 		strategyVersion: write.strategyVersion,
+		resolverVersion,
+		resolutionStatus,
 		rawResults: write.rawResults,
 		candidates,
 		providerOffset: write.providerOffset,
@@ -198,6 +216,55 @@ export async function putDiscoverProviderCache(
 		rawResultCount,
 		searchedAt,
 		updatedAt: searchedAt,
+		expiresAt,
+		stale: false,
+	};
+}
+
+/** Update resolved candidates without changing Brave raw hits / pagination / searched_at. */
+export async function updateDiscoverProviderResolvedCandidates(
+	db: D1Database,
+	cacheKey: string,
+	update: {
+		candidates: DiscoveryProviderCandidate[];
+		resolverVersion: string;
+		resolutionStatus: string;
+		ttlMs?: number;
+	},
+	now = new Date(),
+): Promise<DiscoverProviderCacheRecord | null> {
+	const existing = await getDiscoverProviderCache(db, cacheKey, now);
+	if (!existing) return null;
+	const ttlMs =
+		update.ttlMs ??
+		(update.resolutionStatus === 'failed' ? DISCOVER_PROVIDER_FAILED_TTL_MS : DISCOVER_PROVIDER_CACHE_TTL_MS);
+	const updatedAt = now.toISOString();
+	const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+	await db
+		.prepare(
+			`UPDATE discover_provider_cache SET
+				candidates_json = ?,
+				resolver_version = ?,
+				resolution_status = ?,
+				updated_at = ?,
+				expires_at = ?
+			 WHERE cache_key = ?`,
+		)
+		.bind(
+			JSON.stringify(update.candidates),
+			update.resolverVersion,
+			update.resolutionStatus,
+			updatedAt,
+			expiresAt,
+			cacheKey,
+		)
+		.run();
+	return {
+		...existing,
+		candidates: update.candidates,
+		resolverVersion: update.resolverVersion,
+		resolutionStatus: update.resolutionStatus,
+		updatedAt,
 		expiresAt,
 		stale: false,
 	};
@@ -258,6 +325,8 @@ export async function appendDiscoverProviderCachePage(
 			providerOffset: page.providerOffset,
 			moreResultsAvailable: page.moreResultsAvailable,
 			candidateConsumeOffset: existing.candidateConsumeOffset,
+			resolverVersion: existing.resolverVersion,
+			resolutionStatus: existing.resolutionStatus,
 		},
 		ttlMs,
 		now,

@@ -5,6 +5,7 @@ import { loadActiveInterestCandidates } from '../../worker/db/discoverInterestCa
 import { loadAndPersistInterestPopular } from '../../worker/services/discover/interestPopular';
 import { discoverCandidatesForInterest } from '../../worker/services/discover/interestDiscovery';
 import { buildInterestFingerprints } from '../../worker/services/discover/interestFingerprint';
+import { DISCOVER_CANDIDATE_RESOLVER_VERSION } from '../../worker/services/discover/provider/youtubeBatchResolve';
 import { getTopicCandidates } from '../../worker/services/discover/topicDiscovery';
 import { MIN_ACCEPT_SCORE } from '../../worker/services/discover/candidateScoring';
 import { searchYoutubeDiscover } from '../../worker/services/discover/youtube';
@@ -21,6 +22,13 @@ const MS_CHANNEL_3 = 'UCcccccccccccccccccccccc';
 const WEAK_CHANNEL = 'UCdddddddddddddddddddddd';
 
 const realEnsure = poolMod.ensureBraveProviderPool;
+
+function cacheMeta() {
+	return {
+		resolverVersion: DISCOVER_CANDIDATE_RESOLVER_VERSION,
+		resolutionStatus: 'ok' as const,
+	};
+}
 
 function mockYt(handler: YoutubeClient['getJson']): YoutubeClient {
 	const yt: YoutubeClient = {
@@ -172,6 +180,7 @@ describe('Brave For You / topic discovery Phase 4', () => {
 				],
 				providerOffset: 0,
 				moreResultsAvailable: true,
+				...cacheMeta(),
 			},
 			undefined,
 			now,
@@ -223,6 +232,7 @@ describe('Brave For You / topic discovery Phase 4', () => {
 				],
 				providerOffset: 0,
 				moreResultsAvailable: true,
+				...cacheMeta(),
 			},
 			undefined,
 			now,
@@ -391,6 +401,7 @@ describe('Brave For You / topic discovery Phase 4', () => {
 				],
 				providerOffset: 0,
 				moreResultsAvailable: false,
+				...cacheMeta(),
 			},
 			undefined,
 			now,
@@ -442,6 +453,7 @@ describe('Brave For You / topic discovery Phase 4', () => {
 				],
 				providerOffset: 0,
 				moreResultsAvailable: true,
+				...cacheMeta(),
 			},
 			60 * 60 * 1000,
 			writeTime,

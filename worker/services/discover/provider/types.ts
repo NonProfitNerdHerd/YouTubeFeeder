@@ -84,6 +84,10 @@ export interface DiscoverProviderCacheRecord {
 	contentType: string;
 	normalizedQuery: string;
 	strategyVersion: string;
+	/** Candidate resolution logic version (independent of Brave search strategy). */
+	resolverVersion: string;
+	/** ok | failed | empty_legitimate | pending */
+	resolutionStatus: string;
 	/** Accumulated raw provider hits across fetched pages. */
 	rawResults: DiscoveryProviderRawHit[];
 	/**
@@ -113,6 +117,8 @@ export interface DiscoverProviderCacheWrite {
 	providerOffset: number;
 	moreResultsAvailable: boolean;
 	candidateConsumeOffset?: number;
+	resolverVersion?: string;
+	resolutionStatus?: string;
 }
 
 /** Debug funnel for typed Brave Discover (not returned to ordinary clients). */

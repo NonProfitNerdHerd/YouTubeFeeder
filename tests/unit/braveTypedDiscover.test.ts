@@ -5,6 +5,7 @@ import { searchYoutubeDiscover } from '../../worker/services/discover/youtube';
 import { discoverProviderCacheKey, getDiscoverProviderCache, putDiscoverProviderCache } from '../../worker/db/discoverProviderCache';
 import { searchYoutubeDiscoverViaBrave } from '../../worker/services/discover/provider/typedBraveDiscoverSearch';
 import { resolveBraveHitsToChannels } from '../../worker/services/discover/provider/youtubeBatchResolve';
+import { DISCOVER_CANDIDATE_RESOLVER_VERSION } from '../../worker/services/discover/provider/youtubeBatchResolve';
 import { classifyBraveYoutubeHit, scoreTypedBraveCandidate } from '../../worker/services/discover/provider/youtubeCandidateNormalize';
 import { buildBraveYoutubeSearchQuery } from '../../worker/services/discover/provider/braveQueryStrategy';
 import type { DiscoverySearchProvider } from '../../worker/services/discover/provider/types';
@@ -320,6 +321,8 @@ describe('typed Brave Discover Phase 3', () => {
 				],
 				providerOffset: 0,
 				moreResultsAvailable: false,
+				resolverVersion: DISCOVER_CANDIDATE_RESOLVER_VERSION,
+				resolutionStatus: 'ok',
 			},
 			undefined,
 			now,

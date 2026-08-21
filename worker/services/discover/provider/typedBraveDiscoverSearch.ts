@@ -2,11 +2,14 @@ import type { DiscoveryResult } from '../../../../src/types/discover';
 import {
 	appendDiscoverProviderCachePage,
 	cleanupExpiredDiscoverProviderRows,
+	DISCOVER_PROVIDER_CACHE_TTL_MS,
+	DISCOVER_PROVIDER_FAILED_TTL_MS,
 	discoverProviderCacheKey,
 	getDiscoverProviderCache,
 	putDiscoverProviderCache,
 	releaseDiscoverProviderLock,
 	tryAcquireDiscoverProviderLock,
+	updateDiscoverProviderResolvedCandidates,
 } from '../../../db/discoverProviderCache';
 import { getSubscribedChannelIds } from '../../../db/queries';
 import { recordYoutubeCalls } from '../../websub';
@@ -23,7 +26,11 @@ import {
 import { normalizeDiscoverQuery, overlayYoutubeSubscribed, type YoutubeDiscoverSearchResult } from '../youtube';
 import { braveDiscoverConfigFromEnv, type BraveDiscoverConfig } from './braveConfig';
 import { BraveSearchProvider } from './braveSearchProvider';
-import { resolveBraveHitsToChannels } from './youtubeBatchResolve';
+import {
+	DISCOVER_CANDIDATE_RESOLVER_VERSION,
+	needsCandidateReprocess,
+	resolveBraveHitsToChannels,
+} from './youtubeBatchResolve';
 import {
 	scoreTypedBraveCandidate,
 	TYPED_BRAVE_MIN_RELEVANCE,
@@ -155,17 +162,50 @@ export async function searchYoutubeDiscoverViaBrave(
 	let record = await getDiscoverProviderCache(env.DB, cacheKey, now);
 	let warning: string | undefined;
 
-	if (record && !record.stale && record.candidates.length > 0) {
+	const apiKey = env.YOUTUBE_API_KEY;
+	const yt =
+		opts.youtubeClient ?? (apiKey ? createYoutubeApiKeyClient(apiKey) : undefined);
+
+	// Reprocess cached raw Brave hits when resolver improved or prior resolution failed — 0 Brave cost.
+	if (record && record.rawResults.length > 0 && needsCandidateReprocess(record) && yt) {
+		const resolved = await resolveBraveHitsToChannels(yt, record.rawResults);
+		funnel.youtubeVideosListCalls += resolved.stats.videosListCalls;
+		funnel.youtubeChannelsListCalls += resolved.stats.channelsListCalls;
+		funnel.youtubeSearchListCalls += resolved.stats.searchListCalls;
+		funnel.resolvedChannels += resolved.stats.resolvedChannels;
+		record =
+			(await updateDiscoverProviderResolvedCandidates(
+				env.DB,
+				cacheKey,
+				{
+					candidates: resolved.candidates,
+					resolverVersion: DISCOVER_CANDIDATE_RESOLVER_VERSION,
+					resolutionStatus: resolved.resolutionStatus,
+					ttlMs:
+						resolved.resolutionStatus === 'failed'
+							? DISCOVER_PROVIDER_FAILED_TTL_MS
+							: DISCOVER_PROVIDER_CACHE_TTL_MS,
+				},
+				now,
+			)) ?? record;
+		if (resolved.resolutionStatus === 'failed') {
+			warning = resolved.errorMessage ?? 'YouTube channel verification failed.';
+		}
+	}
+
+	if (record && !record.stale && record.candidates.length > 0 && !needsCandidateReprocess(record)) {
 		funnel.cacheHit = true;
 		await recordBraveCacheHit(env.DB, userId);
 		const usable = filterForUser(record.candidates, subscribed, normalized, funnel);
 		const needMore = usable.length < limit && record.moreResultsAvailable;
 		if (!needMore) {
 			funnel.stopReason = usable.length ? 'cache_satisfied' : 'cache_empty_after_filters';
+			if (yt) await recordYoutubeCalls(env.DB, yt);
 			return {
 				results: overlayYoutubeSubscribed(usable.slice(0, limit), subscribed),
 				cached: true,
 				searchedAt: record.searchedAt,
+				warning,
 				funnel: opts.includeDebug ? funnel : undefined,
 			};
 		}
@@ -177,6 +217,7 @@ export async function searchYoutubeDiscoverViaBrave(
 	if (!config.apiKey) {
 		if (record) {
 			const usable = filterForUser(record.candidates, subscribed, normalized, funnel);
+			if (yt) await recordYoutubeCalls(env.DB, yt);
 			return {
 				results: overlayYoutubeSubscribed(usable.slice(0, limit), subscribed),
 				cached: true,
@@ -194,8 +235,7 @@ export async function searchYoutubeDiscoverViaBrave(
 		};
 	}
 
-	const apiKey = env.YOUTUBE_API_KEY;
-	if (!apiKey && !opts.youtubeClient) {
+	if (!yt) {
 		if (record) {
 			const usable = filterForUser(record.candidates, subscribed, normalized, funnel);
 			return {
@@ -215,7 +255,6 @@ export async function searchYoutubeDiscoverViaBrave(
 		};
 	}
 
-	const yt = opts.youtubeClient ?? createYoutubeApiKeyClient(apiKey!);
 	const provider =
 		opts.provider ??
 		new BraveSearchProvider({
@@ -235,7 +274,13 @@ export async function searchYoutubeDiscoverViaBrave(
 			funnel.stopReason = 'limit_satisfied';
 			break;
 		}
-		if (record && !record.moreResultsAvailable && record.rawResults.length > 0 && !record.stale) {
+		if (
+			record &&
+			!record.moreResultsAvailable &&
+			record.rawResults.length > 0 &&
+			!record.stale &&
+			!needsCandidateReprocess(record)
+		) {
 			funnel.stopReason = 'provider_exhausted';
 			break;
 		}
@@ -286,7 +331,9 @@ export async function searchYoutubeDiscoverViaBrave(
 				await recordBraveZeroResultSearch(env.DB, userId);
 			}
 
-			const { candidates: pageCandidates, stats } = await resolveBraveHitsToChannels(yt, page.hits);
+			const resolved = await resolveBraveHitsToChannels(yt, page.hits);
+			const pageCandidates = resolved.candidates;
+			const stats = resolved.stats;
 			funnel.validYoutubeUrls += stats.validYoutubeUrls;
 			funnel.channelUrls += stats.channelUrls;
 			funnel.videoUrls += stats.videoUrls;
@@ -307,6 +354,15 @@ export async function searchYoutubeDiscoverViaBrave(
 				mergedRaw.push(hit);
 			}
 
+			const resolutionStatus =
+				resolved.resolutionStatus === 'failed'
+					? 'failed'
+					: mergedCandidates.length > 0
+						? 'ok'
+						: 'empty_legitimate';
+			const ttlMs =
+				resolutionStatus === 'failed' ? DISCOVER_PROVIDER_FAILED_TTL_MS : DISCOVER_PROVIDER_CACHE_TTL_MS;
+
 			record = await putDiscoverProviderCache(
 				env.DB,
 				{
@@ -319,10 +375,18 @@ export async function searchYoutubeDiscoverViaBrave(
 					providerOffset: nextOffset,
 					moreResultsAvailable: page.moreAvailable,
 					candidateConsumeOffset: record?.candidateConsumeOffset ?? 0,
+					resolverVersion: DISCOVER_CANDIDATE_RESOLVER_VERSION,
+					resolutionStatus,
 				},
-				undefined,
+				ttlMs,
 				now,
 			);
+
+			if (resolved.resolutionStatus === 'failed') {
+				warning = resolved.errorMessage ?? 'YouTube channel verification failed.';
+				funnel.stopReason = 'youtube_resolve_failed';
+				break;
+			}
 
 			if (!page.moreAvailable) {
 				funnel.stopReason = 'provider_exhausted';
