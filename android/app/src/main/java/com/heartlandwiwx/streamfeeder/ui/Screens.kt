@@ -45,6 +45,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -73,6 +74,7 @@ import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Snooze
@@ -146,6 +148,11 @@ import com.heartlandwiwx.streamfeeder.FeedUiState
 import com.heartlandwiwx.streamfeeder.FeedView
 import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
+import com.heartlandwiwx.streamfeeder.data.DiscoverBrowseTab
+import com.heartlandwiwx.streamfeeder.data.DiscoverFilter
+import com.heartlandwiwx.streamfeeder.data.DiscoverFollowSetup
+import com.heartlandwiwx.streamfeeder.data.DiscoverResultsMode
+import com.heartlandwiwx.streamfeeder.data.DiscoveryResult
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.LiveSourceRecord
 import com.heartlandwiwx.streamfeeder.data.LiveVideoRecord
@@ -312,7 +319,19 @@ fun FeedScreen(
     onStopPlaythrough: () -> Unit = {},
     onPlaythroughNext: () -> Unit = {},
     onPlaythroughPrevious: () -> Unit = {},
+    onPlaythroughArchive: () -> Unit = {},
     onLoadMore: () -> Unit = {},
+    onCloseDiscoverResults: () -> Unit = {},
+    onSetDiscoverQuery: (String) -> Unit = {},
+    onOpenDiscoverBrowse: (DiscoverBrowseTab) -> Unit = {},
+    onRunDiscoverSearch: () -> Unit = {},
+    onSelectDiscoverFilter: (DiscoverFilter) -> Unit = {},
+    onLoadMoreDiscover: () -> Unit = {},
+    onRequestDiscoverFollow: (DiscoveryResult) -> Unit = {},
+    onCancelDiscoverFollow: () -> Unit = {},
+    onConfirmDiscoverFollow: (Boolean, Int, List<String>) -> Unit = { _, _, _ -> },
+    onUnfollowDiscoverYoutube: (String, String) -> Unit = { _, _ -> },
+    onSubscribeDiscoverPodcast: (DiscoveryResult) -> Unit = {},
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -341,8 +360,16 @@ fun FeedScreen(
     var liveFullscreenSlot by remember { mutableStateOf<Int?>(null) }
     var liveActiveSlot by remember { mutableStateOf(0) }
     var liveGridImmersive by remember { mutableStateOf(false) }
+    var liveGridCategoryFilterId by remember { mutableStateOf<String?>(null) }
+    var liveGridCategoryMenuOpen by remember { mutableStateOf(false) }
     var browsingLiveSourceId by remember { mutableStateOf<String?>(null) }
     var browsingLiveCategoryId by remember { mutableStateOf<String?>(null) }
+
+    val liveGridMenuSources = remember(state.liveSources, liveGridCategoryFilterId) {
+        val filterId = liveGridCategoryFilterId
+        if (filterId.isNullOrBlank()) state.liveSources
+        else state.liveSources.filter { filterId in it.categoryIds }
+    }
 
     fun playLiveVideo(sourceId: String, videoId: String) {
         browsingLiveSourceId = null
@@ -385,6 +412,7 @@ fun FeedScreen(
     }
 
     val overlaysClear = state.pendingSnoozeItem == null && state.editingChannel == null &&
+        state.discoverFollowSetup == null &&
         !confirmArchiveOpen && !watchlistBulkOpen && !bulkSnoozeOpen
     val browsingCategory = state.view == FeedView.Categories && state.categoryId != null
     val browsingLiveSource =
@@ -411,6 +439,7 @@ fun FeedScreen(
         !browsingCategory &&
         !browsingLiveSource &&
         !inLiveCategoryDrilldown &&
+        !(state.view == FeedView.Discover && state.discoverShowingResults) &&
         !selectionMode &&
         overlaysClear &&
         liveFullscreenSlot == null &&
@@ -426,6 +455,15 @@ fun FeedScreen(
     }
     BackHandler(enabled = browsingLiveCategory && !navOpen && overlaysClear) {
         browsingLiveCategoryId = null
+    }
+    BackHandler(
+        enabled = state.view == FeedView.Discover &&
+            state.discoverShowingResults &&
+            !navOpen &&
+            overlaysClear &&
+            state.discoverFollowSetup == null,
+    ) {
+        onCloseDiscoverResults()
     }
     BackHandler(enabled = navOpen && state.selected == null && browsingChannel == null) {
         scope.launch { drawerState.close() }
@@ -448,10 +486,13 @@ fun FeedScreen(
         val index = queue.indexOfFirst { it.videoId == selected.videoId }
         PlaythroughOverlay(
             item = selected,
+            watchlists = state.watchlists,
             canGoPrevious = index > 0,
             canGoNext = index >= 0 && index < queue.lastIndex,
             onPrevious = onPlaythroughPrevious,
             onNext = onPlaythroughNext,
+            onAddWatchlist = onAddWatchlist,
+            onArchive = onPlaythroughArchive,
             onExit = onClose,
             onPlayerEvent = onPlayerEvent,
             onFlushPlayback = onFlushPlayback,
@@ -515,6 +556,7 @@ fun FeedScreen(
             number = fullscreenSlot + 1,
             selected = liveSlotFeeds[fullscreenSlot],
             sources = state.liveSources,
+            menuSources = liveGridMenuSources,
             onSelect = { name ->
                 liveSlotFeeds = liveSlotFeeds.toMutableList().also { it[fullscreenSlot] = name }
             },
@@ -1039,14 +1081,36 @@ fun FeedScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        } else if (state.view == FeedView.Discover && state.discoverShowingResults) {
+                            IconButton(onClick = onCloseDiscoverResults) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Discover")
+                            }
+                            Text(
+                                discoverResultsTitle(state),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         } else {
                             Text(
                                 state.view.pageTitle(),
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             if (state.view == FeedView.LiveGrid) {
+                                LiveGridCategoryFilter(
+                                    categories = state.liveCategories,
+                                    selectedCategoryId = liveGridCategoryFilterId,
+                                    expanded = liveGridCategoryMenuOpen,
+                                    onExpandedChange = { liveGridCategoryMenuOpen = it },
+                                    onSelectCategory = { liveGridCategoryFilterId = it },
+                                )
+                                Box(modifier = Modifier.width(8.dp))
                                 LiveGridSizeButtons(
                                     gridSize = liveGridSize,
                                     onGridSizeChange = { liveGridSize = it },
@@ -1137,6 +1201,25 @@ fun FeedScreen(
                                 onSelectTheme = onSelectTheme,
                             )
                         }
+                        FeedView.Discover -> {
+                            if (state.discoverShowingResults) {
+                                DiscoverResultsPane(
+                                    state = state,
+                                    onSelectFilter = onSelectDiscoverFilter,
+                                    onLoadMore = onLoadMoreDiscover,
+                                    onRequestFollow = onRequestDiscoverFollow,
+                                    onUnfollow = onUnfollowDiscoverYoutube,
+                                    onSubscribe = onSubscribeDiscoverPodcast,
+                                )
+                            } else {
+                                DiscoverHomePane(
+                                    query = state.discoverQuery,
+                                    onQueryChange = onSetDiscoverQuery,
+                                    onBrowse = onOpenDiscoverBrowse,
+                                    onSearch = onRunDiscoverSearch,
+                                )
+                            }
+                        }
                         FeedView.LiveGrid -> LiveGridPane(
                             modifier = Modifier.weight(1f),
                             gridSize = liveGridSize,
@@ -1152,6 +1235,7 @@ fun FeedScreen(
                                 liveFullscreenSlot = it
                             },
                             sources = state.liveSources,
+                            menuSources = liveGridMenuSources,
                         )
                         FeedView.LiveStreams -> LiveStreamsPane(
                             sources = state.liveSources,
@@ -1291,6 +1375,13 @@ fun FeedScreen(
 
     EditChannelDialog(state, onCloseEditChannel, onSaveChannelEdit)
     PendingSnoozeDialog(state, onConfirmPendingSnooze, onCancelPendingSnooze)
+    DiscoverFollowDialog(
+        setup = state.discoverFollowSetup,
+        categories = state.categories,
+        busy = state.discoverBusyId != null && state.discoverFollowSetup != null,
+        onDismiss = onCancelDiscoverFollow,
+        onConfirm = onConfirmDiscoverFollow,
+    )
     MessageDialogs(state, onClearMessage, onUndoArchive, onUndoWatchlist)
 }
 
@@ -2037,10 +2128,13 @@ private fun PlaythroughBar(
 @Composable
 private fun PlaythroughOverlay(
     item: InboxItem,
+    watchlists: List<WatchlistRecord>,
     canGoPrevious: Boolean,
     canGoNext: Boolean,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onAddWatchlist: (String) -> Unit,
+    onArchive: () -> Unit,
     onExit: () -> Unit,
     onPlayerEvent: (videoId: String, type: String, currentTime: Double, rate: Double, duration: Double?) -> Unit,
     onFlushPlayback: () -> Unit,
@@ -2048,66 +2142,82 @@ private fun PlaythroughOverlay(
     var playing by remember(item.videoId) { mutableStateOf(true) }
     var controlCommand by remember { mutableStateOf<String?>(null) }
     var controlEpoch by remember { mutableStateOf(0) }
+    var watchOpen by remember { mutableStateOf(false) }
 
     fun issueControl(command: String) {
         controlCommand = command
         controlEpoch += 1
     }
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Color.Black)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
     ) {
-        YoutubePlayer(
-            videoId = item.videoId,
-            embeddable = item.embeddable,
-            thumbnailUrl = item.thumbnailUrl,
-            autoplay = true,
-            controlCommand = controlCommand,
-            controlEpoch = controlEpoch,
-            onPlayerEvent = { videoId, type, currentTime, rate, duration ->
-                when (type) {
-                    "playing" -> playing = true
-                    "paused", "ended" -> playing = false
-                }
-                onPlayerEvent(videoId, type, currentTime, rate, duration)
-            },
-            onFlushPlayback = onFlushPlayback,
-            modifier = Modifier.fillMaxSize(),
-        )
-        IconButton(
-            onClick = onExit,
+        Box(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(8.dp),
+                .weight(1f)
+                .fillMaxWidth(),
         ) {
-            Icon(Icons.Default.Close, contentDescription = "Exit playthrough", tint = Color.White)
+            YoutubePlayer(
+                videoId = item.videoId,
+                embeddable = item.embeddable,
+                thumbnailUrl = item.thumbnailUrl,
+                autoplay = true,
+                controlCommand = controlCommand,
+                controlEpoch = controlEpoch,
+                onPlayerEvent = { videoId, type, currentTime, rate, duration ->
+                    when (type) {
+                        "playing" -> playing = true
+                        "paused", "ended" -> playing = false
+                    }
+                    onPlayerEvent(videoId, type, currentTime, rate, duration)
+                },
+                onFlushPlayback = onFlushPlayback,
+                modifier = Modifier.fillMaxSize(),
+            )
+            IconButton(
+                onClick = onExit,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Exit playthrough", tint = Color.White)
+            }
         }
         Row(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.72f))
-                .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.Center,
+                .background(Color.Black)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(
+                onClick = { watchOpen = true },
+                modifier = Modifier.size(52.dp),
+            ) {
+                Icon(
+                    Icons.Default.PlaylistAdd,
+                    contentDescription = "Add to watchlist",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+            IconButton(
                 onClick = onPrevious,
                 enabled = canGoPrevious,
-                modifier = Modifier.size(56.dp),
+                modifier = Modifier.size(52.dp),
             ) {
                 Icon(
                     Icons.Default.SkipPrevious,
                     contentDescription = "Previous",
                     tint = if (canGoPrevious) Color.White else Color.White.copy(alpha = 0.35f),
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(32.dp),
                 )
             }
-            Spacer(modifier = Modifier.width(20.dp))
             IconButton(
                 onClick = {
                     if (playing) {
@@ -2118,29 +2228,68 @@ private fun PlaythroughOverlay(
                         issueControl("play")
                     }
                 },
-                modifier = Modifier.size(72.dp),
+                modifier = Modifier.size(64.dp),
             ) {
                 Icon(
                     if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = if (playing) "Pause" else "Play",
                     tint = Color.White,
-                    modifier = Modifier.size(52.dp),
+                    modifier = Modifier.size(44.dp),
                 )
             }
-            Spacer(modifier = Modifier.width(20.dp))
             IconButton(
                 onClick = onNext,
                 enabled = canGoNext,
-                modifier = Modifier.size(56.dp),
+                modifier = Modifier.size(52.dp),
             ) {
                 Icon(
                     Icons.Default.SkipNext,
                     contentDescription = "Next",
                     tint = if (canGoNext) Color.White else Color.White.copy(alpha = 0.35f),
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+            IconButton(
+                onClick = onArchive,
+                modifier = Modifier.size(52.dp),
+            ) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Archive and play next",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp),
                 )
             }
         }
+    }
+
+    if (watchOpen) {
+        AlertDialog(
+            onDismissRequest = { watchOpen = false },
+            title = { Text("Add to watchlist") },
+            text = {
+                if (watchlists.isEmpty()) {
+                    Text("Create a watchlist first.")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(watchlists, key = { it.id }) { list ->
+                            TextButton(
+                                onClick = {
+                                    watchOpen = false
+                                    onAddWatchlist(list.id)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(list.name, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { watchOpen = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -2512,6 +2661,11 @@ private fun AppDrawer(
                 )
             }
         }
+        NavTopItem(
+            label = FeedView.Discover.label,
+            selected = current.isDiscoverSection,
+            onClick = { onSelect(FeedView.Discover) },
+        )
         NavCollapsibleItem(
             label = "Live",
             selected = current.isLiveSection,
@@ -2619,6 +2773,552 @@ private fun SettingsPane(
     }
 }
 
+private fun discoverResultsTitle(state: FeedUiState): String =
+    when {
+        state.discoverMode == DiscoverResultsMode.Search -> "Discover · Search"
+        else -> "Discover · ${state.discoverBrowseTab.label}"
+    }
+
+private fun discoveryTypeLabel(result: DiscoveryResult): String = when {
+    result.type == "podcast" -> "Podcast"
+    result.type == "episode" -> "Podcast episode"
+    result.type == "channel" -> "YouTube channel"
+    result.type == "video" -> "YouTube video"
+    result.type == "live" -> "Live"
+    else -> result.type
+}
+
+private fun filterDiscoverResults(
+    results: List<DiscoveryResult>,
+    filter: DiscoverFilter,
+    mode: DiscoverResultsMode,
+): List<DiscoveryResult> {
+    if (mode == DiscoverResultsMode.Search) return results
+    return when (filter) {
+        DiscoverFilter.All -> results
+        DiscoverFilter.Podcasts -> results.filter { it.provider == "podcast" }
+        DiscoverFilter.Youtube -> results.filter { it.provider == "youtube" }
+    }
+}
+
+@Composable
+private fun DiscoverHomePane(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onBrowse: (DiscoverBrowseTab) -> Unit,
+    onSearch: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            "Browse",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        DiscoverBrowseTab.entries.forEach { tab ->
+            Button(
+                onClick = { onBrowse(tab) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(tab.label)
+            }
+        }
+        Text(
+            "Or",
+            modifier = Modifier.padding(vertical = 8.dp),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = null)
+            },
+            placeholder = {
+                Text("Search podcasts, YouTube channels, creators, or topics")
+            },
+            label = { Text("Discover search") },
+        )
+        Button(
+            onClick = onSearch,
+            enabled = query.trim().isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Search")
+        }
+    }
+}
+
+@Composable
+private fun DiscoverResultsPane(
+    state: FeedUiState,
+    onSelectFilter: (DiscoverFilter) -> Unit,
+    onLoadMore: () -> Unit,
+    onRequestFollow: (DiscoveryResult) -> Unit,
+    onUnfollow: (channelId: String, title: String) -> Unit,
+    onSubscribe: (DiscoveryResult) -> Unit,
+) {
+    val filtered = remember(state.discoverResults, state.discoverFilter, state.discoverMode) {
+        filterDiscoverResults(state.discoverResults, state.discoverFilter, state.discoverMode)
+    }
+    var unfollowConfirm by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DiscoverFilter.entries.forEach { filter ->
+                FilterTab(
+                    label = filter.label,
+                    selected = state.discoverFilter == filter,
+                    onClick = { onSelectFilter(filter) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        when {
+            state.discoverLoading -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    state.discoverWarnings.forEach { warning ->
+                        item(key = "warn-$warning") {
+                            Text(
+                                warning,
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    if (filtered.isEmpty()) {
+                        item {
+                            Text(
+                                if (state.discoverMode == DiscoverResultsMode.Search) {
+                                    "No results found."
+                                } else {
+                                    "Nothing to show yet."
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(24.dp),
+                            )
+                        }
+                    }
+                    items(filtered, key = { it.resultKey }) { result ->
+                        DiscoverResultCard(
+                            result = result,
+                            busyId = state.discoverBusyId,
+                            onFollow = { onRequestFollow(result) },
+                            onUnfollow = { channelId, title -> unfollowConfirm = channelId to title },
+                            onSubscribe = { onSubscribe(result) },
+                        )
+                    }
+                    if (state.discoverHasMore && filtered.isNotEmpty()) {
+                        item(key = "add-more") {
+                            Button(
+                                onClick = onLoadMore,
+                                enabled = !state.discoverLoadingMore,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                            ) {
+                                if (state.discoverLoadingMore) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else {
+                                    Text("Add more")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    unfollowConfirm?.let { (channelId, title) ->
+        AlertDialog(
+            onDismissRequest = { unfollowConfirm = null },
+            title = { Text("Unfollow $title?") },
+            text = { Text("Remove this channel from your VortiQuest follows.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        unfollowConfirm = null
+                        onUnfollow(channelId, title)
+                    },
+                ) { Text("Unfollow") }
+            },
+            dismissButton = {
+                TextButton(onClick = { unfollowConfirm = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun FilterTab(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = label,
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun DiscoverResultCard(
+    result: DiscoveryResult,
+    busyId: String?,
+    onFollow: () -> Unit,
+    onUnfollow: (channelId: String, title: String) -> Unit,
+    onSubscribe: () -> Unit,
+) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        val imageUrl = result.imageUrl
+        if (!imageUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = !result.watchUrl.isNullOrBlank()) {
+                        result.watchUrl?.let { url ->
+                            runCatching {
+                                CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url))
+                            }
+                        }
+                    },
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            )
+        }
+        Text(
+            discoveryTypeLabel(result),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            result.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        if (!result.publisher.isNullOrBlank() && result.type != "channel") {
+            Text(
+                result.publisher,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!result.description.isNullOrBlank()) {
+            Text(
+                result.description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (!result.recommendationReason.isNullOrBlank()) {
+            Text(
+                result.recommendationReason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (!result.parentTitle.isNullOrBlank() && result.type != "channel") {
+            Text(
+                "From ${result.parentTitle}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DiscoverResultActions(
+            result = result,
+            busyId = busyId,
+            onFollow = onFollow,
+            onUnfollow = onUnfollow,
+            onSubscribe = onSubscribe,
+        )
+    }
+}
+
+@Composable
+private fun DiscoverResultActions(
+    result: DiscoveryResult,
+    busyId: String?,
+    onFollow: () -> Unit,
+    onUnfollow: (channelId: String, title: String) -> Unit,
+    onSubscribe: () -> Unit,
+) {
+    when {
+        result.type == "podcast" -> {
+            val busy = busyId == result.externalId
+            if (result.subscribed) {
+                Text("Subscribed ✓", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Button(onClick = onSubscribe, enabled = !busy) {
+                    Text(if (busy) "Subscribing…" else "Subscribe")
+                }
+            }
+        }
+        result.type == "episode" && !result.parentExternalId.isNullOrBlank() -> {
+            val busy = busyId == result.parentExternalId
+            Button(onClick = onSubscribe, enabled = !busy && !result.subscribed) {
+                Text(
+                    when {
+                        result.subscribed -> "Subscribed ✓"
+                        busy -> "Subscribing…"
+                        else -> "Subscribe to podcast"
+                    },
+                )
+            }
+        }
+        result.provider == "youtube" && result.type == "channel" -> {
+            YoutubeFollowButton(
+                result = result,
+                channelId = result.externalId,
+                busyId = busyId,
+                onFollow = onFollow,
+                onUnfollow = onUnfollow,
+            )
+        }
+        result.provider == "youtube" && result.type == "video" && !result.parentExternalId.isNullOrBlank() -> {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val watchUrl = result.watchUrl
+                val context = LocalContext.current
+                if (!watchUrl.isNullOrBlank()) {
+                    TextButton(
+                        onClick = {
+                            runCatching {
+                                CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(watchUrl))
+                            }
+                        },
+                    ) { Text("Watch") }
+                }
+                YoutubeFollowButton(
+                    result = result,
+                    channelId = result.parentExternalId,
+                    busyId = busyId,
+                    onFollow = onFollow,
+                    onUnfollow = onUnfollow,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun YoutubeFollowButton(
+    result: DiscoveryResult,
+    channelId: String,
+    busyId: String?,
+    onFollow: () -> Unit,
+    onUnfollow: (channelId: String, title: String) -> Unit,
+) {
+    val busy = busyId == channelId
+    val title = if (result.type == "channel") {
+        result.title
+    } else {
+        result.parentTitle ?: result.publisher ?: result.title
+    }
+    if (result.subscribed) {
+        TextButton(
+            onClick = { onUnfollow(channelId, title) },
+            enabled = !busy,
+        ) {
+            Text(if (busy) "Unfollowing…" else "Unfollow in VortiQuest")
+        }
+    } else {
+        Button(onClick = onFollow, enabled = !busy) {
+            Text(if (busy) "Following…" else "Follow in VortiQuest")
+        }
+    }
+}
+
+@Composable
+private fun DiscoverFollowDialog(
+    setup: DiscoverFollowSetup?,
+    categories: List<CategoryRecord>,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (Boolean, Int, List<String>) -> Unit,
+) {
+    if (setup == null) return
+    var follow by remember(setup.channelId) { mutableStateOf(true) }
+    var maxPull by remember(setup.channelId) { mutableStateOf("0") }
+    var selectedCats by remember(setup.channelId) { mutableStateOf(emptySet<String>()) }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Follow ${setup.title}") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = follow, onCheckedChange = { follow = it })
+                    Text("Follow in inbox (always pull new videos)")
+                }
+                OutlinedTextField(
+                    value = maxPull,
+                    onValueChange = { maxPull = it.filter { ch -> ch.isDigit() }.take(3) },
+                    label = { Text("Max existing videos to pull") },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                )
+                Text("Categories", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp))
+                if (categories.isEmpty()) {
+                    Text("Add a category in By Category first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                categories.forEach { cat ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = cat.id in selectedCats,
+                            onCheckedChange = { checked ->
+                                selectedCats = if (checked) selectedCats + cat.id else selectedCats - cat.id
+                            },
+                            enabled = !busy,
+                        )
+                        Text(cat.name)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    onConfirm(follow, maxPull.toIntOrNull() ?: 0, selectedCats.toList())
+                },
+            ) {
+                Text(if (busy) "Following…" else "Follow")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun LiveGridCategoryFilter(
+    categories: List<CategoryRecord>,
+    selectedCategoryId: String?,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onSelectCategory: (String?) -> Unit,
+) {
+    val label = when (selectedCategoryId) {
+        null -> "All"
+        else -> categories.firstOrNull { it.id == selectedCategoryId }?.name ?: "All"
+    }
+    Box {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { onExpandedChange(!expanded) }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selectedCategoryId != null) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selectedCategoryId != null) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp),
+            )
+            Icon(
+                Icons.Default.ArrowDropDown,
+                contentDescription = "Filter feeds by category",
+                modifier = Modifier.size(18.dp),
+                tint = if (selectedCategoryId != null) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+            modifier = Modifier.heightIn(max = 360.dp),
+        ) {
+            DropdownMenuItem(
+                text = { Text("All categories") },
+                onClick = {
+                    onSelectCategory(null)
+                    onExpandedChange(false)
+                },
+            )
+            categories.forEach { category ->
+                DropdownMenuItem(
+                    text = { Text(category.name) },
+                    onClick = {
+                        onSelectCategory(category.id)
+                        onExpandedChange(false)
+                    },
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun LiveGridSizeButtons(
     gridSize: Int,
@@ -2657,6 +3357,7 @@ private fun LiveGridPane(
     onActivate: (Int) -> Unit,
     onFullscreen: ((Int) -> Unit)?,
     sources: List<LiveSourceRecord>,
+    menuSources: List<LiveSourceRecord> = sources,
     compact: Boolean = false,
 ) {
     val columns = liveGridColumns(gridSize)
@@ -2681,6 +3382,7 @@ private fun LiveGridPane(
                         number = index + 1,
                         selected = slotFeeds[index],
                         sources = sources,
+                        menuSources = menuSources,
                         onSelect = { onSlotFeedChange(index, it) },
                         focused = activeSlot == index,
                         onFocus = { onActivate(index) },
@@ -2701,6 +3403,7 @@ private fun LiveSlotCard(
     sources: List<LiveSourceRecord>,
     onSelect: (String?) -> Unit,
     modifier: Modifier = Modifier,
+    menuSources: List<LiveSourceRecord> = sources,
     focused: Boolean = false,
     onFocus: () -> Unit = {},
     onFullscreen: (() -> Unit)? = null,
@@ -2759,7 +3462,7 @@ private fun LiveSlotCard(
                             menuOpen = false
                         },
                     )
-                    sources.filter { it.enabled }.forEach { source ->
+                    menuSources.filter { it.enabled }.forEach { source ->
                         val lives = source.playableLive()
                         if (lives.isEmpty()) {
                             DropdownMenuItem(

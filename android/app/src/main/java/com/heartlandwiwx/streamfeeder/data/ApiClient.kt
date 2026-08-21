@@ -225,7 +225,141 @@ class ApiClient(
         }
     }
 
+    suspend fun discoverSearch(
+        query: String,
+        filter: DiscoverFilter,
+        offset: Int = 0,
+    ): DiscoverSearchPage = withContext(Dispatchers.IO) {
+        val q = buildString {
+            append("q=").append(enc(query))
+            append("&filter=").append(enc(filter.api))
+            append("&offset=").append(offset)
+        }
+        val obj = getJson("/api/discover/search?$q")
+        val filterApi = obj.optString("filter", filter.api)
+        val resolvedFilter = DiscoverFilter.entries.find { it.api == filterApi } ?: filter
+        val results = parseDiscoveryResults(obj.optJSONArray("results"))
+        val warnings = obj.optJSONArray("warnings")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                val w = arr.optJSONObject(i) ?: return@mapNotNull null
+                w.optString("message", "").ifBlank { null }
+            }
+        }.orEmpty()
+        DiscoverSearchPage(
+            query = obj.optString("query", query),
+            filter = resolvedFilter,
+            results = results,
+            warnings = warnings,
+            hasMore = obj.optBoolean("hasMore", false),
+            nextOffset = obj.optInt("nextOffset", offset + results.size),
+        )
+    }
+
+    suspend fun discoverBrowse(
+        tab: DiscoverBrowseTab,
+        limit: Int = 25,
+        offset: Int = 0,
+        loadMore: Boolean = false,
+        forYouRefreshOffset: Int = 0,
+    ): DiscoverBrowsePage = withContext(Dispatchers.IO) {
+        val q = buildString {
+            append("tab=").append(enc(tab.api))
+            append("&limit=").append(limit)
+            append("&offset=").append(offset)
+            if (loadMore) append("&loadMore=1")
+            if (forYouRefreshOffset > 0) append("&forYouRefreshOffset=").append(forYouRefreshOffset)
+        }
+        val obj = getJson("/api/discover/browse?$q")
+        when (tab) {
+            DiscoverBrowseTab.ForYou -> {
+                val results = parseDiscoveryResults(obj.optJSONArray("forYou"))
+                DiscoverBrowsePage(
+                    results = results,
+                    hasMore = obj.optBoolean("forYouHasMore", false),
+                    total = obj.optInt("forYouTotal", results.size),
+                    message = optionalString(obj, "forYouMessage"),
+                )
+            }
+            DiscoverBrowseTab.Popular -> {
+                val interest = parseDiscoveryResults(obj.optJSONArray("popularInterestChannels"))
+                val popular = parseDiscoveryResults(obj.optJSONArray("popularChannels"))
+                val results = interest + popular.filter { row ->
+                    interest.none { it.externalId == row.externalId }
+                }
+                DiscoverBrowsePage(results = results, hasMore = false, total = results.size)
+            }
+            DiscoverBrowseTab.Recent -> {
+                val results = parseDiscoveryResults(obj.optJSONArray("recentlyFollowed"))
+                DiscoverBrowsePage(results = results, hasMore = false, total = results.size)
+            }
+        }
+    }
+
+    suspend fun followYoutubeDiscover(
+        channelId: String,
+        title: String?,
+        description: String?,
+        thumbnailUrl: String?,
+        recommendationToken: String?,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("channelId", channelId)
+        if (!title.isNullOrBlank()) body.put("title", title)
+        if (!description.isNullOrBlank()) body.put("description", description)
+        if (!thumbnailUrl.isNullOrBlank()) body.put("thumbnailUrl", thumbnailUrl)
+        if (!recommendationToken.isNullOrBlank()) body.put("recommendationToken", recommendationToken)
+        val obj = requestJson("POST", "/api/discover/follow/youtube", body)
+        obj.optBoolean("alreadyFollowing", false)
+    }
+
+    suspend fun unfollowYoutubeDiscover(channelId: String) = withContext(Dispatchers.IO) {
+        requestJson(
+            "POST",
+            "/api/discover/unfollow/youtube",
+            JSONObject().put("channelId", channelId),
+        )
+        Unit
+    }
+
+    suspend fun subscribePodcastDiscover(result: DiscoveryResult): Int = withContext(Dispatchers.IO) {
+        val feedId = result.externalId.toLongOrNull()
+            ?: throw ApiException(400, "Invalid podcast feed id")
+        val body = JSONObject()
+            .put("externalFeedId", feedId)
+            .put("feedUrl", result.feedUrl ?: "")
+            .put("title", result.title)
+            .put("publisher", result.publisher ?: "")
+            .put("description", result.description ?: "")
+            .put("imageUrl", result.imageUrl ?: "")
+        val obj = requestJson("POST", "/api/discover/subscribe/podcast", body)
+        obj.optInt("episodesAdded", 0)
+    }
+
     fun loginUrl(): String = "$base/api/auth/google?intent=login&client=android"
+
+    private fun enc(value: String): String =
+        java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
+
+    private fun parseDiscoveryResults(arr: JSONArray?): List<DiscoveryResult> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).map { parseDiscoveryResult(arr.getJSONObject(it)) }
+    }
+
+    private fun parseDiscoveryResult(o: JSONObject) = DiscoveryResult(
+        provider = o.optString("provider", ""),
+        type = o.optString("type", ""),
+        externalId = o.optString("externalId", ""),
+        title = o.optString("title", "(untitled)"),
+        description = optionalString(o, "description"),
+        imageUrl = optionalString(o, "imageUrl"),
+        publisher = optionalString(o, "publisher"),
+        feedUrl = optionalString(o, "feedUrl"),
+        parentExternalId = optionalString(o, "parentExternalId"),
+        parentTitle = optionalString(o, "parentTitle"),
+        subscribed = o.optBoolean("subscribed", false),
+        watchUrl = optionalString(o, "watchUrl"),
+        recommendationReason = optionalString(o, "recommendationReason"),
+        recommendationToken = optionalString(o, "recommendationToken"),
+    )
 
     private fun parseChannel(o: JSONObject): ChannelRecord {
         val ids = o.optJSONArray("categoryIds") ?: JSONArray()

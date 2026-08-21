@@ -10,6 +10,11 @@ import com.heartlandwiwx.streamfeeder.data.AppTheme
 import com.heartlandwiwx.streamfeeder.data.CategoryRecord
 import com.heartlandwiwx.streamfeeder.data.ChannelRecord
 import com.heartlandwiwx.streamfeeder.data.CurrentUser
+import com.heartlandwiwx.streamfeeder.data.DiscoverBrowseTab
+import com.heartlandwiwx.streamfeeder.data.DiscoverFilter
+import com.heartlandwiwx.streamfeeder.data.DiscoverFollowSetup
+import com.heartlandwiwx.streamfeeder.data.DiscoverResultsMode
+import com.heartlandwiwx.streamfeeder.data.DiscoveryResult
 import com.heartlandwiwx.streamfeeder.data.InboxItem
 import com.heartlandwiwx.streamfeeder.data.InboxPage
 import com.heartlandwiwx.streamfeeder.data.InboxWatchFields
@@ -40,19 +45,24 @@ enum class FeedView(val api: String, val label: String) {
     Streams("inbox", "Subscriptions"),
     Categories("inbox", "By Category"),
     Deleted("deleted", "Deleted"),
+    Discover("discover", "Discover"),
     Settings("settings", "Settings"),
     LiveGrid("live", "Grid"),
     LiveStreams("live", "Streams"),
     LiveCategories("live", "Categories");
 
     val isLocal: Boolean
-        get() = this == Settings || this == LiveGrid || this == LiveStreams || this == LiveCategories
+        get() = this == Settings || this == Discover || this == LiveGrid ||
+            this == LiveStreams || this == LiveCategories
 
     val isFeedSection: Boolean
         get() = this == Inbox || this == Categories || this == Streams || this == Snoozed || this == Deleted
 
     val isLiveSection: Boolean
         get() = this == LiveGrid || this == LiveStreams || this == LiveCategories
+
+    val isDiscoverSection: Boolean
+        get() = this == Discover
 }
 
 data class FeedUiState(
@@ -92,6 +102,21 @@ data class FeedUiState(
     val playthroughQueue: List<InboxItem> = emptyList(),
     val feedHasMore: Boolean = false,
     val feedLoadingMore: Boolean = false,
+    val discoverShowingResults: Boolean = false,
+    val discoverMode: DiscoverResultsMode = DiscoverResultsMode.Browse,
+    val discoverBrowseTab: DiscoverBrowseTab = DiscoverBrowseTab.ForYou,
+    val discoverQuery: String = "",
+    val discoverFilter: DiscoverFilter = DiscoverFilter.All,
+    val discoverResults: List<DiscoveryResult> = emptyList(),
+    val discoverHasMore: Boolean = false,
+    val discoverNextOffset: Int = 0,
+    val discoverForYouTotal: Int = 0,
+    val discoverForYouRefreshOffset: Int = 0,
+    val discoverLoading: Boolean = false,
+    val discoverLoadingMore: Boolean = false,
+    val discoverBusyId: String? = null,
+    val discoverFollowSetup: DiscoverFollowSetup? = null,
+    val discoverWarnings: List<String> = emptyList(),
 )
 
 class FeedViewModel(app: Application) : AndroidViewModel(app) {
@@ -188,6 +213,19 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     it.items
                 },
+                discoverShowingResults = false,
+                discoverResults = emptyList(),
+                discoverQuery = "",
+                discoverWarnings = emptyList(),
+                discoverHasMore = false,
+                discoverNextOffset = 0,
+                discoverLoading = false,
+                discoverLoadingMore = false,
+                discoverBusyId = null,
+                discoverFollowSetup = null,
+                discoverFilter = DiscoverFilter.All,
+                discoverForYouRefreshOffset = 0,
+                discoverForYouTotal = 0,
             )
         }
         if (view.isLiveSection) {
@@ -199,6 +237,356 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             refreshFeed()
         } else {
             refreshMeta()
+        }
+    }
+
+    fun closeDiscoverResults() {
+        _state.update {
+            it.copy(
+                discoverShowingResults = false,
+                discoverResults = emptyList(),
+                discoverWarnings = emptyList(),
+                discoverHasMore = false,
+                discoverNextOffset = 0,
+                discoverLoading = false,
+                discoverLoadingMore = false,
+                discoverFollowSetup = null,
+                discoverBusyId = null,
+            )
+        }
+    }
+
+    fun setDiscoverQuery(query: String) {
+        _state.update { it.copy(discoverQuery = query) }
+    }
+
+    fun openDiscoverBrowse(tab: DiscoverBrowseTab) {
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    discoverShowingResults = true,
+                    discoverMode = DiscoverResultsMode.Browse,
+                    discoverBrowseTab = tab,
+                    discoverFilter = DiscoverFilter.All,
+                    discoverLoading = true,
+                    discoverResults = emptyList(),
+                    discoverWarnings = emptyList(),
+                    discoverHasMore = false,
+                    discoverNextOffset = 0,
+                    discoverForYouRefreshOffset = 0,
+                    error = null,
+                )
+            }
+            try {
+                val page = api.discoverBrowse(tab)
+                _state.update {
+                    it.copy(
+                        discoverLoading = false,
+                        discoverResults = page.results,
+                        discoverHasMore = page.hasMore,
+                        discoverForYouTotal = page.total,
+                        discoverNextOffset = page.results.size,
+                        message = page.message,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverLoading = false,
+                        error = e.message ?: "Could not load Discover",
+                    )
+                }
+            }
+        }
+    }
+
+    fun runDiscoverSearch() {
+        val q = _state.value.discoverQuery.trim()
+        if (q.isEmpty()) return
+        viewModelScope.launch {
+            val filter = _state.value.discoverFilter
+            _state.update {
+                it.copy(
+                    discoverShowingResults = true,
+                    discoverMode = DiscoverResultsMode.Search,
+                    discoverLoading = true,
+                    discoverResults = emptyList(),
+                    discoverWarnings = emptyList(),
+                    discoverHasMore = false,
+                    discoverNextOffset = 0,
+                    error = null,
+                )
+            }
+            try {
+                val page = api.discoverSearch(q, filter, offset = 0)
+                _state.update {
+                    it.copy(
+                        discoverLoading = false,
+                        discoverQuery = page.query,
+                        discoverFilter = page.filter,
+                        discoverResults = page.results,
+                        discoverWarnings = page.warnings,
+                        discoverHasMore = page.hasMore,
+                        discoverNextOffset = page.nextOffset,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverLoading = false,
+                        error = e.message ?: "Search failed",
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectDiscoverFilter(filter: DiscoverFilter) {
+        if (filter == _state.value.discoverFilter) return
+        _state.update { it.copy(discoverFilter = filter) }
+        if (_state.value.discoverMode == DiscoverResultsMode.Search && _state.value.discoverShowingResults) {
+            runDiscoverSearch()
+        }
+    }
+
+    fun loadMoreDiscover() {
+        val state = _state.value
+        if (!state.discoverHasMore || state.discoverLoadingMore || state.discoverLoading) return
+        viewModelScope.launch {
+            when (state.discoverMode) {
+                DiscoverResultsMode.Search -> {
+                    val q = state.discoverQuery.trim()
+                    if (q.isEmpty()) return@launch
+                    _state.update { it.copy(discoverLoadingMore = true, error = null) }
+                    try {
+                        val page = api.discoverSearch(q, state.discoverFilter, offset = state.discoverNextOffset)
+                        _state.update { cur ->
+                            val seen = cur.discoverResults.map { it.resultKey }.toSet()
+                            val appended = page.results.filter { it.resultKey !in seen }
+                            cur.copy(
+                                discoverLoadingMore = false,
+                                discoverResults = cur.discoverResults + appended,
+                                discoverWarnings = page.warnings.ifEmpty { cur.discoverWarnings },
+                                discoverHasMore = page.hasMore,
+                                discoverNextOffset = page.nextOffset,
+                            )
+                        }
+                    } catch (e: Exception) {
+                        _state.update {
+                            it.copy(
+                                discoverLoadingMore = false,
+                                error = e.message ?: "Search failed",
+                            )
+                        }
+                    }
+                }
+                DiscoverResultsMode.Browse -> {
+                    if (state.discoverBrowseTab != DiscoverBrowseTab.ForYou) return@launch
+                    val offset = state.discoverResults.size
+                    val needsRemote = offset >= state.discoverForYouTotal
+                    _state.update { it.copy(discoverLoadingMore = true, error = null) }
+                    try {
+                        val page = api.discoverBrowse(
+                            tab = DiscoverBrowseTab.ForYou,
+                            offset = offset,
+                            loadMore = needsRemote,
+                            forYouRefreshOffset = if (needsRemote) state.discoverForYouRefreshOffset else 0,
+                        )
+                        _state.update { cur ->
+                            val seen = cur.discoverResults.map { it.resultKey }.toSet()
+                            val appended = page.results.filter { it.resultKey !in seen }
+                            cur.copy(
+                                discoverLoadingMore = false,
+                                discoverResults = cur.discoverResults + appended,
+                                discoverHasMore = page.hasMore,
+                                discoverForYouTotal = page.total,
+                                discoverNextOffset = cur.discoverResults.size + appended.size,
+                                discoverForYouRefreshOffset = if (needsRemote) {
+                                    cur.discoverForYouRefreshOffset + 2
+                                } else {
+                                    cur.discoverForYouRefreshOffset
+                                },
+                            )
+                        }
+                    } catch (e: Exception) {
+                        _state.update {
+                            it.copy(
+                                discoverLoadingMore = false,
+                                error = e.message ?: "Could not load more",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun requestDiscoverFollow(result: DiscoveryResult) {
+        val channelId = when {
+            result.provider == "youtube" && result.type == "channel" -> result.externalId
+            result.provider == "youtube" && !result.parentExternalId.isNullOrBlank() -> result.parentExternalId
+            else -> return
+        }
+        val title = when {
+            result.type == "channel" -> result.title
+            else -> result.parentTitle ?: result.publisher ?: result.title
+        }
+        _state.update {
+            it.copy(
+                discoverFollowSetup = DiscoverFollowSetup(
+                    channelId = channelId,
+                    title = title,
+                    description = result.description,
+                    thumbnailUrl = if (result.type == "channel") result.imageUrl else null,
+                    recommendationToken = result.recommendationToken,
+                ),
+                error = null,
+            )
+        }
+    }
+
+    fun cancelDiscoverFollow() {
+        _state.update { it.copy(discoverFollowSetup = null) }
+    }
+
+    fun confirmDiscoverFollow(
+        followInInbox: Boolean,
+        maxVideosToPull: Int,
+        categoryIds: List<String>,
+    ) {
+        val setup = _state.value.discoverFollowSetup ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(discoverBusyId = setup.channelId, error = null) }
+            try {
+                val already = api.followYoutubeDiscover(
+                    channelId = setup.channelId,
+                    title = setup.title,
+                    description = setup.description,
+                    thumbnailUrl = setup.thumbnailUrl,
+                    recommendationToken = setup.recommendationToken,
+                )
+                api.updateChannel(setup.channelId, followInInbox, maxVideosToPull, categoryIds)
+                if (maxVideosToPull > 0) {
+                    _state.update { it.copy(message = "Catching up ${setup.title}…") }
+                    val added = api.catchUpChannel(setup.channelId, maxVideosToPull) { pulled, want ->
+                        _state.update { it.copy(message = "Catching up ${setup.title}… $pulled / $want") }
+                    }
+                    _state.update {
+                        it.copy(
+                            message = if (added > 0) {
+                                "Added $added videos from ${setup.title}."
+                            } else {
+                                "Now following ${setup.title} in VortiQuest."
+                            },
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            message = if (already) {
+                                "Updated settings for ${setup.title}."
+                            } else {
+                                "Now following ${setup.title} in VortiQuest."
+                            },
+                        )
+                    }
+                }
+                markDiscoverSubscribed(setup.channelId)
+                refreshMeta()
+                _state.update { it.copy(discoverFollowSetup = null, discoverBusyId = null) }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverBusyId = null,
+                        error = e.message ?: "Follow failed",
+                    )
+                }
+            }
+        }
+    }
+
+    fun unfollowDiscoverYoutube(channelId: String, title: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(discoverBusyId = channelId, error = null) }
+            try {
+                api.unfollowYoutubeDiscover(channelId)
+                markDiscoverUnsubscribed(channelId)
+                refreshMeta()
+                _state.update {
+                    it.copy(
+                        discoverBusyId = null,
+                        message = "Unfollowed $title in VortiQuest.",
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverBusyId = null,
+                        error = e.message ?: "Unfollow failed",
+                    )
+                }
+            }
+        }
+    }
+
+    fun subscribeDiscoverPodcast(result: DiscoveryResult) {
+        val target = when {
+            result.type == "podcast" -> result
+            result.type == "episode" && !result.parentExternalId.isNullOrBlank() -> result.copy(
+                type = "podcast",
+                externalId = result.parentExternalId,
+                title = result.parentTitle ?: result.publisher ?: result.title,
+            )
+            else -> return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(discoverBusyId = target.externalId, error = null) }
+            try {
+                val added = api.subscribePodcastDiscover(target)
+                markDiscoverSubscribed(target.externalId)
+                refreshMeta()
+                _state.update {
+                    it.copy(
+                        discoverBusyId = null,
+                        message = "Subscribed to ${target.title}. Added $added episodes.",
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        discoverBusyId = null,
+                        error = e.message ?: "Subscribe failed",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun markDiscoverSubscribed(externalId: String) {
+        _state.update { state ->
+            state.copy(
+                discoverResults = state.discoverResults.map { row ->
+                    if (row.externalId == externalId || row.parentExternalId == externalId) {
+                        row.copy(subscribed = true)
+                    } else {
+                        row
+                    }
+                },
+            )
+        }
+    }
+
+    private fun markDiscoverUnsubscribed(channelId: String) {
+        _state.update { state ->
+            state.copy(
+                discoverResults = state.discoverResults.map { row ->
+                    if (row.externalId == channelId || row.parentExternalId == channelId) {
+                        row.copy(subscribed = false)
+                    } else {
+                        row
+                    }
+                },
+            )
         }
     }
 
@@ -304,6 +692,39 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
         samplerVideoId = null
         playbackEnded = false
         _state.update { it.copy(selected = queue[index - 1]) }
+    }
+
+    fun playthroughArchiveAndAdvance() {
+        val state = _state.value
+        if (!state.playthroughActive) return
+        val item = state.selected ?: return
+        val queue = state.playthroughQueue
+        val index = queue.indexOfFirst { it.videoId == item.videoId }
+        val next = if (index < 0) null else queue.getOrNull(index + 1)
+        val newQueue = queue.filterNot { it.videoId == item.videoId }
+        flushPlayback()
+        samplerVideoId = null
+        playbackEnded = false
+        _state.update {
+            it.copy(
+                items = it.items.filterNot { row -> row.videoId == item.videoId },
+                playthroughQueue = if (next == null) emptyList() else newQueue,
+                playthroughActive = next != null,
+                selected = next,
+                undoArchiveVideoId = null,
+                undoWatchlistVideoId = null,
+                undoWatchlistId = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                api.patchInbox(item.videoId, JSONObject().put("action", "delete"))
+                if (_state.value.view == FeedView.Watchlist) refreshMeta()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Could not archive") }
+                refreshFeed()
+            }
+        }
     }
 
     fun selectWatchedFilter(filter: WatchedFilter) {
@@ -1144,7 +1565,7 @@ class FeedViewModel(app: Application) : AndroidViewModel(app) {
             }
             FeedView.Inbox -> api.inbox(view = "inbox", categoryId = s.categoryId, watched = watched, beforeId = beforeId)
             FeedView.Snoozed, FeedView.Deleted -> api.inbox(view = s.view.api, categoryId = s.categoryId, watched = watched, beforeId = beforeId)
-            FeedView.Settings, FeedView.LiveGrid, FeedView.LiveStreams, FeedView.LiveCategories -> return empty
+            FeedView.Settings, FeedView.Discover, FeedView.LiveGrid, FeedView.LiveStreams, FeedView.LiveCategories -> return empty
         }
         if (beforeId == null) {
             _state.update { it.copy(unwatchedCount = page.unwatchedCount) }

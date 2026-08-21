@@ -89,7 +89,19 @@ class MainActivity : AppCompatActivity() {
                             onStopPlaythrough = viewModel::stopPlaythrough,
                             onPlaythroughNext = viewModel::playthroughNext,
                             onPlaythroughPrevious = viewModel::playthroughPrevious,
+                            onPlaythroughArchive = viewModel::playthroughArchiveAndAdvance,
                             onLoadMore = viewModel::loadMoreFeed,
+                            onCloseDiscoverResults = viewModel::closeDiscoverResults,
+                            onSetDiscoverQuery = viewModel::setDiscoverQuery,
+                            onOpenDiscoverBrowse = viewModel::openDiscoverBrowse,
+                            onRunDiscoverSearch = viewModel::runDiscoverSearch,
+                            onSelectDiscoverFilter = viewModel::selectDiscoverFilter,
+                            onLoadMoreDiscover = viewModel::loadMoreDiscover,
+                            onRequestDiscoverFollow = viewModel::requestDiscoverFollow,
+                            onCancelDiscoverFollow = viewModel::cancelDiscoverFollow,
+                            onConfirmDiscoverFollow = viewModel::confirmDiscoverFollow,
+                            onUnfollowDiscoverYoutube = viewModel::unfollowDiscoverYoutube,
+                            onSubscribeDiscoverPodcast = viewModel::subscribeDiscoverPodcast,
                         )
                     }
                 }

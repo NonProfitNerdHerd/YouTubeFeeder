@@ -123,4 +123,64 @@ data class LiveSourceRecord(
     }
 }
 
+enum class DiscoverFilter(val api: String, val label: String) {
+    All("all", "All"),
+    Podcasts("podcasts", "Podcasts"),
+    Youtube("youtube", "YouTube"),
+}
+
+enum class DiscoverBrowseTab(val api: String, val label: String) {
+    ForYou("forYou", "For You"),
+    Popular("popular", "Popular"),
+    Recent("recent", "Recently followed"),
+}
+
+enum class DiscoverResultsMode {
+    Search,
+    Browse,
+}
+
+data class DiscoveryResult(
+    val provider: String,
+    val type: String,
+    val externalId: String,
+    val title: String,
+    val description: String? = null,
+    val imageUrl: String? = null,
+    val publisher: String? = null,
+    val feedUrl: String? = null,
+    val parentExternalId: String? = null,
+    val parentTitle: String? = null,
+    val subscribed: Boolean = false,
+    val watchUrl: String? = null,
+    val recommendationReason: String? = null,
+    val recommendationToken: String? = null,
+) {
+    val resultKey: String get() = "$provider:$type:$externalId"
+}
+
+data class DiscoverSearchPage(
+    val query: String,
+    val filter: DiscoverFilter,
+    val results: List<DiscoveryResult>,
+    val warnings: List<String>,
+    val hasMore: Boolean,
+    val nextOffset: Int,
+)
+
+data class DiscoverBrowsePage(
+    val results: List<DiscoveryResult>,
+    val hasMore: Boolean,
+    val total: Int,
+    val message: String? = null,
+)
+
+data class DiscoverFollowSetup(
+    val channelId: String,
+    val title: String,
+    val description: String?,
+    val thumbnailUrl: String?,
+    val recommendationToken: String?,
+)
+
 class ApiException(val code: Int, message: String) : Exception(message)
