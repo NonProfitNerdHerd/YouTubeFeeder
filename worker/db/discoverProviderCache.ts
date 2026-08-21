@@ -1,6 +1,7 @@
 import type {
 	DiscoverProviderCacheRecord,
 	DiscoverProviderCacheWrite,
+	DiscoveryProviderCandidate,
 	DiscoveryProviderRawHit,
 } from '../services/discover/provider/types';
 
@@ -24,6 +25,25 @@ function parseHits(json: string): DiscoveryProviderRawHit[] {
 		if (!Array.isArray(parsed)) return [];
 		return parsed.filter((row): row is DiscoveryProviderRawHit => {
 			return Boolean(row && typeof row === 'object' && typeof (row as DiscoveryProviderRawHit).url === 'string');
+		});
+	} catch {
+		return [];
+	}
+}
+
+function parseCandidates(json: string): DiscoveryProviderCandidate[] {
+	try {
+		const parsed = JSON.parse(json) as unknown;
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((row): row is DiscoveryProviderCandidate => {
+			const c = row as DiscoveryProviderCandidate;
+			return Boolean(
+				c &&
+					typeof c === 'object' &&
+					typeof c.externalId === 'string' &&
+					c.externalId.startsWith('UC') &&
+					typeof c.title === 'string',
+			);
 		});
 	} catch {
 		return [];
@@ -56,7 +76,7 @@ function mapRow(
 		normalizedQuery: row.normalized_query,
 		strategyVersion: row.strategy_version,
 		rawResults: parseHits(row.raw_results_json),
-		candidates: parseHits(row.candidates_json),
+		candidates: parseCandidates(row.candidates_json),
 		providerOffset: Number(row.provider_offset ?? 0),
 		moreResultsAvailable: Boolean(row.more_results_available),
 		candidateConsumeOffset: Number(row.candidate_consume_offset ?? 0),
@@ -192,7 +212,7 @@ export async function appendDiscoverProviderCachePage(
 	cacheKey: string,
 	page: {
 		rawHits: DiscoveryProviderRawHit[];
-		candidates?: DiscoveryProviderRawHit[];
+		candidates?: DiscoveryProviderCandidate[];
 		providerOffset: number;
 		moreResultsAvailable: boolean;
 	},
@@ -212,11 +232,17 @@ export async function appendDiscoverProviderCachePage(
 
 	const mergedCandidates = [...existing.candidates];
 	if (page.candidates?.length) {
-		const seenCand = new Set(mergedCandidates.map((h) => h.url));
-		for (const hit of page.candidates) {
-			if (seenCand.has(hit.url)) continue;
-			seenCand.add(hit.url);
-			mergedCandidates.push(hit);
+		const seenIds = new Set(mergedCandidates.map((c) => c.externalId));
+		for (const cand of page.candidates) {
+			if (seenIds.has(cand.externalId)) {
+				const prior = mergedCandidates.find((c) => c.externalId === cand.externalId);
+				if (prior && cand.sourceUrls?.length) {
+					prior.sourceUrls = [...new Set([...(prior.sourceUrls ?? []), ...cand.sourceUrls])];
+				}
+				continue;
+			}
+			seenIds.add(cand.externalId);
+			mergedCandidates.push(cand);
 		}
 	}
 

@@ -30,6 +30,10 @@ interface Env {
 	BRAVE_GLOBAL_DAILY_SOFT_CAP?: string;
 	/** Brave HTTP timeout in ms (default 8000). */
 	BRAVE_SEARCH_TIMEOUT_MS?: string;
+	/** Max Brave pages fetched per typed Discover search request (default 3). */
+	DISCOVER_BRAVE_MAX_PAGES_PER_REQUEST?: string;
+	/** Target usable channel count for typed Brave Discover (default 20). */
+	DISCOVER_BRAVE_TYPED_RESULT_LIMIT?: string;
 }
 
 interface ExecutionContext {

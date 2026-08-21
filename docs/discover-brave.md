@@ -6,8 +6,22 @@ Infrastructure only. Production Discover still uses YouTube `search.list` until 
 
 | Concern | Source |
 | --- | --- |
-| Discover **search discovery** (future) | Brave Search API |
+| Typed Discover **YouTube search** (when `DISCOVER_SEARCH_PROVIDER=brave`) | Brave Search API + batch `videos.list` / `channels.list` |
+| For You / Discover More / topic fill | Still YouTube `search.list` (Phase 4+) |
 | Subscribed channel/video data | Existing YouTube APIs + WebSub + feed ingestion |
+
+### V1 Brave query strategy
+
+```text
+site:youtube.com {query}
+```
+
+Selected for usable unique channels per Brave request: includes channel pages and videos (resolved via `videos.list`). Alternate `site:youtube.com/@ {query}` is retained as strategy `v1-at` for offline comparison only.
+
+### Attribution
+
+Brave Search API Terms say customers **may** provide “POWERED BY BRAVE” attribution (with logo) when attributing; they do not state a mandatory UI badge for all integrations. Confirm with your Brave plan/ToS before production launch. Phase 3 does not add Brave branding to the Discover UI.
+
 
 ## Secrets / vars
 

@@ -126,7 +126,7 @@ describe('discover provider cache TTL and stale', () => {
 					{ title: '1', url: 'https://www.youtube.com/@1' },
 					{ title: '2', url: 'https://www.youtube.com/@2' },
 				],
-				candidates: [{ title: '1', url: 'https://www.youtube.com/@1' }],
+				candidates: [{ title: '1', url: 'https://www.youtube.com/@1', provider: 'youtube', type: 'channel', externalId: 'UCxxxxxxxxxxxxxxxxxxxxxx1' }],
 				providerOffset: 0,
 				moreResultsAvailable: true,
 				candidateConsumeOffset: 0,
@@ -140,7 +140,15 @@ describe('discover provider cache TTL and stale', () => {
 			key,
 			{
 				rawHits: [{ title: '3', url: 'https://www.youtube.com/@3' }],
-				candidates: [{ title: '3', url: 'https://www.youtube.com/@3' }],
+				candidates: [
+					{
+						provider: 'youtube',
+						type: 'channel',
+						externalId: 'UCxxxxxxxxxxxxxxxxxxxxxx3',
+						title: '3',
+						watchUrl: 'https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx3',
+					},
+				],
 				providerOffset: 1,
 				moreResultsAvailable: false,
 			},
@@ -306,6 +314,8 @@ describe('Brave soft caps and fetchDiscoverProviderPage', () => {
 				userDailySoftCap: 2,
 				globalDailySoftCap: 750,
 				timeoutMs: 8000,
+				maxPagesPerRequest: 3,
+				typedResultLimit: 20,
 			},
 		});
 		expect(result.ok).toBe(false);
@@ -328,6 +338,8 @@ describe('Brave soft caps and fetchDiscoverProviderPage', () => {
 				userDailySoftCap: 100,
 				globalDailySoftCap: 2,
 				timeoutMs: 8000,
+				maxPagesPerRequest: 3,
+				typedResultLimit: 20,
 			},
 		});
 		expect(result.ok).toBe(false);

@@ -3,15 +3,19 @@ import { DEFAULT_BRAVE_TIMEOUT_MS } from './braveSearchProvider';
 
 export const DEFAULT_BRAVE_USER_DAILY_SOFT_CAP = 100;
 export const DEFAULT_BRAVE_GLOBAL_DAILY_SOFT_CAP = 750;
+export const DEFAULT_BRAVE_MAX_PAGES_PER_REQUEST = 3;
+export const DEFAULT_TYPED_BRAVE_RESULT_LIMIT = 20;
 
 export interface BraveDiscoverConfig {
 	apiKey: string;
-	/** Not wired to production Discover in Phase 1–2; reserved for Phase 3. */
+	/** `brave` enables typed Discover Brave path; default `youtube` keeps legacy search.list. */
 	providerMode: 'youtube' | 'brave';
 	strategyVersion: string;
 	userDailySoftCap: number;
 	globalDailySoftCap: number;
 	timeoutMs: number;
+	maxPagesPerRequest: number;
+	typedResultLimit: number;
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
@@ -25,9 +29,21 @@ export function braveDiscoverConfigFromEnv(env: Env): BraveDiscoverConfig {
 	return {
 		apiKey: (env.BRAVE_SEARCH_API_KEY ?? '').trim(),
 		providerMode: mode === 'brave' ? 'brave' : 'youtube',
-		strategyVersion: (env.DISCOVER_PROVIDER_STRATEGY_VERSION ?? DEFAULT_BRAVE_YOUTUBE_STRATEGY_VERSION).trim() || DEFAULT_BRAVE_YOUTUBE_STRATEGY_VERSION,
+		strategyVersion:
+			(env.DISCOVER_PROVIDER_STRATEGY_VERSION ?? DEFAULT_BRAVE_YOUTUBE_STRATEGY_VERSION).trim() ||
+			DEFAULT_BRAVE_YOUTUBE_STRATEGY_VERSION,
 		userDailySoftCap: parsePositiveInt(env.BRAVE_USER_DAILY_SOFT_CAP, DEFAULT_BRAVE_USER_DAILY_SOFT_CAP),
 		globalDailySoftCap: parsePositiveInt(env.BRAVE_GLOBAL_DAILY_SOFT_CAP, DEFAULT_BRAVE_GLOBAL_DAILY_SOFT_CAP),
 		timeoutMs: parsePositiveInt(env.BRAVE_SEARCH_TIMEOUT_MS, DEFAULT_BRAVE_TIMEOUT_MS) || DEFAULT_BRAVE_TIMEOUT_MS,
+		maxPagesPerRequest: Math.max(
+			1,
+			parsePositiveInt(env.DISCOVER_BRAVE_MAX_PAGES_PER_REQUEST, DEFAULT_BRAVE_MAX_PAGES_PER_REQUEST) ||
+				DEFAULT_BRAVE_MAX_PAGES_PER_REQUEST,
+		),
+		typedResultLimit: Math.max(
+			1,
+			parsePositiveInt(env.DISCOVER_BRAVE_TYPED_RESULT_LIMIT, DEFAULT_TYPED_BRAVE_RESULT_LIMIT) ||
+				DEFAULT_TYPED_BRAVE_RESULT_LIMIT,
+		),
 	};
 }

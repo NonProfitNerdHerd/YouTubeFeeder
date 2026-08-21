@@ -22,6 +22,20 @@ export interface DiscoveryProviderRawHit {
 	meta?: Record<string, unknown>;
 }
 
+/** Resolved YouTube channel candidate stored in the global provider cache (pre user-filter). */
+export interface DiscoveryProviderCandidate {
+	provider: 'youtube';
+	type: 'channel';
+	externalId: string;
+	title: string;
+	description?: string;
+	imageUrl?: string;
+	publisher?: string;
+	watchUrl?: string;
+	/** Source Brave URLs that mapped to this channel (debug). */
+	sourceUrls?: string[];
+}
+
 export interface DiscoverySearchResult {
 	hits: DiscoveryProviderRawHit[];
 	/** Next provider page offset to request, or null if unknown/none. */
@@ -63,7 +77,7 @@ export class BraveProviderError extends Error {
 	}
 }
 
-/** Cached pool row shape — raw hits vs usable candidates are separate for future auto-paging. */
+/** Cached pool row shape — raw hits vs usable candidates are separate for auto-paging. */
 export interface DiscoverProviderCacheRecord {
 	cacheKey: string;
 	provider: string;
@@ -73,10 +87,10 @@ export interface DiscoverProviderCacheRecord {
 	/** Accumulated raw provider hits across fetched pages. */
 	rawResults: DiscoveryProviderRawHit[];
 	/**
-	 * Usable/normalized candidates after resolve/dedupe/filter.
-	 * Phase 1–2 may leave this empty or mirror provisional stubs; Phase 5 fills it.
+	 * Resolved channel candidates after normalize/resolve/dedupe.
+	 * User-specific subscribed filtering happens after load — never mutate this globally for one user.
 	 */
-	candidates: DiscoveryProviderRawHit[];
+	candidates: DiscoveryProviderCandidate[];
 	/** Last Brave `offset` (page index) successfully fetched. */
 	providerOffset: number;
 	moreResultsAvailable: boolean;
@@ -95,8 +109,30 @@ export interface DiscoverProviderCacheWrite {
 	normalizedQuery: string;
 	strategyVersion: string;
 	rawResults: DiscoveryProviderRawHit[];
-	candidates?: DiscoveryProviderRawHit[];
+	candidates?: DiscoveryProviderCandidate[];
 	providerOffset: number;
 	moreResultsAvailable: boolean;
 	candidateConsumeOffset?: number;
+}
+
+/** Debug funnel for typed Brave Discover (not returned to ordinary clients). */
+export interface TypedBraveSearchFunnel {
+	rawBraveResults: number;
+	validYoutubeUrls: number;
+	channelUrls: number;
+	videoUrls: number;
+	customUrls: number;
+	resolvedChannels: number;
+	unresolvedResults: number;
+	duplicateChannels: number;
+	subscribedFiltered: number;
+	qualityRejected: number;
+	usableCandidates: number;
+	bravePagesFetched: number;
+	cacheHit: boolean;
+	cacheMiss: boolean;
+	youtubeVideosListCalls: number;
+	youtubeChannelsListCalls: number;
+	youtubeSearchListCalls: number;
+	stopReason?: string;
 }

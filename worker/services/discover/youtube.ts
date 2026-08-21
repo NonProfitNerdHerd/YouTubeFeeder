@@ -8,6 +8,8 @@ import { getSubscribedChannelIds } from '../../db/queries';
 import { discoverSearchQuotaStatus } from '../discoverQuota';
 import { recordYoutubeCalls } from '../websub';
 import { createYoutubeApiKeyClient, type YoutubeClient } from '../youtube';
+import { braveDiscoverConfigFromEnv } from './provider/braveConfig';
+import { searchYoutubeDiscoverViaBrave } from './provider/typedBraveDiscoverSearch';
 
 export function normalizeDiscoverQuery(query: string): string {
 	return query.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -78,7 +80,7 @@ export interface YoutubeDiscoverSearchResult {
 	warning?: string;
 }
 
-export async function searchYoutubeDiscover(
+async function searchYoutubeDiscoverLegacy(
 	env: Env,
 	userId: string,
 	query: string,
@@ -149,4 +151,17 @@ export async function searchYoutubeDiscover(
 		cached: false,
 		searchedAt: now.toISOString(),
 	};
+}
+
+export async function searchYoutubeDiscover(
+	env: Env,
+	userId: string,
+	query: string,
+	now = new Date(),
+): Promise<YoutubeDiscoverSearchResult> {
+	const config = braveDiscoverConfigFromEnv(env);
+	if (config.providerMode === 'brave') {
+		return searchYoutubeDiscoverViaBrave(env, userId, query, { now, config });
+	}
+	return searchYoutubeDiscoverLegacy(env, userId, query, now);
 }
