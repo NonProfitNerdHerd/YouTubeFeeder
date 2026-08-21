@@ -65,20 +65,34 @@ export async function discoverSearch(
 	userId: string,
 	query: string,
 	filterParam: string | null,
+	opts: { offset?: number; limit?: number } = {},
 ): Promise<DiscoverSearchResponse> {
 	const filter = parseFilter(filterParam);
 	const normalized = normalizeDiscoverQuery(query);
 	if (!normalized) {
-		return { query: '', filter, results: [], warnings: [], cached: false, searchedAt: new Date().toISOString() };
+		return {
+			query: '',
+			filter,
+			results: [],
+			warnings: [],
+			cached: false,
+			searchedAt: new Date().toISOString(),
+			hasMore: false,
+			nextOffset: 0,
+		};
 	}
 
+	const offset = Math.max(0, Math.floor(opts.offset ?? 0));
 	const subscribed = await getSubscribedFeedIds(env.DB, userId);
 	const warnings: DiscoverSearchResponse['warnings'] = [];
 	let results: DiscoveryResult[] = [];
 	let cached = false;
 	let searchedAt = new Date().toISOString();
+	let hasMore = false;
+	let nextOffset = offset;
 
-	if (filter === 'all' || filter === 'podcasts') {
+	// Podcasts only on the first page — "Add more" appends YouTube candidates.
+	if (offset === 0 && (filter === 'all' || filter === 'podcasts')) {
 		if (env.MOCK_DATA === 'true' || !env.PODCAST_INDEX_KEY) {
 			results.push(...mockDiscoveryResults(query, subscribed));
 		} else {
@@ -96,10 +110,15 @@ export async function discoverSearch(
 
 	if (filter === 'all' || filter === 'youtube') {
 		try {
-			const youtube = await searchYoutubeDiscover(env, userId, query);
+			const youtube = await searchYoutubeDiscover(env, userId, query, new Date(), {
+				offset,
+				limit: opts.limit,
+			});
 			results.push(...youtube.results);
 			cached = youtube.cached;
 			searchedAt = youtube.searchedAt;
+			hasMore = Boolean(youtube.hasMore);
+			nextOffset = youtube.nextOffset ?? offset + youtube.results.length;
 			if (youtube.warning) {
 				warnings.push({ provider: 'youtube', message: youtube.warning });
 			}
@@ -118,6 +137,8 @@ export async function discoverSearch(
 		warnings,
 		cached,
 		searchedAt,
+		hasMore,
+		nextOffset,
 	};
 }
 

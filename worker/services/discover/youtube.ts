@@ -78,6 +78,10 @@ export interface YoutubeDiscoverSearchResult {
 	cached: boolean;
 	searchedAt: string;
 	warning?: string;
+	/** More usable YouTube candidates available (cached pool and/or Brave pages). */
+	hasMore?: boolean;
+	/** Offset to request for the next page (absolute into usable list). */
+	nextOffset?: number;
 }
 
 async function searchYoutubeDiscoverLegacy(
@@ -158,10 +162,11 @@ export async function searchYoutubeDiscover(
 	userId: string,
 	query: string,
 	now = new Date(),
+	opts: { offset?: number; limit?: number } = {},
 ): Promise<YoutubeDiscoverSearchResult> {
 	const config = braveDiscoverConfigFromEnv(env);
 	if (config.providerMode === 'brave') {
-		return searchYoutubeDiscoverViaBrave(env, userId, query, { now, config });
+		return searchYoutubeDiscoverViaBrave(env, userId, query, { now, config, ...opts });
 	}
 	return searchYoutubeDiscoverLegacy(env, userId, query, now);
 }

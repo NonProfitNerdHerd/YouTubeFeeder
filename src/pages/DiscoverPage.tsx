@@ -127,6 +127,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 	const [forYouSupportingMessage, setForYouSupportingMessage] = useState<string | undefined>();
 	const [forYouRefreshOffset, setForYouRefreshOffset] = useState(0);
 	const [forYouLoadingMore, setForYouLoadingMore] = useState(false);
+	const [searchLoadingMore, setSearchLoadingMore] = useState(false);
 	const [searchMode, setSearchMode] = useState(false);
 	const [popularBrowse, setPopularBrowse] = useState<DiscoverBrowseResponse | null>(null);
 	const [popularInterestContext, setPopularInterestContext] = useState<string | undefined>();
@@ -500,7 +501,7 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 		setLoading(true);
 		onError('');
 		try {
-			const params = new URLSearchParams({ q, filter });
+			const params = new URLSearchParams({ q, filter, offset: '0' });
 			const res = await fetch(`/api/discover/search?${params.toString()}`, { credentials: 'same-origin' });
 			const body = (await res.json()) as DiscoverSearchResponse & { error?: { message: string } };
 			if (!res.ok) throw new Error(body.error?.message ?? 'Search failed.');
@@ -509,6 +510,38 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 			onError(err instanceof Error ? err.message : 'Search failed.');
 		} finally {
 			setLoading(false);
+		}
+	}
+
+	async function loadMoreSearch() {
+		if (!response?.hasMore || searchLoadingMore || loading) return;
+		const q = response.query.trim() || query.trim();
+		if (!q) return;
+		setSearchLoadingMore(true);
+		onError('');
+		try {
+			const params = new URLSearchParams({
+				q,
+				filter: response.filter ?? filter,
+				offset: String(response.nextOffset ?? response.results.length),
+			});
+			const res = await fetch(`/api/discover/search?${params.toString()}`, { credentials: 'same-origin' });
+			const body = (await res.json()) as DiscoverSearchResponse & { error?: { message: string } };
+			if (!res.ok) throw new Error(body.error?.message ?? 'Search failed.');
+			setResponse((prev) => {
+				if (!prev) return body;
+				const seen = new Set(prev.results.map((r) => `${r.provider}:${r.externalId}`));
+				const appended = body.results.filter((r) => !seen.has(`${r.provider}:${r.externalId}`));
+				return {
+					...body,
+					results: [...prev.results, ...appended],
+					warnings: body.warnings?.length ? body.warnings : prev.warnings,
+				};
+			});
+		} catch (err: unknown) {
+			onError(err instanceof Error ? err.message : 'Search failed.');
+		} finally {
+			setSearchLoadingMore(false);
 		}
 	}
 
@@ -900,6 +933,19 @@ export function DiscoverPage({ onSubscribed, onError, onStatus }: DiscoverPagePr
 
 						{filtered.length ? (
 							<ul className="discover-results">{filtered.map((result) => renderResult(result))}</ul>
+						) : null}
+
+						{response?.hasMore && filtered.length > 0 ? (
+							<div className="discover-see-more-wrap">
+								<button
+									className="ghost discover-see-more"
+									type="button"
+									disabled={searchLoadingMore || loading}
+									onClick={() => void loadMoreSearch()}
+								>
+									{searchLoadingMore ? 'Loading more…' : 'Add more'}
+								</button>
+							</div>
 						) : null}
 					</div>
 				) : null}

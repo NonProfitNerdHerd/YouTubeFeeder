@@ -27,6 +27,10 @@ export interface DiscoverSearchResponse {
 	warnings: Array<{ provider: DiscoveryProvider; message: string }>;
 	cached: boolean;
 	searchedAt: string;
+	/** More YouTube Discover candidates available for "Add more". */
+	hasMore?: boolean;
+	/** Absolute offset to request for the next typed-search page. */
+	nextOffset?: number;
 }
 
 export interface DiscoverBrowseResponse {

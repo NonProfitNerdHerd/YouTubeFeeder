@@ -586,6 +586,79 @@ describe('typed Brave Discover Phase 3', () => {
 		expect(res.results.some((r) => r.provider === 'podcast')).toBe(true);
 	});
 
+	it('paginates typed results with offset and hasMore without Brave on page 2', async () => {
+		const db = new MemorySyncDb();
+		db.seedUser(USER);
+		const env = asEnv(db, { BRAVE_SEARCH_API_KEY: 'k', YOUTUBE_API_KEY: 'yt', DISCOVER_SEARCH_PROVIDER: 'brave' });
+		const now = new Date('2026-08-21T06:00:00.000Z');
+		const candidates = Array.from({ length: 50 }, (_, i) => {
+			const id = `UC${String(i).padStart(22, 'a')}`;
+			return {
+				provider: 'youtube' as const,
+				type: 'channel' as const,
+				externalId: id,
+				title: `Storm Channel ${i}`,
+				description: 'storm chasing tips and tornado coverage',
+			};
+		});
+		await putDiscoverProviderCache(
+			db as unknown as D1Database,
+			{
+				provider: 'brave',
+				contentType: 'youtube',
+				normalizedQuery: 'storm chasing',
+				strategyVersion: 'v1',
+				rawResults: candidates.map((c) => ({
+					title: c.title,
+					url: `https://www.youtube.com/channel/${c.externalId}`,
+				})),
+				candidates,
+				providerOffset: 0,
+				moreResultsAvailable: false,
+				resolverVersion: DISCOVER_CANDIDATE_RESOLVER_VERSION,
+				resolutionStatus: 'ok',
+			},
+			undefined,
+			now,
+		);
+		const search = vi.fn(async () => ({ hits: [], nextOffset: null, moreAvailable: false }));
+		const config = {
+			apiKey: 'k',
+			providerMode: 'brave' as const,
+			strategyVersion: 'v1',
+			userDailySoftCap: 100,
+			globalDailySoftCap: 750,
+			timeoutMs: 8000,
+			maxPagesPerRequest: 3,
+			typedResultLimit: 42,
+		};
+		const page1 = await searchYoutubeDiscoverViaBrave(env, USER, 'storm chasing', {
+			now,
+			provider: { id: 'brave', search },
+			youtubeClient: mockYt(async () => ({ items: [] })),
+			config,
+			offset: 0,
+			limit: 42,
+		});
+		expect(page1.results).toHaveLength(42);
+		expect(page1.hasMore).toBe(true);
+		expect(page1.nextOffset).toBe(42);
+		expect(search).not.toHaveBeenCalled();
+
+		const page2 = await searchYoutubeDiscoverViaBrave(env, USER, 'storm chasing', {
+			now,
+			provider: { id: 'brave', search },
+			youtubeClient: mockYt(async () => ({ items: [] })),
+			config,
+			offset: 42,
+			limit: 42,
+		});
+		expect(page2.results).toHaveLength(8);
+		expect(page2.hasMore).toBe(false);
+		expect(search).not.toHaveBeenCalled();
+		expect(page2.results[0]?.externalId).not.toBe(page1.results[0]?.externalId);
+	});
+
 	it('scores typed relevance deterministically', () => {
 		expect(scoreTypedBraveCandidate('storm chasing', { title: 'Storm Chasing Live', description: 'tornado' })).toBeGreaterThan(
 			scoreTypedBraveCandidate('storm chasing', { title: 'Cooking Show', description: 'recipes' }),
