@@ -41,8 +41,11 @@ Never put YouTube or Google secrets in Vite/`VITE_*` files.
 | `SESSION_SECRET` | secret | Sessions, WebSub `hub.secret`, and callback token |
 | `TOKEN_ENCRYPTION_KEY` | secret | Encrypted Google refresh tokens |
 | `YOUTUBE_API_KEY` | secret | Public `videos.list` / playlist metadata (same GCP project as OAuth) |
+| `BRAVE_SEARCH_API_KEY` | secret | Brave Search API (Discover provider infra; not wired to UI until Phase 3) |
 | `PUBLIC_ORIGIN` | `wrangler.jsonc` vars | Public Worker URL so Google’s hub can reach `/api/websub/callback` |
 | `MOCK_DATA` | var | `"true"` only for local mock mode |
+| `DISCOVER_SEARCH_PROVIDER` | var | `youtube` (default) or `brave` (Phase 3+) |
+| `BRAVE_USER_DAILY_SOFT_CAP` / `BRAVE_GLOBAL_DAILY_SOFT_CAP` | vars | Soft caps on **actual Brave HTTP calls** (default 100 / 750) |
 
 ```
 npx wrangler secret put YOUTUBE_API_KEY

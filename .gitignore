@@ -27,3 +27,8 @@ android/build/
 android/local.properties
 android/.idea/
 .idea/
+# Disposable agent/unit diagnostic dumps (never commit)
+tests/unit/.storm-diagnostic.json
+tests/unit/*-diagnostic.json
+tests/unit/.*.diagnostic.json
+*.diagnostic.json

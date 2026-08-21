@@ -1,0 +1,102 @@
+/** Shared DTOs for external Discover search providers (Brave first; YouTube/podcast later). */
+
+export type DiscoverContentType = 'youtube' | 'podcast' | 'article' | 'web';
+
+export interface DiscoverySearchRequest {
+	contentType: DiscoverContentType;
+	/** Original user query (not yet provider-rewritten). */
+	query: string;
+	/** Provider page index (Brave: 0–9). */
+	offset?: number;
+	/** Results per provider page (Brave max 20). */
+	count?: number;
+	strategyVersion?: string;
+}
+
+/** One raw hit from a provider before YouTube canonicalization / usable filtering. */
+export interface DiscoveryProviderRawHit {
+	title: string;
+	url: string;
+	description?: string;
+	/** Provider-specific extras kept for later scoring (never secrets). */
+	meta?: Record<string, unknown>;
+}
+
+export interface DiscoverySearchResult {
+	hits: DiscoveryProviderRawHit[];
+	/** Next provider page offset to request, or null if unknown/none. */
+	nextOffset: number | null;
+	moreAvailable: boolean;
+	providerMeta?: {
+		originalQuery?: string;
+		alteredQuery?: string;
+		/** Safe diagnostic fields only — never API keys. */
+		[key: string]: unknown;
+	};
+}
+
+export interface DiscoverySearchProvider {
+	readonly id: string;
+	search(request: DiscoverySearchRequest): Promise<DiscoverySearchResult>;
+}
+
+export type BraveProviderErrorCode =
+	| 'missing_api_key'
+	| 'timeout'
+	| 'unauthorized'
+	| 'forbidden'
+	| 'rate_limited'
+	| 'server_error'
+	| 'network_error'
+	| 'invalid_response'
+	| 'empty_query';
+
+export class BraveProviderError extends Error {
+	readonly code: BraveProviderErrorCode;
+	readonly status?: number;
+
+	constructor(code: BraveProviderErrorCode, message: string, status?: number) {
+		super(message);
+		this.name = 'BraveProviderError';
+		this.code = code;
+		this.status = status;
+	}
+}
+
+/** Cached pool row shape — raw hits vs usable candidates are separate for future auto-paging. */
+export interface DiscoverProviderCacheRecord {
+	cacheKey: string;
+	provider: string;
+	contentType: string;
+	normalizedQuery: string;
+	strategyVersion: string;
+	/** Accumulated raw provider hits across fetched pages. */
+	rawResults: DiscoveryProviderRawHit[];
+	/**
+	 * Usable/normalized candidates after resolve/dedupe/filter.
+	 * Phase 1–2 may leave this empty or mirror provisional stubs; Phase 5 fills it.
+	 */
+	candidates: DiscoveryProviderRawHit[];
+	/** Last Brave `offset` (page index) successfully fetched. */
+	providerOffset: number;
+	moreResultsAvailable: boolean;
+	/** How far the UI/consumer has walked into `candidates` (usable-pool cursor). */
+	candidateConsumeOffset: number;
+	rawResultCount: number;
+	searchedAt: string;
+	updatedAt: string;
+	expiresAt: string;
+	stale: boolean;
+}
+
+export interface DiscoverProviderCacheWrite {
+	provider: string;
+	contentType: string;
+	normalizedQuery: string;
+	strategyVersion: string;
+	rawResults: DiscoveryProviderRawHit[];
+	candidates?: DiscoveryProviderRawHit[];
+	providerOffset: number;
+	moreResultsAvailable: boolean;
+	candidateConsumeOffset?: number;
+}

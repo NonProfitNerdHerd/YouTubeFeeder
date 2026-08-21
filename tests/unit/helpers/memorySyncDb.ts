@@ -26,6 +26,9 @@ export class MemorySyncDb {
 	discoverSearchCache = new Map<string, Row>();
 	discoverBrowseCache = new Map<string, Row>();
 	topicDiscoveryCache = new Map<string, Row>();
+	discoverProviderCache = new Map<string, Row>();
+	discoverProviderLocks = new Map<string, Row>();
+	discoverBraveUsage: Row[] = [];
 	recommendationFeedback: Row[] = [];
 	discoverInterestCandidates: Row[] = [];
 	categories = new Map<string, Row>();
@@ -465,6 +468,70 @@ export class MemorySyncDb {
 			});
 			return 1;
 		}
+		if (normalized.includes('INSERT INTO discover_provider_cache')) {
+			this.discoverProviderCache.set(String(bound[0]), {
+				cache_key: bound[0],
+				provider: bound[1],
+				content_type: bound[2],
+				normalized_query: bound[3],
+				strategy_version: bound[4],
+				raw_results_json: bound[5],
+				candidates_json: bound[6],
+				provider_offset: bound[7],
+				more_results_available: bound[8],
+				candidate_consume_offset: bound[9],
+				raw_result_count: bound[10],
+				searched_at: bound[11],
+				updated_at: bound[12],
+				expires_at: bound[13],
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO discover_provider_locks')) {
+			const key = String(bound[0]);
+			const existing = this.discoverProviderLocks.get(key);
+			const lockedAt = String(bound[2]);
+			if (
+				existing &&
+				String(existing.expires_at) > lockedAt &&
+				String(existing.lock_owner) !== String(bound[1])
+			) {
+				// Simulate ON CONFLICT DO UPDATE WHERE failing to steal active lock
+				return 0;
+			}
+			this.discoverProviderLocks.set(key, {
+				cache_key: bound[0],
+				lock_owner: bound[1],
+				locked_at: bound[2],
+				expires_at: bound[3],
+			});
+			return 1;
+		}
+		if (normalized.includes('INSERT INTO discover_brave_usage_daily')) {
+			const day = String(bound[0]);
+			const userId = String(bound[1]);
+			const existing = this.discoverBraveUsage.find((row) => row.day === day && row.user_id === userId);
+			const add = {
+				request_count: Number(bound[2] ?? 0),
+				cache_hits: Number(bound[3] ?? 0),
+				cache_misses: Number(bound[4] ?? 0),
+				zero_result_searches: Number(bound[5] ?? 0),
+				api_errors: Number(bound[6] ?? 0),
+				usable_candidate_count: Number(bound[7] ?? 0),
+			};
+			if (existing) {
+				existing.request_count = Number(existing.request_count ?? 0) + add.request_count;
+				existing.cache_hits = Number(existing.cache_hits ?? 0) + add.cache_hits;
+				existing.cache_misses = Number(existing.cache_misses ?? 0) + add.cache_misses;
+				existing.zero_result_searches = Number(existing.zero_result_searches ?? 0) + add.zero_result_searches;
+				existing.api_errors = Number(existing.api_errors ?? 0) + add.api_errors;
+				existing.usable_candidate_count =
+					Number(existing.usable_candidate_count ?? 0) + add.usable_candidate_count;
+			} else {
+				this.discoverBraveUsage.push({ day, user_id: userId, ...add });
+			}
+			return 1;
+		}
 		if (normalized.includes('INSERT INTO discover_interest_candidates')) {
 			const existing = this.discoverInterestCandidates.find(
 				(row) =>
@@ -732,6 +799,44 @@ export class MemorySyncDb {
 				last_synchronized_at: (existing as Row).last_synchronized_at ?? null,
 				uploads_playlist_id: (existing as Row).uploads_playlist_id ?? null,
 			});
+			return 1;
+		}
+		if (normalized.includes('DELETE FROM discover_provider_locks')) {
+			if (normalized.includes('expires_at <= ?') && !normalized.includes('cache_key = ?')) {
+				const cutoff = String(bound[0]);
+				for (const [key, row] of [...this.discoverProviderLocks.entries()]) {
+					if (String(row.expires_at) <= cutoff) this.discoverProviderLocks.delete(key);
+				}
+				return 1;
+			}
+			if (normalized.includes('cache_key = ? AND expires_at <= ?')) {
+				const key = String(bound[0]);
+				const cutoff = String(bound[1]);
+				const row = this.discoverProviderLocks.get(key);
+				if (row && String(row.expires_at) <= cutoff) this.discoverProviderLocks.delete(key);
+				return 1;
+			}
+			if (normalized.includes('cache_key = ? AND lock_owner = ?')) {
+				const key = String(bound[0]);
+				const owner = String(bound[1]);
+				const row = this.discoverProviderLocks.get(key);
+				if (row && String(row.lock_owner) === owner) this.discoverProviderLocks.delete(key);
+				return 1;
+			}
+			return 0;
+		}
+		if (normalized.includes('DELETE FROM discover_provider_cache') && normalized.includes('expires_at <= ?')) {
+			const cutoff = String(bound[0]);
+			for (const [key, row] of [...this.discoverProviderCache.entries()]) {
+				if (String(row.expires_at) <= cutoff) this.discoverProviderCache.delete(key);
+			}
+			return 1;
+		}
+		if (normalized.includes('UPDATE discover_provider_cache') && normalized.includes('candidate_consume_offset')) {
+			const row = this.discoverProviderCache.get(String(bound[2]));
+			if (!row) return 0;
+			row.candidate_consume_offset = bound[0];
+			row.updated_at = bound[1];
 			return 1;
 		}
 		return 0;
@@ -1059,6 +1164,31 @@ export class MemorySyncDb {
 					next_page_token: row.next_page_token ?? null,
 				},
 			];
+		}
+		if (normalized.includes('FROM discover_provider_cache WHERE cache_key = ?')) {
+			const row = this.discoverProviderCache.get(String(bound[0]));
+			return row ? [row] : [];
+		}
+		if (normalized.includes('FROM discover_provider_locks WHERE cache_key = ?')) {
+			const row = this.discoverProviderLocks.get(String(bound[0]));
+			if (!row) return [];
+			if (normalized.includes('expires_at > ?')) {
+				const cutoff = String(bound[1]);
+				if (String(row.expires_at) <= cutoff) return [];
+			}
+			return [row];
+		}
+		if (normalized.includes('FROM discover_brave_usage_daily WHERE day = ? AND user_id = ?')) {
+			const day = String(bound[0]);
+			const userId = String(bound[1]);
+			const row = this.discoverBraveUsage.find((item) => item.day === day && item.user_id === userId);
+			return row ? [row] : [];
+		}
+		if (normalized.includes('SELECT call_count FROM api_quota_daily')) {
+			const day = String(bound[0]);
+			const endpoint = String(bound[1]);
+			const row = this.quota.find((item) => item.day === day && item.endpoint === endpoint);
+			return row ? [{ call_count: row.call_count ?? 0 }] : [];
 		}
 		if (normalized.includes('FROM recommendation_feedback') && normalized.includes('WHERE id = ? AND user_id = ?')) {
 			const id = String(bound[0]);
